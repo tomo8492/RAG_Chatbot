@@ -1,0 +1,24 @@
+# ============================================================
+#  RAG Chatbot - Python 依存パッケージ
+#  インストール:  pip install -r requirements.txt
+# ============================================================
+
+# --- Web サーバ ---
+fastapi>=0.110
+uvicorn[standard]>=0.29
+python-multipart>=0.0.9      # ファイルアップロード受信用
+python-dotenv>=1.0           # .env 読み込み
+itsdangerous>=2.1            # セッションCookieの署名
+
+# --- ローカルLLM (Ollama) ---
+ollama>=0.3.0
+
+# --- ベクトル検索 (RAG) ---
+chromadb>=0.5.0
+sentence-transformers>=2.7   # 埋め込みモデル(多言語E5)。torchを含む
+
+# --- 文書ローダ ---
+pymupdf>=1.24                # PDF
+python-docx>=1.1             # Word (.docx)
+openpyxl>=3.1                # Excel (.xlsx)
+python-pptx>=0.6.23          # PowerPoint (.pptx)

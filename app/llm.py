@@ -1,0 +1,167 @@
+"""
+llm.py
+Ollama によるチャット生成。
+  - モデル一覧取得
+  - ストリーミング生成(content と thinking を分離して yield)
+  - effort(思考の深さ)= think パラメータ。未対応モデルは自動フォールバック
+  - 生成パラメータ(temperature / num_predict 等)対応
+"""
+from __future__ import annotations
+
+from typing import Iterator, Optional
+
+from .config import settings
+from .logging_setup import get_logger
+
+log = get_logger("llm")
+
+
+DEFAULT_SYSTEM_PROMPT = (
+    "あなたは親切で有能な日本語アシスタントです。質問には正確かつ分かりやすく答えてください。"
+    "コードや表は Markdown で整形してください。"
+)
+
+# RAG 用の指示(参考資料がある場合に付与)
+RAG_INSTRUCTION = """以下の【参考資料】を最優先の根拠として回答してください。
+
+ルール:
+1. 回答は可能な限り【参考資料】の内容に基づくこと。資料に無い事項は一般知識で補ってよいが、その場合は資料に基づかない旨を明示する。
+2. 資料を根拠にした箇所では、文末に「(出典: ファイル名 場所)」の形式で出典を示す。
+3. 専門用語や条項はできるだけ原文のまま正確に引用する。
+4. 資料内に該当が全く無い場合は「参考資料内に該当する記載は見つかりませんでした」と述べたうえで、一般知識で回答する。
+
+【参考資料】
+{context}
+"""
+
+
+# effort -> think パラメータ / 補助設定
+EFFORT_LEVELS = {
+    "off":      {"think": False, "num_predict_boost": 0},
+    "low":      {"think": False, "num_predict_boost": 0},
+    "medium":   {"think": True,  "num_predict_boost": 0},
+    "high":     {"think": True,  "num_predict_boost": 1024},
+    "max":      {"think": True,  "num_predict_boost": 4096},
+}
+
+
+def _client():
+    import ollama
+    return ollama.Client(host=settings.ollama_host)
+
+
+def list_models() -> list[dict]:
+    """インストール済みモデル一覧。失敗時は空リスト。"""
+    try:
+        data = _client().list()
+        models = []
+        for m in data.get("models", []):
+            name = m.get("model") or m.get("name")
+            if not name:
+                continue
+            size = m.get("size", 0)
+            models.append({"name": name, "size": size})
+        models.sort(key=lambda x: x["name"])
+        return models
+    except Exception as e:
+        log.warning("モデル一覧の取得に失敗: %s", e)
+        return []
+
+
+def is_ollama_available() -> bool:
+    try:
+        _client().list()
+        return True
+    except Exception:
+        return False
+
+
+def build_context_block(hits: list[dict]) -> str:
+    blocks = []
+    for i, h in enumerate(hits, 1):
+        loc = f" {h['loc']}" if h.get("loc") else ""
+        blocks.append(f"[資料{i}] (出典: {h['source']}{loc})\n{h['text']}")
+    return "\n\n".join(blocks)
+
+
+def build_messages(system_prompt: str, history: list[dict], hits: list[dict]) -> list[dict]:
+    """system + 履歴からOllama用messagesを組み立てる。RAGヒットがあればsystemに資料を付与。"""
+    sys_text = (system_prompt or DEFAULT_SYSTEM_PROMPT).strip()
+    if hits:
+        sys_text = sys_text + "\n\n" + RAG_INSTRUCTION.format(context=build_context_block(hits))
+    messages = [{"role": "system", "content": sys_text}]
+    for m in history:
+        if m["role"] in ("user", "assistant"):
+            messages.append({"role": m["role"], "content": m["content"]})
+    return messages
+
+
+def _extract(part, key: str) -> Optional[str]:
+    """ChatResponse(オブジェクト/辞書)から message.<key> を安全に取り出す。"""
+    msg = getattr(part, "message", None)
+    if msg is None and isinstance(part, dict):
+        msg = part.get("message")
+    if msg is None:
+        return None
+    val = getattr(msg, key, None)
+    if val is None and isinstance(msg, dict):
+        val = msg.get(key)
+    return val
+
+
+def chat_stream(messages: list[dict], model: str, *,
+                temperature: float = 0.3, top_p: float = 0.9,
+                num_predict: int = 1024, num_ctx: Optional[int] = None,
+                effort: str = "medium") -> Iterator[dict]:
+    """
+    Ollama でストリーミング生成。イベントを順次 yield:
+      {"type": "thinking", "text": ...}  -- 思考過程
+      {"type": "content",  "text": ...}  -- 本文
+    """
+    eff = EFFORT_LEVELS.get((effort or "medium").lower(), EFFORT_LEVELS["medium"])
+    think = eff["think"]
+    options = {
+        "temperature": float(temperature),
+        "top_p": float(top_p),
+        "num_predict": int(num_predict) + eff["num_predict_boost"],
+    }
+    if num_ctx:
+        options["num_ctx"] = int(num_ctx)
+
+    client = _client()
+
+    def _run(use_think: Optional[bool]):
+        kwargs = dict(model=model, messages=messages, stream=True, options=options)
+        if use_think is not None:
+            kwargs["think"] = use_think
+        return client.chat(**kwargs)
+
+    started = False
+    try:
+        try:
+            stream = _run(think)
+        except TypeError:
+            # 古い ollama-python は think 未対応
+            stream = _run(None)
+
+        for part in stream:
+            th = _extract(part, "thinking")
+            if th:
+                started = True
+                yield {"type": "thinking", "text": th}
+            ct = _extract(part, "content")
+            if ct:
+                started = True
+                yield {"type": "content", "text": ct}
+    except Exception as e:
+        msg = str(e).lower()
+        # think 非対応モデル -> think を外して再試行(まだ何も出力していない場合のみ)
+        if (not started) and think and ("think" in msg or "thinking" in msg):
+            log.info("このモデルは thinking 非対応のため通常生成に切替: %s", model)
+            stream = _run(None)
+            for part in stream:
+                ct = _extract(part, "content")
+                if ct:
+                    yield {"type": "content", "text": ct}
+        else:
+            raise

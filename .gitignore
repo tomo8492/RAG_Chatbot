@@ -1,0 +1,20 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# --- 実行時データ(DB・ベクトル・アップロード・秘密鍵) ---
+/data/
+data/
+
+# --- 環境設定 ---
+.env
+
+# --- OS / エディタ ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

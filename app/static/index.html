@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="ja" data-theme="light">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>社内文書アシスタント</title>
+  <link rel="stylesheet" href="/static/vendor/github.min.css" id="hl-light" />
+  <link rel="stylesheet" href="/static/vendor/github-dark.min.css" id="hl-dark" disabled />
+  <link rel="stylesheet" href="/static/css/style.css" />
+</head>
+<body>
+
+  <!-- ============ ログイン ============ -->
+  <div id="login-overlay" class="overlay hidden">
+    <div class="login-card">
+      <div class="brand-big"><span class="dot">✻</span></div>
+      <h1 id="login-title">社内文書アシスタント</h1>
+      <p class="muted">続行するにはパスワードを入力してください。</p>
+      <input type="password" id="login-password" placeholder="パスワード" autocomplete="current-password" />
+      <button id="login-btn" class="btn primary block">ログイン</button>
+      <p id="login-error" class="error-text hidden"></p>
+    </div>
+  </div>
+
+  <!-- ============ アプリ本体 ============ -->
+  <div id="app" class="app hidden">
+    <!-- サイドバー -->
+    <aside id="sidebar" class="sidebar">
+      <div class="sidebar-head">
+        <div class="brand"><span class="dot">✻</span><span id="brand-title">アシスタント</span></div>
+        <button id="theme-toggle" class="icon-btn" title="テーマ切替">🌓</button>
+      </div>
+      <button id="new-chat" class="btn new-chat">＋ 新しい会話</button>
+      <nav id="conv-list" class="conv-list"></nav>
+      <div class="sidebar-foot">
+        <button id="open-kb" class="foot-btn">📁 参照資料</button>
+        <button id="open-settings" class="foot-btn">⚙ 設定</button>
+        <button id="logout-btn" class="foot-btn hidden">⏏ ログアウト</button>
+      </div>
+    </aside>
+
+    <!-- メイン -->
+    <main id="main" class="main">
+      <header class="chat-header">
+        <button id="toggle-sidebar" class="icon-btn only-mobile">☰</button>
+        <input id="chat-title" class="chat-title" value="新しい会話" />
+        <div class="header-meta">
+          <span id="kb-indicator" class="badge hidden"></span>
+          <span id="model-indicator" class="badge subtle"></span>
+        </div>
+      </header>
+
+      <div id="messages" class="messages">
+        <div id="welcome" class="welcome">
+          <div class="brand-big"><span class="dot">✻</span></div>
+          <h2>こんにちは</h2>
+          <p class="muted">参照資料フォルダを選んで質問するか、そのまま会話を始められます。<br/>
+            ファイルを添付して内容について質問することもできます。</p>
+        </div>
+      </div>
+
+      <!-- 入力欄 -->
+      <div class="composer-wrap">
+        <div id="attach-chips" class="attach-chips"></div>
+        <div class="composer">
+          <div class="composer-toolbar">
+            <button id="attach-btn" class="tool" title="ファイルを添付">📎</button>
+            <input type="file" id="file-input" multiple class="hidden"
+                   accept=".pdf,.docx,.xlsx,.pptx,.txt,.md,.markdown,.csv,.tsv,.log,.json" />
+
+            <div class="quick">
+              <label>モデル</label>
+              <select id="q-model" class="mini-select" title="モデル"></select>
+            </div>
+            <div class="quick">
+              <label>工数</label>
+              <select id="q-effort" class="mini-select" title="工数(思考の深さ)">
+                <option value="off">最小</option>
+                <option value="low">低</option>
+                <option value="medium">標準</option>
+                <option value="high">高</option>
+                <option value="max">最大</option>
+              </select>
+            </div>
+            <div class="quick">
+              <label>長さ</label>
+              <select id="q-length" class="mini-select" title="回答の長さ">
+                <option value="512">短い</option>
+                <option value="1024">標準</option>
+                <option value="2048">長い</option>
+                <option value="4096">最大</option>
+              </select>
+            </div>
+            <div class="quick">
+              <label>参照<span id="q-topk-val">5</span></label>
+              <input type="range" id="q-topk" min="0" max="15" value="5" class="mini-range" title="参照件数(top_k)" />
+            </div>
+          </div>
+          <div class="composer-input">
+            <textarea id="input" rows="1" placeholder="メッセージを入力…(Shift+Enterで改行)"></textarea>
+            <button id="send-btn" class="btn primary send" title="送信">➤</button>
+            <button id="stop-btn" class="btn stop send hidden" title="停止">■</button>
+          </div>
+          <div class="composer-foot muted">ローカルLLM ・ 社外送信なし</div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <!-- ============ 設定モーダル ============ -->
+  <div id="settings-modal" class="overlay hidden">
+    <div class="modal">
+      <div class="modal-head"><h2>⚙ 設定(既定値)</h2><button class="icon-btn close-modal">✕</button></div>
+      <div class="modal-body">
+        <p class="muted small">ここで変更した値は新しい会話の既定になります。チャット欄のクイック設定はその会話のみに適用されます。</p>
+
+        <div class="field">
+          <label>既定モデル</label>
+          <select id="set-model"></select>
+        </div>
+
+        <div class="field">
+          <label>システムプロンプト(AIの役割・口調)</label>
+          <textarea id="set-system" rows="4"></textarea>
+        </div>
+
+        <div class="grid2">
+          <div class="field">
+            <label>工数(思考の深さ)</label>
+            <select id="set-effort">
+              <option value="off">最小(思考なし)</option>
+              <option value="low">低</option>
+              <option value="medium">標準</option>
+              <option value="high">高</option>
+              <option value="max">最大(じっくり)</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>回答の最大長 (num_predict): <span id="set-numpredict-val"></span></label>
+            <input type="range" id="set-numpredict" min="128" max="8192" step="128" />
+          </div>
+        </div>
+
+        <div class="grid2">
+          <div class="field">
+            <label>温度 / 創造性 (temperature): <span id="set-temp-val"></span></label>
+            <input type="range" id="set-temp" min="0" max="1.5" step="0.05" />
+          </div>
+          <div class="field">
+            <label>top_p: <span id="set-topp-val"></span></label>
+            <input type="range" id="set-topp" min="0.1" max="1.0" step="0.05" />
+          </div>
+        </div>
+
+        <div class="grid2">
+          <div class="field">
+            <label>参照件数 top_k: <span id="set-topk-val"></span></label>
+            <input type="range" id="set-topk" min="0" max="15" step="1" />
+          </div>
+          <div class="field">
+            <label>コンテキスト長 num_ctx (0=既定): <span id="set-numctx-val"></span></label>
+            <input type="range" id="set-numctx" min="0" max="32768" step="512" />
+          </div>
+        </div>
+
+        <details class="adv">
+          <summary>詳細(インデックス作成パラメータ)</summary>
+          <div class="grid2">
+            <div class="field">
+              <label>チャンクサイズ: <span id="set-chunk-val"></span></label>
+              <input type="range" id="set-chunk" min="200" max="2000" step="50" />
+            </div>
+            <div class="field">
+              <label>オーバーラップ: <span id="set-overlap-val"></span></label>
+              <input type="range" id="set-overlap" min="0" max="500" step="20" />
+            </div>
+          </div>
+          <p class="muted small">※ チャンク設定は次回のインデックス作成・再構築から反映されます。</p>
+          <p class="muted small">埋め込み: <span id="set-embed-info"></span></p>
+        </details>
+      </div>
+      <div class="modal-foot">
+        <button class="btn close-modal">閉じる</button>
+        <button id="save-settings" class="btn primary">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 参照資料(ナレッジベース)モーダル ============ -->
+  <div id="kb-modal" class="overlay hidden">
+    <div class="modal">
+      <div class="modal-head"><h2>📁 参照資料(ナレッジベース)</h2><button class="icon-btn close-modal">✕</button></div>
+      <div class="modal-body">
+        <p class="muted small">サーバ(このアプリを動かすPC)上のフォルダを選んでインデックス化します。
+          会話ごとに使う資料を選べます。</p>
+        <button id="add-kb" class="btn primary">＋ フォルダを選んで追加</button>
+        <div id="kb-list" class="kb-list"></div>
+      </div>
+      <div class="modal-foot">
+        <button class="btn close-modal">閉じる</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ フォルダ選択モーダル ============ -->
+  <div id="folder-modal" class="overlay hidden">
+    <div class="modal">
+      <div class="modal-head"><h2>フォルダを選択</h2><button class="icon-btn close-folder">✕</button></div>
+      <div class="modal-body">
+        <div class="fb-roots" id="fb-roots"></div>
+        <div class="fb-path" id="fb-path"></div>
+        <div class="fb-list" id="fb-list"></div>
+        <div class="fb-selected">
+          <strong>選択中:</strong> <span id="fb-current" class="muted">―</span>
+          <span id="fb-count" class="badge subtle"></span>
+        </div>
+      </div>
+      <div class="modal-foot">
+        <button class="btn close-folder">キャンセル</button>
+        <button id="fb-pick" class="btn primary" disabled>このフォルダを追加</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="/static/vendor/marked.min.js"></script>
+  <script src="/static/vendor/purify.min.js"></script>
+  <script src="/static/vendor/highlight.min.js"></script>
+  <script src="/static/js/app.js"></script>
+</body>
+</html>
