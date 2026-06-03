@@ -17,6 +17,9 @@ LENGTH_PRESETS = {"short": 512, "standard": 1024, "long": 2048, "max": 4096}
 def base_defaults() -> dict:
     return {
         "model": settings.chat_model,
+        # 画像(スクショ)付き質問のときに使う Vision/OCR モデル。
+        # 設定画面で GLM-OCR など任意の対応モデルに切り替えられる。
+        "vision_model": settings.vision_model,
         "temperature": 0.3,
         "top_p": 0.9,
         "num_predict": 1024,      # 回答の最大トークン(長さ)
