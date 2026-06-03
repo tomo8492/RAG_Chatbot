@@ -117,7 +117,8 @@ def stream_answer(st: CliState, question: str):
         except Exception as e:
             print(f"[検索エラー] {e}")
     st.history.append({"role": "user", "content": question})
-    messages = llm.build_messages(st.system_prompt, st.history, hits)
+    # 参照インデックスを選択中は、その資料だけで回答する厳格モード。
+    messages = llm.build_messages(st.system_prompt, st.history, hits, strict=bool(st.active_indexes))
 
     print()
     acc, think = "", ""
