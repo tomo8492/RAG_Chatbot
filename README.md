@@ -110,6 +110,24 @@ python run.py
 
 ---
 
+## 💻 ブラウザを使わずターミナルだけで試す
+
+動作確認用に、ブラウザ・Webサーバ不要でチャットできる `chat_cli.py` を同梱しています。
+
+```bash
+python chat_cli.py                       # 通常チャット(既定モデル)
+python chat_cli.py --model qwen3:8b      # モデル指定
+python chat_cli.py --folder "C:\docs"    # フォルダを取り込んでRAGチャット
+python chat_cli.py --index <ID>          # 既存インデックスでRAGチャット
+```
+
+会話中のコマンド: `/help` `/model 名前` `/effort off|low|medium|high|max`
+`/topk 数` `/len 数` `/folder パス` `/index` `/reset` `/exit`
+
+前提: `pip install -r requirements.txt` 済み・Ollama 起動済み・モデル取得済み(`ollama pull qwen3:8b`)。
+
+---
+
 ## 🌐 他のPCのブラウザから使う
 
 1. アプリを動かすPCで `HOST=0.0.0.0`(既定)にする
