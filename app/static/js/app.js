@@ -273,7 +273,13 @@ function updateCodeBar(conv) {
   f.textContent = folder || "未設定";
   f.title = folder || "";
   f.classList.toggle("set", !!folder);
+  const plan = s.plan_mode !== false;   // 既定ON
+  $("cb-plan").checked = plan;
   $("cb-allow").checked = !!s.allow_changes;
+  // 計画モード中は「変更を許可」は計画承認が代替するため無効化(視覚的にも)
+  $("cb-allow").disabled = plan;
+  const allowLabel = $("cb-allow").closest(".cb-toggle");
+  if (allowLabel) allowLabel.classList.toggle("disabled", plan);
 }
 
 async function deleteConversation(cid) {
@@ -392,8 +398,8 @@ function buildWelcome() {
     w.innerHTML = `<div class="brand-big"><span class="dot">${LOGO_SVG}</span></div>
       <h2>コードエージェント</h2>
       <p class="muted">作業フォルダを選び、依頼を入力してください。<br/>
-      AIがフォルダ内のファイルを読み・作成・編集し、コマンドも実行できます。<br/>
-      変更・実行は<strong>「変更を許可」をオンにして、毎回承認</strong>したときだけ行われます。</p>`;
+      <strong>計画モード</strong>では、AIがまず調査して<strong>実行計画</strong>を提示し、<strong>承認</strong>すると実行します。<br/>
+      ファイル編集は自動適用、コマンド実行など重要操作は都度確認します。</p>`;
   } else {
     w.innerHTML = `<div class="brand-big"><span class="dot">${LOGO_SVG}</span></div>
       <h2>こんにちは</h2>
@@ -765,11 +771,17 @@ async function streamAgent(payload) {
       `▸ <span class="tool-name">${escapeHtml(name)}</span> ${escapeHtml(agentArgsSummary(name, args))}`);
     logBox.appendChild(div); scrollToBottom();
   };
-  const addStepResult = (status, result) => {
+  const addStepResult = (status, result, diff) => {
     curText = null;
     const div = el("div", "step-result" + (status && status !== "ok" ? " " + status : ""));
     div.textContent = trimResult(result);
-    logBox.appendChild(div); scrollToBottom();
+    logBox.appendChild(div);
+    if (diff) {
+      const d = el("div", "confirm-diff applied-diff");
+      d.innerHTML = colorizeDiff(diff);
+      logBox.appendChild(d);
+    }
+    scrollToBottom();
   };
   const addText = (t) => {
     if (!curText) { curText = el("div", "md agent-text"); curText._raw = ""; logBox.appendChild(curText); }
@@ -802,8 +814,9 @@ async function streamAgent(payload) {
         switch (ev.type) {
           case "assistant": if (ev.text) addText(ev.text); break;
           case "tool_call": addStepCall(ev.name, ev.args || {}); break;
-          case "tool_result": addStepResult(ev.status, ev.result || ""); break;
+          case "tool_result": addStepResult(ev.status, ev.result || "", ev.diff); break;
           case "confirm": curText = null; logBox.appendChild(buildConfirmCard(ev)); scrollToBottom(); break;
+          case "plan": curText = null; logBox.appendChild(buildPlanCard(ev)); scrollToBottom(); break;
           case "error": addStepResult("rejected", "⚠ " + (ev.error || "エラー")); toast("エラー: " + (ev.error || "")); break;
           case "max_steps": addStepResult("blocked", "最大ステップ数に達しました。続けるには再度指示してください。"); break;
           case "done": case "user_saved": break;
@@ -834,9 +847,30 @@ function rejectOpenConfirms(box) {
 
 function agentArgsSummary(name, args) {
   if (name === "write_file") return `${args.path || ""} (${args.length || 0}字)`;
+  if (name === "edit_file") return args.path || "";
   if (name === "run_command") return args.command || "";
   if (name === "read_file") return args.path || "";
+  if (name === "glob" || name === "grep") return args.pattern || "";
   return "";
+}
+
+// 実行計画の承認カード(承認すると実行フェーズへ)
+function buildPlanCard(ev) {
+  const card = el("div", "confirm-card plan-card");
+  card.dataset.actionId = ev.action_id;
+  card.appendChild(el("div", "confirm-title", "📋 実行計画 — 承認すると実行フェーズに進みます"));
+  const body = el("div", "plan-body md");
+  renderMarkdown(body, ev.plan || "(計画なし)", true);
+  card.appendChild(body);
+  const actions = el("div", "confirm-actions");
+  const ok = el("button", "btn primary", "承認して実行");
+  const no = el("button", "btn", "却下");
+  const status = el("span", "confirm-status");
+  ok.onclick = () => respondConfirm(card, ev.action_id, true, status, [ok, no]);
+  no.onclick = () => respondConfirm(card, ev.action_id, false, status, [ok, no]);
+  actions.appendChild(ok); actions.appendChild(no); actions.appendChild(status);
+  card.appendChild(actions);
+  return card;
 }
 function trimResult(s) {
   s = String(s == null ? "" : s);
@@ -1230,6 +1264,17 @@ async function setCodeAllow(on) {
   } catch (e) { toast("設定失敗: " + e.message); $("cb-allow").checked = !on; }
 }
 
+async function setCodePlan(on) {
+  if (!State.current) return;
+  try {
+    const conv = await api(`/api/conversations/${State.current.id}`, {
+      method: "PATCH", body: JSON.stringify({ settings: { plan_mode: !!on } }),
+    });
+    State.current = conv;
+    updateCodeBar(conv);
+  } catch (e) { toast("設定失敗: " + e.message); $("cb-plan").checked = !on; }
+}
+
 /* ============================================================
    入力欄の挙動
    ============================================================ */
@@ -1258,6 +1303,7 @@ function bindGlobalEvents() {
     (t.onclick = () => setMode(t.dataset.mode)));
   // Code: 作業フォルダ / 変更許可
   $("cb-pick").onclick = () => openFolderBrowser("workspace");
+  $("cb-plan").onchange = (e) => setCodePlan(e.target.checked);
   $("cb-allow").onchange = (e) => setCodeAllow(e.target.checked);
 
   $("chat-title").addEventListener("change", renameConversation);

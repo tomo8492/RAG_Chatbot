@@ -80,7 +80,11 @@
           <span id="cb-folder" class="cb-folder muted">未設定</span>
         </span>
         <button id="cb-pick" class="btn cb-btn">フォルダを選択</button>
-        <label class="cb-toggle" title="オンのときだけ、毎回の承認のうえでファイル変更・コマンド実行ができます">
+        <label class="cb-toggle" title="計画を立ててから承認・実行します(Claude Code風)。承認した変更のうちファイル編集は自動適用、コマンド実行は都度確認">
+          <input type="checkbox" id="cb-plan" checked />
+          <span>計画モード</span>
+        </label>
+        <label class="cb-toggle" title="計画モードがオフのとき有効。オンにすると、毎回の承認のうえでファイル変更・コマンド実行ができます">
           <input type="checkbox" id="cb-allow" />
           <span>変更を許可</span>
         </label>
