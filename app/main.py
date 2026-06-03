@@ -446,7 +446,13 @@ def api_generate(cid: str, body: GenerateBody) -> Response:
             raise
         except Exception as e:
             log.exception("生成エラー")
-            yield sse({"type": "error", "error": str(e)})
+            msg = str(e)
+            # 選択したモデルが画像入力(Vision)に対応していない場合の分かりやすい案内。
+            if use_vision and "image input is not supported" in msg.lower():
+                msg = (f"選択中のモデル『{model}』は画像入力に対応していません"
+                       "(Vision/mmproj 非対応)。設定の「画像認識モデル」で画像対応モデル"
+                       "(例: qwen2.5vl / llama3.2-vision / gemma3)を選択してください。")
+            yield sse({"type": "error", "error": msg})
         finally:
             if not saved and acc_content.strip():
                 db.add_message(cid, "assistant", acc_content, sources=sources)
