@@ -432,7 +432,13 @@ function renderMessage(m, isLastAssistant) {
     row.appendChild(bubble);
     return row;
   }
-  // assistant
+  // assistant — Codeの会話で保存済みステップ(計画/ツール/差分/TODO)があれば再現
+  if (State.current && (State.current.kind || "chat") === "code" &&
+      Array.isArray(m.sources) && m.sources.length && m.sources[0] && m.sources[0].type) {
+    const { row, logBox } = buildAgentRow();
+    renderCodeSteps(logBox, m.sources);
+    return row;
+  }
   const { row, refs } = createAssistantRow();
   renderMarkdown(refs.md, m.content, true);
   refs.row.dataset.raw = m.content;
@@ -754,35 +760,83 @@ async function sendCode() {
   await loadConversations(); // タイトル更新を反映
 }
 
-async function streamAgent(payload) {
+/* ---- エージェントのステップ描画(ライブ/再表示で共用) ---- */
+function buildAgentRow() {
   const row = el("div", "msg-row assistant");
-  row.innerHTML = `<div class="avatar">${LOGO_SVG}</div>
-    <div class="msg-body"><div class="msg-name">Code エージェント</div>
-    <div class="agent-log"></div></div>`;
-  const logBox = row.querySelector(".agent-log");
+  row.innerHTML = `<div class="avatar">${LOGO_SVG}</div>` +
+    `<div class="msg-body"><div class="msg-name">Code エージェント</div><div class="agent-log"></div></div>`;
+  return { row, logBox: row.querySelector(".agent-log") };
+}
+function stepCallEl(name, args) {
+  return el("div", "step-call",
+    `▸ <span class="tool-name">${escapeHtml(name)}</span> ${escapeHtml(agentArgsSummary(name, args || {}))}`);
+}
+function stepResultEls(status, result, diff) {
+  const out = [];
+  const div = el("div", "step-result" + (status && status !== "ok" ? " " + status : ""));
+  div.textContent = trimResult(result || "");
+  out.push(div);
+  if (diff) {
+    const d = el("div", "confirm-diff applied-diff");
+    d.innerHTML = colorizeDiff(diff);
+    out.push(d);
+  }
+  return out;
+}
+function agentTextEl(text) {
+  const d = el("div", "md agent-text");
+  renderMarkdown(d, text || "", true);
+  return d;
+}
+function planStaticEl(plan) {
+  const card = el("div", "confirm-card plan-card");
+  card.appendChild(el("div", "confirm-title", "📋 実行計画(承認済み)"));
+  const body = el("div", "plan-body md");
+  renderMarkdown(body, plan || "", true);
+  card.appendChild(body);
+  return card;
+}
+// TODOパネル。existing を渡すと同じ要素を書き換える(進捗の更新)
+function renderTodos(container, todos, existing) {
+  const box = existing || el("div", "todo-panel");
+  box.innerHTML = "";
+  box.appendChild(el("div", "todo-title", "✅ タスク"));
+  (todos || []).forEach((t) => {
+    const st = t.status || "pending";
+    const icon = st === "completed" ? "☑" : st === "in_progress" ? "▣" : "☐";
+    box.appendChild(el("div", "todo-item " + st, `${icon} ${escapeHtml(t.content || "")}`));
+  });
+  if (!existing) container.appendChild(box);
+  return box;
+}
+// 保存済みステップ(message.sources)を静的に再描画
+function renderCodeSteps(container, steps) {
+  let todoEl = null;
+  (steps || []).forEach((ev) => {
+    switch (ev.type) {
+      case "assistant": if (ev.text) container.appendChild(agentTextEl(ev.text)); break;
+      case "tool_call": container.appendChild(stepCallEl(ev.name, ev.args)); break;
+      case "tool_result": stepResultEls(ev.status, ev.result, ev.diff).forEach((e) => container.appendChild(e)); break;
+      case "plan": container.appendChild(planStaticEl(ev.plan)); break;
+      case "todos": todoEl = renderTodos(container, ev.todos, todoEl); break;
+    }
+  });
+}
+
+async function streamAgent(payload) {
+  const { row, logBox } = buildAgentRow();
   $("messages").appendChild(row);
   scrollToBottom();
 
   setStreaming(true);
   State.controller = new AbortController();
-  let curText = null;  // 連続する assistant テキストの描画先
+  let curText = null;   // 連続する assistant テキストの描画先
+  let todoEl = null;    // TODOパネル(更新時は同じ要素を書き換え)
 
-  const addStepCall = (name, args) => {
-    curText = null;
-    const div = el("div", "step-call",
-      `▸ <span class="tool-name">${escapeHtml(name)}</span> ${escapeHtml(agentArgsSummary(name, args))}`);
-    logBox.appendChild(div); scrollToBottom();
-  };
+  const addStepCall = (name, args) => { curText = null; logBox.appendChild(stepCallEl(name, args)); scrollToBottom(); };
   const addStepResult = (status, result, diff) => {
     curText = null;
-    const div = el("div", "step-result" + (status && status !== "ok" ? " " + status : ""));
-    div.textContent = trimResult(result);
-    logBox.appendChild(div);
-    if (diff) {
-      const d = el("div", "confirm-diff applied-diff");
-      d.innerHTML = colorizeDiff(diff);
-      logBox.appendChild(d);
-    }
+    stepResultEls(status, result, diff).forEach((e) => logBox.appendChild(e));
     scrollToBottom();
   };
   const addText = (t) => {
@@ -819,6 +873,7 @@ async function streamAgent(payload) {
           case "tool_result": addStepResult(ev.status, ev.result || "", ev.diff); break;
           case "confirm": curText = null; logBox.appendChild(buildConfirmCard(ev)); scrollToBottom(); break;
           case "plan": curText = null; logBox.appendChild(buildPlanCard(ev)); scrollToBottom(); break;
+          case "todos": curText = null; todoEl = renderTodos(logBox, ev.todos || [], todoEl); scrollToBottom(); break;
           case "error": addStepResult("rejected", "⚠ " + (ev.error || "エラー")); toast("エラー: " + (ev.error || "")); break;
           case "max_steps": addStepResult("blocked", "最大ステップ数に達しました。続けるには再度指示してください。"); break;
           case "done": case "user_saved": break;
