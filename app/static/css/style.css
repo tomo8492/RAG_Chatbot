@@ -353,6 +353,7 @@ body[data-mode="code"] .code-bar.only-code { display: flex; }
 .cb-toggle { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; cursor: pointer;
   color: var(--ink-soft); user-select: none; white-space: nowrap; }
 .cb-toggle input { accent-color: var(--accent); width: 16px; height: 16px; }
+.cb-toggle.disabled { opacity: .45; cursor: not-allowed; }
 
 /* エージェントのステップ表示 */
 .agent-log { display: flex; flex-direction: column; gap: 8px; }
@@ -374,6 +375,11 @@ body[data-mode="code"] .code-bar.only-code { display: flex; }
   white-space: pre-wrap; max-height: 320px; overflow: auto; margin-bottom: 10px; }
 .confirm-diff .add { color: var(--green); }
 .confirm-diff .del { color: var(--stop); }
+/* 実行計画カード(承認で実行フェーズへ) */
+.plan-card { border-color: var(--green); }
+.plan-card .confirm-title { color: var(--green); }
+.plan-body { margin: 4px 0 10px; font-size: 13.5px; }
+.applied-diff { margin-top: 4px; }
 .confirm-actions { display: flex; gap: 8px; align-items: center; }
 .confirm-status { font-weight: 700; font-size: 13px; }
 .confirm-status.ok { color: var(--green); }

@@ -502,6 +502,7 @@ def api_agent(cid: str, body: AgentBody) -> Response:
     s = conv.get("settings") or {}
     workspace = (s.get("workspace") or "").strip()
     allow_changes = bool(s.get("allow_changes"))
+    plan_mode = bool(s.get("plan_mode", True))
     if not workspace:
         raise HTTPException(400, "作業フォルダが設定されていません。先にフォルダを選択してください。")
     ws = Path(workspace).expanduser()
@@ -551,11 +552,11 @@ def api_agent(cid: str, body: AgentBody) -> Response:
             _finish()
             return
 
-        log.info("エージェント開始 [conv=%s model=%s ws=%s allow=%s] 依頼=%s",
-                 cid, model, ws, allow_changes, content[:60])
+        log.info("エージェント開始 [conv=%s model=%s ws=%s allow=%s plan=%s] 依頼=%s",
+                 cid, model, ws, allow_changes, plan_mode, content[:60])
         acc_text: list[str] = []
         try:
-            for ev in agent.run_stream(model, ctx, str(ws.resolve()), allow_changes):
+            for ev in agent.run_stream(model, ctx, str(ws.resolve()), allow_changes, plan_mode):
                 if ev.get("type") == "assistant" and ev.get("text"):
                     acc_text.append(ev["text"])
                 yield sse(ev)
