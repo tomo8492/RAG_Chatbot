@@ -58,23 +58,56 @@ function toast(msg) {
   toastTimer = setTimeout(() => t.classList.add("hidden"), 3200);
 }
 
-/* ---------------- テーマ ---------------- */
-function applyTheme(theme) {
-  document.documentElement.setAttribute("data-theme", theme);
-  $("hl-light").disabled = theme === "dark";
-  $("hl-dark").disabled = theme !== "dark";
-  localStorage.setItem("theme", theme);
+/* ---------------- テーマ(Windows/OSの設定に追従) ----------------
+   themeMode: "system"(既定=OSに追従) | "light"(固定) | "dark"(固定) */
+const THEME_KEY = "themeMode";
+function systemTheme() {
+  return window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches
+    ? "dark" : "light";
+}
+function themePref() {
+  const v = localStorage.getItem(THEME_KEY);
+  return v === "light" || v === "dark" || v === "system" ? v : "system";
+}
+function applyTheme(pref) {
+  pref = pref === "light" || pref === "dark" || pref === "system" ? pref : "system";
+  localStorage.setItem(THEME_KEY, pref);
+  const eff = pref === "system" ? systemTheme() : pref;
+  document.documentElement.setAttribute("data-theme", eff);
+  $("hl-light").disabled = eff === "dark";
+  $("hl-dark").disabled = eff !== "dark";
+  const btn = $("theme-toggle");
+  if (btn) {
+    const meta = {
+      system: ["🌗", "テーマ: 自動(Windowsの設定に追従)"],
+      light: ["☀️", "テーマ: ライト(固定)"],
+      dark: ["🌙", "テーマ: ダーク(固定)"],
+    }[pref];
+    btn.textContent = meta[0];
+    btn.title = meta[1] + " ・ クリックで切替";
+  }
 }
 function toggleTheme() {
-  const cur = document.documentElement.getAttribute("data-theme");
-  applyTheme(cur === "dark" ? "light" : "dark");
+  const next = { system: "light", light: "dark", dark: "system" }[themePref()];
+  applyTheme(next);
+  toast(next === "system" ? "テーマ: 自動(Windowsの設定)"
+        : next === "light" ? "テーマ: ライト" : "テーマ: ダーク");
+}
+// OS(Windows)のライト/ダーク変更に追従(自動モードのときのみ)
+function watchSystemTheme() {
+  if (!window.matchMedia) return;
+  const mq = window.matchMedia("(prefers-color-scheme: dark)");
+  const handler = () => { if (themePref() === "system") applyTheme("system"); };
+  if (mq.addEventListener) mq.addEventListener("change", handler);
+  else if (mq.addListener) mq.addListener(handler); // 旧ブラウザ向け
 }
 
 /* ============================================================
    起動
    ============================================================ */
 async function init() {
-  applyTheme(localStorage.getItem("theme") || "light");
+  applyTheme(themePref());      // 既定はOS(Windows)設定に追従
+  watchSystemTheme();           // OS側の切替にライブで反応
   document.body.dataset.mode = State.mode;
   bindGlobalEvents();
   try {
