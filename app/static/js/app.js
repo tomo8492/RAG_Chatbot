@@ -819,6 +819,7 @@ function renderCodeSteps(container, steps) {
       case "tool_result": stepResultEls(ev.status, ev.result, ev.diff).forEach((e) => container.appendChild(e)); break;
       case "plan": container.appendChild(planStaticEl(ev.plan)); break;
       case "todos": todoEl = renderTodos(container, ev.todos, todoEl); break;
+      case "ask": container.appendChild(askStaticEl(ev.question, ev.options)); break;
     }
   });
 }
@@ -875,6 +876,7 @@ async function streamAgent(payload) {
           case "confirm": curText = null; logBox.appendChild(buildConfirmCard(ev)); scrollToBottom(); break;
           case "plan": curText = null; logBox.appendChild(buildPlanCard(ev)); scrollToBottom(); break;
           case "todos": curText = null; todoEl = renderTodos(logBox, ev.todos || [], todoEl); scrollToBottom(); break;
+          case "ask": curText = null; logBox.appendChild(buildAskCard(ev)); scrollToBottom(); break;
           case "error": addStepResult("rejected", "⚠ " + (ev.error || "エラー")); toast("エラー: " + (ev.error || "")); break;
           case "max_steps": addStepResult("blocked", "最大ステップ数に達しました。続けるには再度指示してください。"); break;
           case "done": case "user_saved": break;
@@ -892,15 +894,69 @@ async function streamAgent(payload) {
   }
 }
 
-// 未応答の承認カードを「拒否」としてサーバへ送り、待機中のエージェントを解放
+// 未応答のカードを解決してサーバ側の待機を解放(停止/切断時)
 function rejectOpenConfirms(box) {
   box.querySelectorAll(".confirm-card:not([data-resolved])").forEach((card) => {
     const aid = card.dataset.actionId;
-    if (aid) {
-      api("/api/code/approve", { method: "POST", body: JSON.stringify({ action_id: aid, approved: false }) })
-        .catch(() => {});
+    if (!aid) return;
+    if (card.dataset.kind === "ask") {
+      api("/api/code/answer", { method: "POST", body: JSON.stringify({ action_id: aid, answer: "" }) }).catch(() => {});
+    } else {
+      api("/api/code/approve", { method: "POST", body: JSON.stringify({ action_id: aid, approved: false }) }).catch(() => {});
     }
   });
+}
+
+// ユーザーへの質問カード(選択肢 + 自由記述)
+function buildAskCard(ev) {
+  const card = el("div", "confirm-card ask-card");
+  card.dataset.actionId = ev.action_id;
+  card.dataset.kind = "ask";
+  card.appendChild(el("div", "confirm-title", "❓ " + (ev.question || "どう進めますか?")));
+  const opts = el("div", "ask-options");
+  (ev.options || []).forEach((o) => {
+    const btn = el("button", "btn ask-opt", o);
+    btn.onclick = () => submitAnswer(card, ev.action_id, o);
+    opts.appendChild(btn);
+  });
+  if ((ev.options || []).length) card.appendChild(opts);
+  const row = el("div", "ask-free");
+  const input = el("input", "ask-input"); input.type = "text"; input.placeholder = "その他(自由に入力)…";
+  const send = el("button", "btn ask-send", "送信");
+  const submitFree = () => { const v = input.value.trim(); if (v) submitAnswer(card, ev.action_id, v); };
+  send.onclick = submitFree;
+  input.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); submitFree(); } });
+  row.appendChild(input); row.appendChild(send);
+  card.appendChild(row);
+  card.appendChild(el("div", "confirm-status ask-status"));
+  return card;
+}
+
+async function submitAnswer(card, actionId, answer) {
+  card.querySelectorAll("button").forEach((b) => (b.disabled = true));
+  const input = card.querySelector(".ask-input"); if (input) input.disabled = true;
+  const status = card.querySelector(".ask-status");
+  try {
+    await api("/api/code/answer", { method: "POST", body: JSON.stringify({ action_id: actionId, answer }) });
+    if (status) { status.textContent = "回答: " + answer; status.className = "confirm-status ask-status ok"; }
+    card.dataset.resolved = "1";
+  } catch (e) {
+    if (status) { status.textContent = "送信失敗: " + e.message; status.className = "confirm-status ask-status no"; }
+    card.querySelectorAll("button").forEach((b) => (b.disabled = false));
+    if (input) input.disabled = false;
+  }
+}
+
+// 保存済みステップ再表示用:質問(静的)
+function askStaticEl(question, options) {
+  const card = el("div", "confirm-card ask-card");
+  card.appendChild(el("div", "confirm-title", "❓ " + (question || "")));
+  if (options && options.length) {
+    const opts = el("div", "ask-options");
+    options.forEach((o) => opts.appendChild(el("span", "ask-opt-static", o)));
+    card.appendChild(opts);
+  }
+  return card;
 }
 
 function agentArgsSummary(name, args) {

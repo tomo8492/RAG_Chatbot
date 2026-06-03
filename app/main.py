@@ -478,6 +478,11 @@ class ApproveBody(BaseModel):
     approved: bool = False
 
 
+class AnswerBody(BaseModel):
+    action_id: str
+    answer: str = ""
+
+
 def _init_code_ctx(cid: str, ws: Path) -> list:
     """システム+作業フォルダ案内(+CLAUDE.md)+これまでのテキスト履歴から文脈を再構築。"""
     msgs: list = [
@@ -596,6 +601,9 @@ def api_agent(cid: str, body: AgentBody) -> Response:
                     steps.append({"type": "plan", "plan": ev.get("plan", "")})
                 elif t == "todos":
                     steps.append({"type": "todos", "todos": ev.get("todos", [])})
+                elif t == "ask":
+                    steps.append({"type": "ask", "question": ev.get("question", ""),
+                                  "options": ev.get("options", [])})
                 yield sse(ev)
         except GeneratorExit:
             log.info("エージェント停止(クライアント切断)[conv=%s]", cid)
@@ -616,6 +624,12 @@ def api_agent(cid: str, body: AgentBody) -> Response:
 @app.post("/api/code/approve", dependencies=[Depends(auth.require_auth)])
 def api_code_approve(body: ApproveBody) -> dict:
     ok = agent.resolve(body.action_id, body.approved)
+    return {"ok": ok}
+
+
+@app.post("/api/code/answer", dependencies=[Depends(auth.require_auth)])
+def api_code_answer(body: AnswerBody) -> dict:
+    ok = agent.resolve_answer(body.action_id, body.answer)
     return {"ok": ok}
 
 
