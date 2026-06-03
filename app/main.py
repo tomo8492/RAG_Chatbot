@@ -40,9 +40,6 @@ async def lifespan(app: FastAPI):
     log.info("認証: %s", "有効(パスワードあり)" if settings.auth_enabled else "無効(誰でもアクセス可)")
     log.info("アクセス制限(LAN_ONLY): %s",
              "有効(社内/ローカルネットワークのみ)" if settings.lan_only else "無効(全ネットワーク)")
-    if EXTRA_PRIVATE_NETWORKS:
-        log.info("社内追加レンジ(コード EXTRA_PRIVATE_NETWORKS): %s",
-                 ", ".join(str(n) for n in EXTRA_PRIVATE_NETWORKS))
     if settings.allowed_cidrs:
         log.info("追加許可ネットワーク(ALLOWED_CIDRS): %s",
                  ", ".join(str(n) for n in settings.allowed_cidrs))
@@ -62,34 +59,21 @@ app = FastAPI(title=settings.app_title, lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
-# RFC1918 のプライベートIPには該当しないが、社内ネットワークとして許可したいレンジ。
-# 標準のプライベート(10.x / 172.16〜31.x / 192.168.x)以外を社内で使う場合は、
-# ここへ手動で追記する(例: 172.36.x.x のような非標準レンジ)。
-#   ・必ずプレフィックスを付ける(/16=◯.◯.x.x だけ, /12=広め)
-#   ・strict=False なのでホストビットが立っていても可(例 172.36.5.0/16 でも追記可)
-EXTRA_PRIVATE_NETWORKS = [
-    ipaddress.ip_network("172.36.0.0/16", strict=False),
-]
-
-
-def _is_private_ip(ip) -> bool:
-    """RFC1918 のプライベートIP、または社内向けに追記したレンジに該当するか。"""
-    if ip.is_private:
-        return True
-    return any(ip.version == net.version and ip in net for net in EXTRA_PRIVATE_NETWORKS)
-
-
 def _ip_allowed(host: str | None) -> bool:
-    """ループバック / プライベート(+社内追加レンジ) / リンクローカル / ALLOWED_CIDRS で許可。"""
+    """ループバック / プライベートLAN / リンクローカル / 追加許可レンジで許可。
+
+    RFC1918 以外で社内として許可したいレンジ(例 172.36.x.x)は、コードに埋め込まず
+    .env の ALLOWED_CIDRS(git管理外=より安全)で指定する。
+    """
     if not host:
         return False
     try:
         ip = ipaddress.ip_address(host)
     except ValueError:
         return host == "localhost"
-    if ip.is_loopback or _is_private_ip(ip) or ip.is_link_local:
+    if ip.is_loopback or ip.is_private or ip.is_link_local:
         return True
-    for net in settings.allowed_cidrs:  # .env の ALLOWED_CIDRS による追加許可
+    for net in settings.allowed_cidrs:  # .env の ALLOWED_CIDRS による追加許可(社内の非標準レンジ等)
         if ip.version == net.version and ip in net:
             return True
     return False
