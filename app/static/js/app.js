@@ -866,6 +866,7 @@ async function streamAgent(payload) {
         if (!line) continue;
         let ev; try { ev = JSON.parse(line); } catch (_) { continue; }
         switch (ev.type) {
+          case "assistant_delta": if (ev.text) addText(ev.text); break;
           case "assistant": if (ev.text) addText(ev.text); break;
           case "tool_call": addStepCall(ev.name, ev.args || {}); break;
           case "tool_result": addStepResult(ev.status, ev.result || "", ev.diff); break;
