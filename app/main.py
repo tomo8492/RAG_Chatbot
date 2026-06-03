@@ -389,7 +389,9 @@ def api_generate(cid: str, body: GenerateBody) -> Response:
     strict_rag = bool(conv.get("active_indexes"))
     messages = llm.build_messages(eff["system_prompt"], history, hits, strict=strict_rag)
     use_vision = bool(image_b64s)
-    model = llm.resolve_installed(settings.vision_model) if use_vision else eff["model"]
+    # Vision/OCR モデルは設定(既定値)で選べる。未設定なら .env の VISION_MODEL を使用。
+    vision_model = (eff.get("vision_model") or settings.vision_model or "").strip()
+    model = llm.resolve_installed(vision_model) if use_vision else eff["model"]
     if use_vision and messages and messages[-1].get("role") == "user":
         messages[-1]["images"] = image_b64s
         if (messages[-1].get("content") or "").strip() in ("", "(画像)"):
@@ -406,12 +408,12 @@ def api_generate(cid: str, body: GenerateBody) -> Response:
                        "error": f"Ollama に接続できません({settings.ollama_host})。`ollama serve` を起動してください。"})
             return
         if use_vision:
-            if not settings.vision_model:
-                yield sse({"type": "error", "error": "画像を理解するにはVisionモデルが必要です。.env の VISION_MODEL を設定してください。"})
+            if not vision_model:
+                yield sse({"type": "error", "error": "画像を理解するにはVisionモデルが必要です。設定でVision/OCRモデルを選択してください。"})
                 return
-            if not llm.is_model_installed(settings.vision_model):
+            if not llm.is_model_installed(vision_model):
                 yield sse({"type": "error",
-                           "error": f"Visionモデル『{settings.vision_model}』が見つかりません。`ollama pull {settings.vision_model}` を実行してください。"})
+                           "error": f"Visionモデル『{vision_model}』が見つかりません。`ollama pull {vision_model}` を実行してください。"})
                 return
         if sources:
             yield sse({"type": "sources", "sources": sources})

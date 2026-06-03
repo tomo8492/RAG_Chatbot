@@ -195,11 +195,13 @@ async function loadModels() {
   } catch (_) { State.models = []; }
   fillModelSelect($("q-model"));
   fillModelSelect($("set-model"));
+  fillModelSelect($("set-vision-model"));
   if (!State.models.length) {
     const o = el("option", null, "(モデルなし — ollama pull が必要)");
     o.value = "";
     $("q-model").appendChild(o.cloneNode(true));
-    $("set-model").appendChild(o);
+    $("set-model").appendChild(o.cloneNode(true));
+    $("set-vision-model").appendChild(o);
   }
 }
 function fillModelSelect(sel) {
@@ -993,6 +995,7 @@ function hideDropOverlay() { $("drop-overlay").classList.add("hidden"); }
 function openSettings() {
   const d = State.defaults;
   setSelect($("set-model"), d.model);
+  setSelect($("set-vision-model"), d.vision_model);
   $("set-system").value = d.system_prompt || "";
   setSelect($("set-effort"), d.effort);
   bindRange("set-numpredict", "set-numpredict-val", d.num_predict);
@@ -1014,6 +1017,7 @@ function bindRange(id, valId, value) {
 async function saveSettings() {
   const patch = {
     model: $("set-model").value,
+    vision_model: $("set-vision-model").value,
     system_prompt: $("set-system").value,
     effort: $("set-effort").value,
     num_predict: parseInt($("set-numpredict").value),
