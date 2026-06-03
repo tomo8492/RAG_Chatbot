@@ -306,8 +306,26 @@ function syncQuickControls() {
   setSelect($("q-model"), eff.model);
   setSelect($("q-effort"), eff.effort);
   setSelect($("q-length"), String(eff.num_predict));
-  $("q-topk").value = eff.top_k;
-  $("q-topk-val").textContent = eff.top_k;
+  setTopkSeg(eff.top_k);
+}
+// 参照件数(top_k)のセグメント(タブ)の選択状態を更新
+function setTopkSeg(val) {
+  const seg = $("q-topk");
+  if (!seg) return;
+  let matched = false;
+  seg.querySelectorAll(".qseg-btn").forEach((b) => {
+    const on = String(b.dataset.v) === String(val);
+    if (on) matched = true;
+    b.classList.toggle("active", on);
+  });
+  // プリセット外の値(設定で任意指定)のときは最も近いものを強調
+  if (!matched) {
+    const btns = Array.from(seg.querySelectorAll(".qseg-btn"));
+    let best = btns[0], diff = Infinity;
+    btns.forEach((b) => { const d = Math.abs(parseInt(b.dataset.v) - (parseInt(val) || 0));
+      if (d < diff) { diff = d; best = b; } });
+    if (best) best.classList.add("active");
+  }
 }
 function setSelect(sel, val) {
   if (val == null) return;
@@ -1278,8 +1296,13 @@ function bindGlobalEvents() {
   $("q-model").onchange = (e) => pushQuick({ model: e.target.value });
   $("q-effort").onchange = (e) => pushQuick({ effort: e.target.value });
   $("q-length").onchange = (e) => pushQuick({ num_predict: parseInt(e.target.value) });
-  $("q-topk").oninput = (e) => { $("q-topk-val").textContent = e.target.value; };
-  $("q-topk").onchange = (e) => pushQuick({ top_k: parseInt(e.target.value) });
+  $("q-topk").querySelectorAll(".qseg-btn").forEach((b) => {
+    b.onclick = () => {
+      const v = parseInt(b.dataset.v);
+      setTopkSeg(v);
+      pushQuick({ top_k: v });
+    };
+  });
 
   // 設定モーダル
   $("open-settings").onclick = openSettings;

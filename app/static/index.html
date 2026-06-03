@@ -128,8 +128,14 @@
               </select>
             </div>
             <div class="quick only-chat">
-              <label>参照<span id="q-topk-val">5</span></label>
-              <input type="range" id="q-topk" min="0" max="15" value="5" class="mini-range" title="参照件数(top_k)" />
+              <label title="回答の根拠にする資料の最大件数。0で資料を参照しません">参照</label>
+              <div class="qseg" id="q-topk" role="group" aria-label="参照件数の上限">
+                <button type="button" class="qseg-btn" data-v="0" title="資料を参照しない">0</button>
+                <button type="button" class="qseg-btn" data-v="3" title="少なめ">3</button>
+                <button type="button" class="qseg-btn" data-v="5" title="標準">5</button>
+                <button type="button" class="qseg-btn" data-v="10" title="多め">10</button>
+                <button type="button" class="qseg-btn" data-v="15" title="最大">15</button>
+              </div>
             </div>
           </div>
           <div class="composer-input">
