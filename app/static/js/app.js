@@ -22,6 +22,7 @@ const State = {
   indexes: [],
   defaults: {},
   pendingAttachments: [],
+  pendingImages: [],
   streaming: false,
   controller: null,
 };
@@ -191,6 +192,7 @@ async function selectConversation(cid) {
   const conv = await api(`/api/conversations/${cid}`);
   State.current = conv;
   State.pendingAttachments = [];
+  State.pendingImages = [];
   renderAttachChips();
   renderConversationList();
   $("chat-title").value = conv.title || "新しい会話";
@@ -308,7 +310,15 @@ function renderMessage(m, isLastAssistant) {
     bubble.textContent = m.content;
     if (m.attachments && m.attachments.length) {
       const att = el("div", "attach-chips");
-      m.attachments.forEach((a) => att.appendChild(el("span", "chip", "📎 " + escapeHtml(a))));
+      m.attachments.forEach((a) => {
+        if (a && typeof a === "object" && a.type === "image" && a.file) {
+          const im = el("img", "msg-img");
+          im.src = "/api/uploads/" + encodeURIComponent(a.file);
+          att.appendChild(im);
+        } else {
+          att.appendChild(el("span", "chip", "📎 " + escapeHtml(a)));
+        }
+      });
       bubble.appendChild(att);
     }
     row.appendChild(bubble);
@@ -469,12 +479,15 @@ function scrollToBottom() {
 async function send() {
   if (State.streaming || !State.current) return;
   const text = $("input").value.trim();
-  if (!text) return;
+  if (!text && State.pendingImages.length === 0) return;
   $("input").value = "";
   autoResize();
 
   const attachments = State.pendingAttachments.slice();
+  const images = State.pendingImages.map((i) => i.dataUrl);
+  const imageThumbs = State.pendingImages.map((i) => i.dataUrl);
   State.pendingAttachments = [];
+  State.pendingImages = [];
   renderAttachChips();
 
   // welcome 除去
@@ -485,15 +498,16 @@ async function send() {
   const urow = el("div", "msg-row user");
   const bubble = el("div", "bubble");
   bubble.textContent = text;
-  if (attachments.length) {
+  if (attachments.length || imageThumbs.length) {
     const att = el("div", "attach-chips");
+    imageThumbs.forEach((src) => { const im = el("img", "msg-img"); im.src = src; att.appendChild(im); });
     attachments.forEach((a) => att.appendChild(el("span", "chip", "📎 " + escapeHtml(a))));
     bubble.appendChild(att);
   }
   urow.appendChild(bubble);
   $("messages").appendChild(urow);
 
-  await streamAssistant({ content: text, attachments, mode: "send" });
+  await streamAssistant({ content: text, attachments, images, mode: "send" });
   await loadConversations(); // タイトル更新反映
 }
 
@@ -631,6 +645,15 @@ async function handleFiles(files) {
 function renderAttachChips() {
   const box = $("attach-chips");
   box.innerHTML = "";
+  State.pendingImages.forEach((img, i) => {
+    const chip = el("span", "chip img-chip");
+    const im = el("img"); im.src = img.dataUrl; im.alt = img.name || "image";
+    chip.appendChild(im);
+    const x = el("span", "x", "✕");
+    x.onclick = () => { State.pendingImages.splice(i, 1); renderAttachChips(); };
+    chip.appendChild(x);
+    box.appendChild(chip);
+  });
   State.pendingAttachments.forEach((name, i) => {
     const chip = el("span", "chip", "📎 " + escapeHtml(name));
     const x = el("span", "x", "✕");
@@ -639,6 +662,43 @@ function renderAttachChips() {
     box.appendChild(chip);
   });
 }
+
+// 画像(スクショ等)を取り込む
+function addImageFile(file) {
+  if (!file.type || !file.type.startsWith("image/")) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    State.pendingImages.push({ dataUrl: reader.result, name: file.name || "screenshot.png" });
+    renderAttachChips();
+    toast("画像を添付しました");
+  };
+  reader.readAsDataURL(file);
+}
+
+// クリップボードから画像を貼り付け(スクショの Ctrl+V)
+function handlePaste(e) {
+  const items = (e.clipboardData && e.clipboardData.items) || [];
+  let found = false;
+  for (const it of items) {
+    if (it.type && it.type.startsWith("image/")) {
+      const f = it.getAsFile();
+      if (f) { addImageFile(f); found = true; }
+    }
+  }
+  if (found) e.preventDefault();
+}
+
+// ドロップされたファイルを画像 / 文書に振り分け
+function routeDroppedFiles(files) {
+  const arr = Array.from(files);
+  const imgs = arr.filter((f) => f.type && f.type.startsWith("image/"));
+  const docs = arr.filter((f) => !(f.type && f.type.startsWith("image/")));
+  imgs.forEach(addImageFile);
+  if (docs.length) handleFiles(docs);
+}
+
+function showDropOverlay() { $("drop-overlay").classList.remove("hidden"); }
+function hideDropOverlay() { $("drop-overlay").classList.add("hidden"); }
 
 /* ============================================================
    設定モーダル
@@ -867,10 +927,22 @@ function bindGlobalEvents() {
   $("attach-btn").onclick = () => $("file-input").click();
   $("file-input").addEventListener("change", (e) => handleFiles(e.target.files));
 
-  // ドラッグ&ドロップ
-  const main = $("main");
-  ["dragover", "drop"].forEach((evt) => main.addEventListener(evt, (e) => e.preventDefault()));
-  main.addEventListener("drop", (e) => { if (e.dataTransfer.files.length) handleFiles(e.dataTransfer.files); });
+  // スクショ等のペースト(Ctrl+V)
+  $("input").addEventListener("paste", handlePaste);
+
+  // ドラッグ&ドロップ(ウィンドウ全体で受け付け、オーバーレイ表示)
+  let dragDepth = 0;
+  const hasFiles = (e) => e.dataTransfer && Array.from(e.dataTransfer.types || []).includes("Files");
+  window.addEventListener("dragenter", (e) => { if (hasFiles(e)) { e.preventDefault(); dragDepth++; showDropOverlay(); } });
+  window.addEventListener("dragover", (e) => { if (hasFiles(e)) e.preventDefault(); });
+  window.addEventListener("dragleave", (e) => { dragDepth = Math.max(0, dragDepth - 1); if (dragDepth === 0) hideDropOverlay(); });
+  window.addEventListener("drop", (e) => {
+    e.preventDefault(); dragDepth = 0; hideDropOverlay();
+    if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length) {
+      if (!State.current) { toast("先に会話を開いてください"); return; }
+      routeDroppedFiles(e.dataTransfer.files);
+    }
+  });
 
   // クイック設定
   $("q-model").onchange = (e) => pushQuick({ model: e.target.value });

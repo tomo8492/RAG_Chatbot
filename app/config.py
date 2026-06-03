@@ -59,6 +59,8 @@ class Settings:
         # --- Ollama ---
         self.ollama_host: str = os.getenv("OLLAMA_HOST", "http://localhost:11434").strip()
         self.chat_model: str = os.getenv("CHAT_MODEL", "qwen3-32b:latest").strip()
+        # 画像(スクショ)付き質問のときに使う Vision モデル。qwen3 は画像非対応のため別指定。
+        self.vision_model: str = os.getenv("VISION_MODEL", "qwen2.5vl").strip()
 
         # --- 埋め込み ---
         self.embed_backend: str = os.getenv("EMBED_BACKEND", "sentence-transformers").strip().lower()
