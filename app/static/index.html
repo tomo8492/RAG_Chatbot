@@ -4,6 +4,18 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>社内文書アシスタント</title>
+  <!-- 既定はOS(Windows)のライト/ダーク設定に追従。描画前に適用してちらつきを防ぐ -->
+  <script>
+    (function () {
+      try {
+        var pref = localStorage.getItem("themeMode") || "system";
+        var dark = pref === "dark" ||
+          (pref !== "light" && window.matchMedia &&
+           window.matchMedia("(prefers-color-scheme: dark)").matches);
+        document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
+      } catch (e) {}
+    })();
+  </script>
   <link rel="stylesheet" href="/static/vendor/github.min.css" id="hl-light" />
   <link rel="stylesheet" href="/static/vendor/github-dark.min.css" id="hl-dark" disabled />
   <link rel="stylesheet" href="/static/css/style.css" />
