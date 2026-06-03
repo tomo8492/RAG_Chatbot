@@ -71,7 +71,7 @@ cp .env.example .env
 | `HOST` | `0.0.0.0` | `0.0.0.0`=他PCから可 / `127.0.0.1`=自分だけ |
 | `PORT` | `8000` | ポート番号 |
 | `CHAT_PASSWORD` | (空) | 設定するとログイン必須。**他PC公開時は必ず設定** |
-| `CHAT_MODEL` | `qwen3:8b` | 既定の生成モデル |
+| `CHAT_MODEL` | `qwen3-32b:latest` | 既定の生成モデル |
 | `OLLAMA_HOST` | `http://localhost:11434` | Ollama の場所 |
 | `EMBED_MODEL` | `intfloat/multilingual-e5-small` | 埋め込みモデル(日本語対応) |
 
@@ -102,7 +102,7 @@ python run.py
  このPC      : http://localhost:8000
  他のPCから  : http://192.168.x.x:8000
  認証        : 有効
- Ollama      : http://localhost:11434 / モデル qwen3:8b
+ Ollama      : http://localhost:11434 / モデル qwen3-32b:latest
 ========================================================
 ```
 
@@ -116,7 +116,7 @@ python run.py
 
 ```bash
 python chat_cli.py                       # 通常チャット(既定モデル)
-python chat_cli.py --model qwen3:8b      # モデル指定
+python chat_cli.py --model qwen3-32b:latest   # モデル指定
 python chat_cli.py --folder "C:\docs"    # フォルダを取り込んでRAGチャット
 python chat_cli.py --index <ID>          # 既存インデックスでRAGチャット
 ```
