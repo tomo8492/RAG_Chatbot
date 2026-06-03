@@ -5,6 +5,7 @@ config.py
 from __future__ import annotations
 
 import os
+import ipaddress
 import secrets
 from pathlib import Path
 
@@ -37,9 +38,12 @@ class Settings:
     def __init__(self) -> None:
         # --- サーバ ---
         self.host: str = os.getenv("HOST", "0.0.0.0").strip()
-        self.port: int = _int("PORT", 8000)
+        self.port: int = _int("PORT", 8800)
         # ローカルLAN/ループバック以外(=インターネット側のグローバルIP)からのアクセスを拒否
         self.lan_only: bool = _bool("LAN_ONLY", True)
+        # LAN_ONLY 有効時に、プライベートIPに加えて許可する追加ネットワーク(CIDR, カンマ区切り)。
+        # 社内が 172.36.x.x などの非標準レンジの場合に ALLOWED_CIDRS=172.36.0.0/16 のように指定する。
+        self.allowed_cidrs = self._parse_cidrs(os.getenv("ALLOWED_CIDRS", ""))
 
         # --- データ保存先 ---
         data_dir = os.getenv("DATA_DIR", "data").strip()
@@ -82,6 +86,20 @@ class Settings:
 
         # --- 表示 ---
         self.app_title: str = os.getenv("APP_TITLE", "社内文書アシスタント").strip()
+
+    @staticmethod
+    def _parse_cidrs(raw: str) -> list:
+        """カンマ区切りの CIDR/IP 文字列を ip_network のリストに変換(不正値は無視)。"""
+        nets = []
+        for part in (raw or "").split(","):
+            part = part.strip()
+            if not part:
+                continue
+            try:
+                nets.append(ipaddress.ip_network(part, strict=False))
+            except ValueError:
+                pass
+        return nets
 
     def _load_secret_key(self, env_value: str) -> str:
         """SECRET_KEY が指定されていなければ自動生成して data/secret.key に保存する。"""

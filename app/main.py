@@ -40,6 +40,9 @@ async def lifespan(app: FastAPI):
     log.info("認証: %s", "有効(パスワードあり)" if settings.auth_enabled else "無効(誰でもアクセス可)")
     log.info("アクセス制限(LAN_ONLY): %s",
              "有効(社内/ローカルネットワークのみ)" if settings.lan_only else "無効(全ネットワーク)")
+    if settings.allowed_cidrs:
+        log.info("追加許可ネットワーク(ALLOWED_CIDRS): %s",
+                 ", ".join(str(n) for n in settings.allowed_cidrs))
     if not settings.lan_only:
         log.warning("LAN_ONLY が無効です。社外からの接続を遮断するには .env の LAN_ONLY=true(既定)にしてください。")
     if not settings.auth_enabled:
@@ -57,14 +60,19 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
 def _ip_allowed(host: str | None) -> bool:
-    """ループバック / プライベートLAN / リンクローカルのみ許可。"""
+    """ループバック / プライベートLAN / リンクローカル / ALLOWED_CIDRS で許可。"""
     if not host:
         return False
     try:
         ip = ipaddress.ip_address(host)
     except ValueError:
         return host == "localhost"
-    return ip.is_loopback or ip.is_private or ip.is_link_local
+    if ip.is_loopback or ip.is_private or ip.is_link_local:
+        return True
+    for net in settings.allowed_cidrs:
+        if ip.version == net.version and ip in net:
+            return True
+    return False
 
 
 @app.middleware("http")
