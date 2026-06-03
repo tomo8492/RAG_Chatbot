@@ -21,7 +21,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import agent, auth, db, export, llm, rag
+from . import agent, auth, db, export, llm, rag, safety
 from .config import settings
 from .defaults import effective_for, get_defaults, set_defaults
 from .fsbrowse import count_supported_recursive, get_roots, list_dir
@@ -38,6 +38,14 @@ async def lifespan(app: FastAPI):
     db.init_db()
     log.info("===== %s 起動 =====", settings.app_title)
     log.info("認証: %s", "有効(パスワードあり)" if settings.auth_enabled else "無効(誰でもアクセス可)")
+    log.info("アクセス制限(LAN_ONLY): %s",
+             "有効(社内/ローカルネットワークのみ)" if settings.lan_only else "無効(全ネットワーク)")
+    if not settings.lan_only:
+        log.warning("LAN_ONLY が無効です。社外からの接続を遮断するには .env の LAN_ONLY=true(既定)にしてください。")
+    if not settings.auth_enabled:
+        log.warning("パスワード未設定です。ネットワーク内の誰でも利用でき、Code(コーディング"
+                    "エージェント)はサーバ上でコマンド実行・ファイル変更が可能になります。"
+                    ".env の CHAT_PASSWORD 設定を強く推奨します。")
     if not llm.is_ollama_available():
         log.warning("Ollama に接続できません(%s)。`ollama serve` を確認してください。",
                     settings.ollama_host)
@@ -195,6 +203,12 @@ def api_update_conversation(cid: str, body: ConvUpdate) -> dict:
     fields = {k: v for k, v in body.dict().items() if v is not None}
     # settings は部分マージ
     if "settings" in fields:
+        # Code の作業フォルダは安全なフォルダのみ許可(OS/システム等は不可)
+        ws = (fields["settings"] or {}).get("workspace")
+        if ws:
+            ok, reason = safety.check_workspace(ws)
+            if not ok:
+                raise HTTPException(400, f"このフォルダは作業フォルダに設定できません: {reason}")
         merged = dict(conv.get("settings") or {})
         merged.update(fields["settings"])
         fields["settings"] = merged
@@ -479,6 +493,10 @@ def api_agent(cid: str, body: AgentBody) -> Response:
     ws = Path(workspace).expanduser()
     if not ws.is_dir():
         raise HTTPException(400, f"作業フォルダが存在しません: {workspace}")
+    # 実行時にも再検証(設定後にフォルダが移動/変更された場合や、安全規則の更新に追従)
+    ok, reason = safety.check_workspace(workspace)
+    if not ok:
+        raise HTTPException(400, f"このフォルダでは実行できません: {reason}")
 
     content = (body.content or "").strip()
     if not content:
@@ -569,6 +587,10 @@ def api_list_indexes() -> list:
 def api_create_index(body: IndexCreate) -> dict:
     if not body.paths:
         raise HTTPException(400, "フォルダが指定されていません")
+    # OS/システムやアプリのデータ領域(secret.key 等)を資料として取り込ませない
+    for p in body.paths:
+        if safety.is_within_protected(p):
+            raise HTTPException(400, "OS・システムやアプリのデータ領域は資料に取り込めません")
     name = body.name or (Path(body.paths[0]).name or body.paths[0])
     idx = db.create_index(name, body.paths)
     _build_async(idx["id"], body.paths)

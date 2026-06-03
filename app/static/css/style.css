@@ -60,6 +60,7 @@ body {
   transition: filter .15s, background .15s;
 }
 .btn:hover { filter: brightness(.97); }
+.btn:disabled { opacity: .45; cursor: not-allowed; filter: none; }
 .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 .btn.primary:hover { background: var(--accent-dk); }
 .btn.stop { background: var(--stop); border-color: var(--stop); color: #fff; }
@@ -277,6 +278,8 @@ body {
 .fb-entry:hover { background: var(--panel); }
 .fb-entry.file { cursor: default; color: var(--ink-soft); }
 .fb-selected { margin-top: 12px; font-size: 13px; }
+.fb-note { margin-top: 8px; font-size: 12.5px; color: var(--stop); font-weight: 600;
+  background: rgba(181,72,58,.1); border: 1px solid var(--stop); border-radius: 8px; padding: 7px 10px; }
 
 /* トースト */
 .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
