@@ -357,7 +357,9 @@ def api_generate(cid: str, body: GenerateBody) -> Response:
                                 "score": round(h["score"], 3), "attachment": h["attachment"]})
 
     history = db.list_messages(cid)
-    messages = llm.build_messages(eff["system_prompt"], history, hits)
+    # 参照フォルダ(インデックス)を選択している会話は、その資料だけで回答する厳格モード。
+    strict_rag = bool(conv.get("active_indexes"))
+    messages = llm.build_messages(eff["system_prompt"], history, hits, strict=strict_rag)
     use_vision = bool(image_b64s)
     model = llm.resolve_installed(settings.vision_model) if use_vision else eff["model"]
     if use_vision and messages and messages[-1].get("role") == "user":
