@@ -5,19 +5,21 @@ FastAPI 本体。API ルートと SSE ストリーミング生成。
 from __future__ import annotations
 
 import json
+import re
 import threading
 import time
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
+from urllib.parse import quote
 
 from fastapi import Body, Cookie, Depends, FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import auth, db, llm, rag
+from . import auth, db, export, llm, rag
 from .config import settings
 from .defaults import effective_for, get_defaults, set_defaults
 from .fsbrowse import count_supported_recursive, get_roots, list_dir
@@ -412,6 +414,43 @@ def api_fs(path: Optional[str] = None) -> dict:
 @app.post("/api/fs/estimate", dependencies=[Depends(auth.require_auth)])
 def api_fs_estimate(paths: list[str] = Body(..., embed=True)) -> dict:
     return {"count": count_supported_recursive(paths)}
+
+
+# ============================================================
+#  ファイル出力(回答の保存)
+# ============================================================
+class ExportBody(BaseModel):
+    content: str
+    format: str = "md"        # md|txt|html|docx|xlsx|pptx|code
+    ext: Optional[str] = None  # format=code のときの拡張子(例: bas)
+    title: Optional[str] = "回答"
+
+
+def _safe_stem(title: str) -> str:
+    stem = re.sub(r"[\\/:*?\"<>|\n\r\t]", "", (title or "回答")).strip()
+    return (stem[:40] or "回答")
+
+
+@app.post("/api/export", dependencies=[Depends(auth.require_auth)])
+def api_export(body: ExportBody) -> Response:
+    try:
+        data, mime, ext = export.export_content(body.content, body.format, body.ext, body.title or "回答")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except ImportError as e:
+        raise HTTPException(500, f"変換に必要なライブラリが未導入です: {e}")
+    except Exception as e:
+        log.exception("エクスポート失敗")
+        raise HTTPException(500, f"変換に失敗しました: {e}")
+
+    fname = f"{_safe_stem(body.title or '回答')}.{ext}"
+    log.info("エクスポート: format=%s -> %s (%d bytes)", body.format, fname, len(data))
+    headers = {
+        "Content-Disposition": f"attachment; filename=\"export.{ext}\"; filename*=UTF-8''{quote(fname)}",
+        "X-Filename": quote(fname),
+        "Access-Control-Expose-Headers": "X-Filename",
+    }
+    return Response(content=data, media_type=mime, headers=headers)
 
 
 # ============================================================

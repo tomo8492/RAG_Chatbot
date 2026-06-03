@@ -348,11 +348,72 @@ function buildAssistantActions(refs, isLast) {
     navigator.clipboard.writeText(refs.row.dataset.raw || "").then(() => toast("コピーしました"));
   };
   refs.actions.appendChild(copy);
+  refs.actions.appendChild(makeSaveMenu(() => refs.row.dataset.raw || ""));
   if (isLast) {
     const regen = el("button", null, "↻ 再生成");
     regen.onclick = () => regenerate();
     refs.actions.appendChild(regen);
   }
+}
+
+/* ---------- 保存(ファイル出力) ---------- */
+const SAVE_FORMATS = [
+  ["Markdown (.md)", "md"], ["テキスト (.txt)", "txt"], ["HTML (.html)", "html"],
+  ["Word (.docx)", "docx"], ["Excel (.xlsx)", "xlsx"], ["PowerPoint (.pptx)", "pptx"],
+];
+function currentTitle() { return (State.current && State.current.title) || "回答"; }
+
+function makeSaveMenu(getContent) {
+  const wrap = el("span", "save-wrap");
+  const btn = el("button", null, "⬇ 保存 ▾");
+  const menu = el("div", "save-menu hidden");
+  SAVE_FORMATS.forEach(([label, fmt]) => {
+    const item = el("div", "save-item", label);
+    item.onclick = (e) => {
+      e.stopPropagation();
+      menu.classList.add("hidden");
+      exportContent(getContent(), fmt, null, currentTitle());
+    };
+    menu.appendChild(item);
+  });
+  btn.onclick = (e) => {
+    e.stopPropagation();
+    document.querySelectorAll(".save-menu").forEach((m) => { if (m !== menu) m.classList.add("hidden"); });
+    menu.classList.toggle("hidden");
+  };
+  wrap.appendChild(btn);
+  wrap.appendChild(menu);
+  return wrap;
+}
+
+const LANG_EXT = {
+  html: "html", xml: "xml", javascript: "js", js: "js", typescript: "ts", ts: "ts",
+  python: "py", py: "py", json: "json", css: "css", bash: "sh", sh: "sh", shell: "sh",
+  sql: "sql", java: "java", c: "c", cpp: "cpp", "c++": "cpp", csharp: "cs", cs: "cs",
+  go: "go", rust: "rs", php: "php", ruby: "rb", yaml: "yaml", yml: "yaml",
+  markdown: "md", md: "md", vb: "bas", vba: "bas", vbnet: "bas", basic: "bas", vbscript: "bas",
+};
+function extForLang(l) { return LANG_EXT[(l || "").toLowerCase()] || "txt"; }
+
+async function exportContent(content, fmt, ext, title) {
+  if (!content || !content.trim()) { toast("内容が空です"); return; }
+  try {
+    const res = await fetch("/api/export", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content, format: fmt, ext, title }),
+    });
+    if (res.status === 401) { showLogin(); throw new Error("認証が必要です"); }
+    if (!res.ok) { let d; try { d = (await res.json()).detail; } catch (_) {} throw new Error(d || "変換に失敗"); }
+    const blob = await res.blob();
+    let fname = "download." + (ext || fmt);
+    const xf = res.headers.get("X-Filename");
+    if (xf) { try { fname = decodeURIComponent(xf); } catch (_) { fname = xf; } }
+    const url = URL.createObjectURL(blob);
+    const a = el("a"); a.href = url; a.download = fname;
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+    toast("保存しました: " + fname);
+  } catch (e) { toast("保存失敗: " + e.message); }
 }
 
 function renderSources(container, sources) {
@@ -381,9 +442,15 @@ function enhanceCode(container) {
     code.classList.forEach((c) => { if (c.startsWith("language-")) lang = c.slice(9); });
     const head = el("div", "code-head");
     head.appendChild(el("span", null, lang));
+    const right = el("span");
+    right.style.display = "flex"; right.style.gap = "10px";
+    const dl = el("button", "code-copy", "⬇ ." + extForLang(lang));
+    dl.title = "コードをダウンロード";
+    dl.onclick = () => exportContent(code.textContent, "code", extForLang(lang), lang || "code");
     const btn = el("button", "code-copy", "コピー");
     btn.onclick = () => navigator.clipboard.writeText(code.textContent).then(() => toast("コピーしました"));
-    head.appendChild(btn);
+    right.appendChild(dl); right.appendChild(btn);
+    head.appendChild(right);
     pre.insertBefore(head, code);
   });
 }
@@ -811,6 +878,10 @@ function bindGlobalEvents() {
   $("add-kb").onclick = openFolderBrowser;
   // フォルダ
   $("fb-pick").onclick = pickFolder;
+
+  // 保存メニューを外側クリックで閉じる
+  document.addEventListener("click", () =>
+    document.querySelectorAll(".save-menu").forEach((m) => m.classList.add("hidden")));
 
   // モーダル閉じる
   document.querySelectorAll(".close-modal").forEach((b) =>

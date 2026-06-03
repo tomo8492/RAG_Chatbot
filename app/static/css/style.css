@@ -195,6 +195,13 @@ body {
 .msg-actions button { background: transparent; border: 1px solid var(--line); color: var(--ink-soft);
   border-radius: 7px; padding: 3px 9px; font-size: 12px; cursor: pointer; }
 .msg-actions button:hover { background: var(--line); color: var(--ink); }
+/* 保存メニュー */
+.save-wrap { position: relative; display: inline-block; }
+.save-menu { position: absolute; bottom: 110%; left: 0; z-index: 20; background: var(--card);
+  border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow); padding: 4px;
+  min-width: 160px; }
+.save-item { padding: 7px 12px; border-radius: 7px; font-size: 13px; cursor: pointer; white-space: nowrap; color: var(--ink); }
+.save-item:hover { background: var(--line); }
 .cursor-blink::after { content: "▍"; color: var(--accent); animation: blink 1s steps(2) infinite; }
 @keyframes blink { 0%,50% { opacity: 1; } 50.01%,100% { opacity: 0; } }
 
