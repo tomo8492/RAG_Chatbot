@@ -10,6 +10,7 @@ import string
 import time
 from pathlib import Path
 
+from . import safety
 from .loaders import SUPPORTED_EXTS
 from .logging_setup import get_logger
 
@@ -85,12 +86,16 @@ def list_dir(path: str | None) -> dict:
     files.sort(key=lambda f: f["name"].lower())
 
     parent = str(p.parent) if p.parent != p else None
+    ws_ok, ws_reason = safety.check_workspace(str(p))
     return {
         "path": str(p),
         "parent": parent,
         "dirs": dirs,
         "files": files,
         "supported_here": len(files),
+        # Code の作業フォルダに選べるか(安全管理)。RAG資料の選択には影響しない。
+        "workspace_ok": ws_ok,
+        "workspace_reason": ws_reason,
     }
 
 

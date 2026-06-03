@@ -24,6 +24,7 @@ from typing import Iterator, Optional
 
 import ollama
 
+from . import safety
 from .config import settings
 from .logging_setup import get_logger
 
@@ -81,6 +82,10 @@ def _safe_path(ws: Path, rel: str) -> Path:
     p = (ws / rel).resolve()
     if p != ws and ws not in p.parents:
         raise ValueError(f"作業フォルダ外は操作できません: {rel}")
+    # 作業フォルダ配下でも、OS/システムやアプリのデータ領域は触らせない
+    # (作業フォルダがそれらの親に当たる場合の保険)
+    if safety.is_within_protected(p):
+        raise ValueError(f"保護されたフォルダのため操作できません: {rel}")
     return p
 
 

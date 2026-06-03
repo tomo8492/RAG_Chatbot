@@ -1058,11 +1058,14 @@ async function deleteIndex(iid) {
 /* ============================================================
    フォルダブラウザ
    ============================================================ */
-const FB = { path: null, selected: null, purpose: "index" };
+const FB = { path: null, selected: null, purpose: "index", wsOk: true, wsReason: "" };
 
 async function openFolderBrowser(purpose) {
   FB.purpose = purpose || "index";
+  FB.selected = null;
   $("fb-pick").textContent = FB.purpose === "workspace" ? "このフォルダを使う" : "このフォルダを追加";
+  $("fb-pick").disabled = true;
+  $("fb-note").classList.add("hidden");
   $("folder-modal").classList.remove("hidden");
   try {
     const { roots } = await api("/api/fs/roots");
@@ -1084,7 +1087,9 @@ async function fbNavigate(path) {
     $("fb-path").textContent = data.path;
     $("fb-path-input").value = data.path;
     $("fb-current").textContent = data.path;
-    $("fb-pick").disabled = false;
+    FB.wsOk = data.workspace_ok !== false;
+    FB.wsReason = data.workspace_reason || "";
+    applyPickGate();
 
     const list = $("fb-list"); list.innerHTML = "";
     if (data.parent) {
@@ -1112,7 +1117,26 @@ async function fbNavigate(path) {
     // 失敗時は一覧領域にエラーを表示(クリックが効いていることが分かるように)
     const list = $("fb-list"); list.innerHTML = "";
     list.appendChild(el("div", "fb-entry file", "⚠ " + escapeHtml(e.message)));
+    FB.selected = null; applyPickGate();
     toast(e.message);
+  }
+}
+
+// 「このフォルダを使う/追加」ボタンの有効・無効と注意書きを更新
+function applyPickGate() {
+  const note = $("fb-note");
+  if (FB.purpose === "workspace") {
+    const ok = !!FB.selected && FB.wsOk !== false;
+    $("fb-pick").disabled = !ok;
+    if (FB.selected && FB.wsOk === false) {
+      note.textContent = "⚠ " + (FB.wsReason || "このフォルダは作業フォルダに使えません");
+      note.classList.remove("hidden");
+    } else {
+      note.textContent = ""; note.classList.add("hidden");
+    }
+  } else {
+    note.textContent = ""; note.classList.add("hidden");
+    $("fb-pick").disabled = !FB.selected;
   }
 }
 
