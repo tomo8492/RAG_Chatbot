@@ -905,7 +905,8 @@ function rejectOpenConfirms(box) {
 function agentArgsSummary(name, args) {
   if (name === "write_file") return `${args.path || ""} (${args.length || 0}字)`;
   if (name === "edit_file") return args.path || "";
-  if (name === "run_command") return args.command || "";
+  if (name === "run_command" || name === "run_background") return args.command || "";
+  if (name === "command_output" || name === "stop_command") return "job " + (args.job_id || "");
   if (name === "read_file") return args.path || "";
   if (name === "glob" || name === "grep") return args.pattern || "";
   return "";
@@ -937,9 +938,11 @@ function trimResult(s) {
 function buildConfirmCard(ev) {
   const card = el("div", "confirm-card");
   card.dataset.actionId = ev.action_id;
-  const isCmd = ev.name === "run_command";
-  card.appendChild(el("div", "confirm-title",
-    isCmd ? "⚠ このコマンドを実行しますか?" : "⚠ このファイル変更を適用しますか?"));
+  const isCmd = ev.name === "run_command" || ev.name === "run_background";
+  const title = ev.name === "run_background" ? "⚠ このコマンドをバックグラウンド実行しますか?"
+    : ev.name === "run_command" ? "⚠ このコマンドを実行しますか?"
+    : "⚠ このファイル変更を適用しますか?";
+  card.appendChild(el("div", "confirm-title", title));
   if (isCmd) {
     card.appendChild(el("div", "confirm-cmd", "$ " + escapeHtml(ev.command || "")));
   } else {

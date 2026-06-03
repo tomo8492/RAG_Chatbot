@@ -535,6 +535,12 @@ def api_agent(cid: str, body: AgentBody) -> Response:
         _code_running.add(cid)
 
     user_msg = db.add_message(cid, "user", content)
+    # 文脈が大きくなっていれば自動圧縮(古い履歴を要約に置換)してから依頼を追加
+    try:
+        if agent.compact_ctx_with_model(model, ctx):
+            log.info("文脈を自動圧縮しました [conv=%s]", cid)
+    except Exception:
+        log.exception("文脈圧縮に失敗(無視して続行)")
     ctx.append({"role": "user", "content": content})
     if conv.get("title") in (None, "", "新しい会話", "新しいコード"):
         title = content.splitlines()[0][:30] if content.strip() else "コード"
