@@ -1,0 +1,16 @@
+{
+  // VSCode / Cursor で F5(実行・デバッグ)を押したとき、
+  // どのタブを開いていても必ず run.py を起動します。
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "RAG Chatbot を起動",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/run.py",
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "justMyCode": true
+    }
+  ]
+}

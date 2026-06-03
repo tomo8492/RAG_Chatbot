@@ -83,6 +83,16 @@ cp .env.example .env
 python run.py
 ```
 
+### Windows の場合(かんたん)
+
+- **`start.bat` をダブルクリック**すると、必要なパッケージのインストールと起動をまとめて行います。
+- または、フォルダで「ターミナルを開く」→ `python run.py`(`python` が無ければ `py run.py`)。
+- VSCode / Cursor を使う場合は、`F5`(実行)で常に `run.py` が起動するよう設定済みです。
+
+> ⚠️ IDEの「実行」ボタンは、**開いているタブのファイル**を実行します。出力パネルや
+> `run.py` 以外のタブを開いたまま実行すると `FileNotFoundError` になります。
+> その場合は `start.bat` か、ターミナルで `python run.py` を使ってください。
+
 起動するとターミナルにアクセスURLが表示されます:
 
 ```
