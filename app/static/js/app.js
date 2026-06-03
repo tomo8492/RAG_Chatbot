@@ -11,6 +11,9 @@ const el = (tag, cls, html) => {
   return e;
 };
 
+// ブランドアイコン(チャットバブル)
+const LOGO_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>';
+
 const State = {
   config: null,
   conversations: [],
@@ -291,7 +294,7 @@ function renderMessages(messages) {
 
 function buildWelcome() {
   const w = el("div", "welcome");
-  w.innerHTML = `<div class="brand-big"><span class="dot">✻</span></div>
+  w.innerHTML = `<div class="brand-big"><span class="dot">${LOGO_SVG}</span></div>
     <h2>こんにちは</h2>
     <p class="muted">参照資料フォルダを選んで質問するか、そのまま会話を始められます。<br/>
     ファイルを添付して内容について質問することもできます。</p>`;
@@ -323,7 +326,7 @@ function renderMessage(m, isLastAssistant) {
 function createAssistantRow() {
   const row = el("div", "msg-row assistant");
   row.innerHTML = `
-    <div class="avatar">✻</div>
+    <div class="avatar">${LOGO_SVG}</div>
     <div class="msg-body">
       <details class="thinking hidden"><summary>💭 思考過程</summary><div class="think-text"></div></details>
       <div class="md"></div>
@@ -781,6 +784,7 @@ async function fbNavigate(path) {
     FB.path = data.path;
     FB.selected = data.path;
     $("fb-path").textContent = data.path;
+    $("fb-path-input").value = data.path;
     $("fb-current").textContent = data.path;
     $("fb-pick").disabled = false;
 
@@ -804,9 +808,14 @@ async function fbNavigate(path) {
     // 再帰件数の見積り
     $("fb-count").textContent = "…";
     api("/api/fs/estimate", { method: "POST", body: JSON.stringify({ paths: [data.path] }) })
-      .then((r) => { $("fb-count").textContent = `対応ファイル ${r.count} 件`; })
+      .then((r) => { $("fb-count").textContent = `対応ファイル ${r.count}${r.capped ? "以上" : ""} 件`; })
       .catch(() => { $("fb-count").textContent = ""; });
-  } catch (e) { toast(e.message); }
+  } catch (e) {
+    // 失敗時は一覧領域にエラーを表示(クリックが効いていることが分かるように)
+    const list = $("fb-list"); list.innerHTML = "";
+    list.appendChild(el("div", "fb-entry file", "⚠ " + escapeHtml(e.message)));
+    toast(e.message);
+  }
 }
 
 async function pickFolder() {
@@ -878,6 +887,10 @@ function bindGlobalEvents() {
   $("add-kb").onclick = openFolderBrowser;
   // フォルダ
   $("fb-pick").onclick = pickFolder;
+  $("fb-go").onclick = () => fbNavigate($("fb-path-input").value.trim());
+  $("fb-path-input").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); fbNavigate($("fb-path-input").value.trim()); }
+  });
 
   // 保存メニューを外側クリックで閉じる
   document.addEventListener("click", () =>

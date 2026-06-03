@@ -4,6 +4,7 @@ FastAPI 本体。API ルートと SSE ストリーミング生成。
 """
 from __future__ import annotations
 
+import ipaddress
 import json
 import re
 import threading
@@ -44,6 +45,31 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title=settings.app_title, lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+
+def _ip_allowed(host: str | None) -> bool:
+    """ループバック / プライベートLAN / リンクローカルのみ許可。"""
+    if not host:
+        return False
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return host == "localhost"
+    return ip.is_loopback or ip.is_private or ip.is_link_local
+
+
+@app.middleware("http")
+async def _lan_guard(request, call_next):
+    if settings.lan_only:
+        client = request.client
+        host = client.host if client else None
+        if not _ip_allowed(host):
+            log.warning("LAN外からのアクセスを拒否: %s", host)
+            return JSONResponse(
+                {"detail": "このネットワークからはアクセスできません(LAN制限が有効です)"},
+                status_code=403,
+            )
+    return await call_next(request)
 
 
 # ============================================================
@@ -409,11 +435,15 @@ def api_fs(path: Optional[str] = None) -> dict:
         raise HTTPException(404, str(e))
     except PermissionError as e:
         raise HTTPException(403, str(e))
+    except Exception as e:
+        log.exception("フォルダ一覧取得失敗: %s", path)
+        raise HTTPException(400, f"このフォルダは開けません: {e}")
 
 
 @app.post("/api/fs/estimate", dependencies=[Depends(auth.require_auth)])
 def api_fs_estimate(paths: list[str] = Body(..., embed=True)) -> dict:
-    return {"count": count_supported_recursive(paths)}
+    count, capped = count_supported_recursive(paths)
+    return {"count": count, "capped": capped}
 
 
 # ============================================================
