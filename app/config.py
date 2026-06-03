@@ -38,6 +38,8 @@ class Settings:
         # --- サーバ ---
         self.host: str = os.getenv("HOST", "0.0.0.0").strip()
         self.port: int = _int("PORT", 8000)
+        # ローカルLAN/ループバック以外(=インターネット側のグローバルIP)からのアクセスを拒否
+        self.lan_only: bool = _bool("LAN_ONLY", True)
 
         # --- データ保存先 ---
         data_dir = os.getenv("DATA_DIR", "data").strip()
