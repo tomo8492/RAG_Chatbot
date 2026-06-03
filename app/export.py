@@ -9,6 +9,7 @@ from __future__ import annotations
 import html as _html
 import io
 import re
+from datetime import datetime
 
 from .logging_setup import get_logger
 
@@ -162,41 +163,120 @@ def _inline_runs(text: str) -> list[tuple[str, dict]]:
 # ============================================================
 #  各形式レンダラ
 # ============================================================
+_HTML_CSS = """
+:root{
+  --ink:#1f2328; --muted:#5b6570; --accent:#3b5bdb; --accent-soft:rgba(59,91,219,.08);
+  --line:#e7e9ee; --soft:#f6f8fb; --zebra:#fafbfd; --paper:#ffffff;
+  --radius:10px; --maxw:820px;
+  --sans:"Yu Gothic UI","Hiragino Kaku Gothic ProN","Hiragino Sans",Meiryo,system-ui,
+    -apple-system,"Segoe UI",Roboto,sans-serif;
+  --mono:ui-monospace,"SFMono-Regular",Consolas,"Courier New",monospace;
+}
+*{box-sizing:border-box;}
+html{-webkit-text-size-adjust:100%;}
+body{margin:0;background:#eef0f3;color:var(--ink);font-family:var(--sans);
+  font-size:16px;line-height:1.85;font-feature-settings:"palt";}
+.sheet{max-width:var(--maxw);margin:32px auto;background:var(--paper);
+  padding:56px 64px;border:1px solid var(--line);border-radius:var(--radius);
+  box-shadow:0 1px 3px rgba(0,0,0,.05),0 14px 32px rgba(20,30,60,.07);}
+.doc-header{margin:0 0 32px;padding-bottom:16px;border-bottom:2px solid var(--accent);}
+.doc-title{font-size:28px;font-weight:800;line-height:1.35;margin:0;letter-spacing:.01em;}
+.doc-date{color:var(--muted);font-size:13px;margin-top:10px;}
+.doc-body>*:first-child{margin-top:0;}
+h1,h2,h3,h4{line-height:1.4;font-weight:700;}
+h1{font-size:23px;margin:1.8em 0 .6em;padding-bottom:.3em;border-bottom:1px solid var(--line);}
+h2{font-size:19.5px;margin:1.7em 0 .5em;padding-left:12px;border-left:4px solid var(--accent);}
+h3{font-size:16.5px;margin:1.5em 0 .4em;color:#2b3138;}
+h4{font-size:15px;margin:1.3em 0 .3em;color:var(--muted);}
+p{margin:.9em 0;}
+ul,ol{margin:.7em 0;padding-left:1.6em;}
+li{margin:.35em 0;}
+li::marker{color:var(--accent);}
+a{color:var(--accent);text-decoration:none;border-bottom:1px solid transparent;}
+a:hover{border-bottom-color:currentColor;}
+strong{font-weight:700;}
+blockquote{margin:1.1em 0;padding:12px 18px;border-left:4px solid var(--accent);
+  background:var(--accent-soft);border-radius:0 8px 8px 0;color:#39414b;}
+blockquote p{margin:.3em 0;}
+hr{border:none;border-top:1px solid var(--line);margin:2em 0;}
+:not(pre)>code{font-family:var(--mono);font-size:.86em;background:var(--accent-soft);
+  color:#33373d;padding:.15em .42em;border-radius:5px;}
+pre{background:var(--soft);border:1px solid var(--line);border-radius:10px;
+  padding:14px 16px;overflow-x:auto;margin:1.1em 0;}
+pre code{font-family:var(--mono);font-size:13.5px;line-height:1.6;color:#1f2328;}
+.table-wrap{overflow-x:auto;margin:1.2em 0;}
+table{width:100%;border-collapse:separate;border-spacing:0;font-size:14.5px;
+  border:1px solid var(--line);border-radius:8px;overflow:hidden;}
+th,td{padding:9px 14px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top;}
+th{background:var(--soft);font-weight:700;white-space:nowrap;}
+tbody tr:nth-child(even){background:var(--zebra);}
+tbody tr:last-child td{border-bottom:none;}
+.doc-footer{margin-top:40px;padding-top:14px;border-top:1px solid var(--line);
+  color:var(--muted);font-size:12px;text-align:right;}
+@media (max-width:640px){.sheet{margin:0;border:none;border-radius:0;padding:28px 20px;}}
+@media print{
+  body{background:#fff;}
+  .sheet{margin:0;max-width:none;border:none;border-radius:0;box-shadow:none;padding:0;}
+  h1,h2,h3,h4{break-after:avoid;}
+  table,pre,blockquote,img{break-inside:avoid;}
+  .doc-footer{display:none;}
+}
+""".strip()
+
+
 def to_html(md: str, title: str = "回答") -> bytes:
     blocks = parse_blocks(md)
-    parts = [f"""<!DOCTYPE html><html lang="ja"><head><meta charset="UTF-8">
-<title>{_html.escape(title)}</title><style>
-body{{font-family:"Yu Gothic UI","Hiragino Kaku Gothic ProN",Meiryo,sans-serif;
-max-width:820px;margin:40px auto;padding:0 20px;line-height:1.8;color:#2B2A27;}}
-h1,h2,h3{{line-height:1.4;}} code{{background:#F6F4EE;padding:2px 6px;border-radius:5px;
-font-family:Consolas,monospace;}} pre{{background:#F6F4EE;border:1px solid #E3DFD3;
-border-radius:10px;padding:14px;overflow-x:auto;}} pre code{{background:none;padding:0;}}
-table{{border-collapse:collapse;width:100%;margin:12px 0;}}
-th,td{{border:1px solid #E3DFD3;padding:7px 11px;text-align:left;}} th{{background:#FAF9F5;}}
-blockquote{{border-left:3px solid #D97757;margin:10px 0;padding:2px 14px;color:#6E6B63;}}
-</style></head><body>"""]
+    # 先頭の見出しがタイトルと同じなら重複を避けて省く
+    if blocks and blocks[0]["type"] == "heading" and \
+            _strip_inline(blocks[0]["text"]).strip() == (title or "").strip():
+        blocks = blocks[1:]
+
+    body: list[str] = []
     for b in blocks:
         t = b["type"]
         if t == "heading":
-            lv = min(b["level"], 6)
-            parts.append(f"<h{lv}>{_inline_html(b['text'])}</h{lv}>")
+            lv = min(b["level"], 4)
+            body.append(f"<h{lv}>{_inline_html(b['text'])}</h{lv}>")
         elif t == "paragraph":
-            parts.append(f"<p>{_inline_html(b['text']).replace(chr(10), '<br>')}</p>")
+            body.append(f"<p>{_inline_html(b['text']).replace(chr(10), '<br>')}</p>")
         elif t == "list":
             tag = "ol" if b["ordered"] else "ul"
             items = "".join(f"<li>{_inline_html(it)}</li>" for it in b["items"])
-            parts.append(f"<{tag}>{items}</{tag}>")
+            body.append(f"<{tag}>{items}</{tag}>")
         elif t == "code":
-            parts.append(f"<pre><code>{_html.escape(b['text'])}</code></pre>")
+            body.append(f"<pre><code>{_html.escape(b['text'])}</code></pre>")
         elif t == "quote":
-            parts.append(f"<blockquote>{_inline_html(b['text']).replace(chr(10), '<br>')}</blockquote>")
+            body.append(f"<blockquote>{_inline_html(b['text']).replace(chr(10), '<br>')}</blockquote>")
         elif t == "table":
             head = "".join(f"<th>{_inline_html(c)}</th>" for c in b["header"])
             rows = "".join("<tr>" + "".join(f"<td>{_inline_html(c)}</td>" for c in r) + "</tr>"
                            for r in b["rows"])
-            parts.append(f"<table><thead><tr>{head}</tr></thead><tbody>{rows}</tbody></table>")
-    parts.append("</body></html>")
-    return "\n".join(parts).encode("utf-8")
+            body.append(f'<div class="table-wrap"><table><thead><tr>{head}</tr></thead>'
+                        f"<tbody>{rows}</tbody></table></div>")
+
+    date = datetime.now().strftime("%Y年%m月%d日")
+    doc = f"""<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{_html.escape(title)}</title>
+<style>{_HTML_CSS}</style>
+</head>
+<body>
+<main class="sheet">
+<header class="doc-header">
+<h1 class="doc-title">{_html.escape(title)}</h1>
+<div class="doc-date">{date}</div>
+</header>
+<div class="doc-body">
+{chr(10).join(body)}
+</div>
+<footer class="doc-footer">社内文書アシスタントで作成</footer>
+</main>
+</body>
+</html>"""
+    return doc.encode("utf-8")
 
 
 def to_docx(md: str, title: str = "回答") -> bytes:
