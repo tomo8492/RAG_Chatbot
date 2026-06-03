@@ -1,0 +1,94 @@
+"""
+config.py
+環境変数 / .env から設定を読み込む。アプリ全体で共有する設定オブジェクトを提供する。
+"""
+from __future__ import annotations
+
+import os
+import secrets
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+# プロジェクトルート( app/ の1つ上 )
+ROOT_DIR = Path(__file__).resolve().parent.parent
+
+# .env を読み込む(存在すれば)
+load_dotenv(ROOT_DIR / ".env")
+
+
+def _bool(name: str, default: bool) -> bool:
+    v = os.getenv(name)
+    if v is None:
+        return default
+    return v.strip().lower() in ("1", "true", "yes", "on")
+
+
+def _int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, "").strip())
+    except (ValueError, AttributeError):
+        return default
+
+
+class Settings:
+    """アプリ設定。起動時に1度だけ生成する。"""
+
+    def __init__(self) -> None:
+        # --- サーバ ---
+        self.host: str = os.getenv("HOST", "0.0.0.0").strip()
+        self.port: int = _int("PORT", 8000)
+
+        # --- データ保存先 ---
+        data_dir = os.getenv("DATA_DIR", "data").strip()
+        self.data_dir: Path = (ROOT_DIR / data_dir) if not os.path.isabs(data_dir) else Path(data_dir)
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+
+        self.db_path: Path = self.data_dir / "app.db"
+        self.chroma_dir: Path = self.data_dir / "chroma"
+        self.upload_dir: Path = self.data_dir / "uploads"
+        self.upload_dir.mkdir(parents=True, exist_ok=True)
+
+        # --- 認証 ---
+        self.password: str = os.getenv("CHAT_PASSWORD", "").strip()
+        self.auth_enabled: bool = bool(self.password)
+        self.secret_key: str = self._load_secret_key(os.getenv("SECRET_KEY", "").strip())
+
+        # --- Ollama ---
+        self.ollama_host: str = os.getenv("OLLAMA_HOST", "http://localhost:11434").strip()
+        self.chat_model: str = os.getenv("CHAT_MODEL", "qwen3:8b").strip()
+
+        # --- 埋め込み ---
+        self.embed_backend: str = os.getenv("EMBED_BACKEND", "sentence-transformers").strip().lower()
+        default_embed = (
+            "intfloat/multilingual-e5-small"
+            if self.embed_backend == "sentence-transformers"
+            else "nomic-embed-text"
+        )
+        self.embed_model: str = os.getenv("EMBED_MODEL", default_embed).strip()
+
+        # --- RAG ---
+        self.rag_top_k: int = _int("RAG_TOP_K", 5)
+        self.chunk_size: int = _int("CHUNK_SIZE", 800)
+        self.chunk_overlap: int = _int("CHUNK_OVERLAP", 120)
+
+        # --- アップロード ---
+        self.max_upload_mb: int = _int("MAX_UPLOAD_MB", 50)
+
+        # --- 表示 ---
+        self.app_title: str = os.getenv("APP_TITLE", "社内文書アシスタント").strip()
+
+    def _load_secret_key(self, env_value: str) -> str:
+        """SECRET_KEY が指定されていなければ自動生成して data/secret.key に保存する。"""
+        if env_value:
+            return env_value
+        key_file = self.data_dir / "secret.key"
+        if key_file.exists():
+            return key_file.read_text(encoding="utf-8").strip()
+        key = secrets.token_hex(32)
+        key_file.write_text(key, encoding="utf-8")
+        return key
+
+
+# シングルトン
+settings = Settings()

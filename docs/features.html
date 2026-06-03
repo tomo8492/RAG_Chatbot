@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="ja" data-theme="light">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>社内文書アシスタント — 機能説明</title>
+<style>
+  :root{
+    --bg:#F0EEE6; --panel:#FAF9F5; --card:#FFFFFF; --ink:#2B2A27; --ink-soft:#6E6B63;
+    --accent:#D97757; --accent-dk:#C25B3C; --line:#E3DFD3; --green:#3D7A4E;
+    --code-bg:#F6F4EE; --shadow:0 1px 3px rgba(0,0,0,.06),0 10px 30px rgba(0,0,0,.06);
+  }
+  [data-theme="dark"]{
+    --bg:#1E1D1A; --panel:#262521; --card:#2D2B27; --ink:#ECE9E1; --ink-soft:#A39E92;
+    --accent:#D97757; --accent-dk:#E08B6E; --line:#3A3833; --green:#6FAE7E;
+    --code-bg:#211F1C; --shadow:0 1px 3px rgba(0,0,0,.3),0 10px 30px rgba(0,0,0,.3);
+  }
+  *{box-sizing:border-box;}
+  html{scroll-behavior:smooth;}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font-family:"Yu Gothic UI","Hiragino Kaku Gothic ProN","Meiryo",system-ui,sans-serif;
+    line-height:1.8; font-size:16px;
+  }
+  a{color:var(--accent-dk);}
+  .wrap{max-width:980px; margin:0 auto; padding:0 20px;}
+
+  /* ヘッダー */
+  header.hero{
+    background:linear-gradient(180deg,var(--panel),var(--bg));
+    border-bottom:1px solid var(--line); padding:56px 0 40px; text-align:center; position:relative;
+  }
+  .dot{display:inline-flex; align-items:center; justify-content:center; width:64px;height:64px;
+    border-radius:50%; background:var(--accent); color:#fff; font-size:32px; box-shadow:var(--shadow);}
+  .hero h1{font-size:32px; margin:18px 0 6px; letter-spacing:.02em;}
+  .hero p{color:var(--ink-soft); margin:0; font-size:17px;}
+  .tags{margin-top:18px; display:flex; gap:8px; justify-content:center; flex-wrap:wrap;}
+  .tag{background:var(--card); border:1px solid var(--line); border-radius:20px; padding:5px 14px;
+    font-size:13px; color:var(--ink-soft);}
+  .tag b{color:var(--green);}
+  #theme{position:absolute; top:18px; right:18px; background:var(--card); border:1px solid var(--line);
+    border-radius:10px; padding:7px 12px; cursor:pointer; font-size:15px; color:var(--ink);}
+
+  /* セクション */
+  section{padding:44px 0 8px;}
+  h2{font-size:23px; margin:0 0 6px; display:flex; align-items:center; gap:10px;}
+  h2 .n{display:inline-flex; align-items:center; justify-content:center; width:30px;height:30px;
+    background:var(--accent); color:#fff; border-radius:9px; font-size:15px;}
+  .lead{color:var(--ink-soft); margin:0 0 20px;}
+
+  /* 機能カード */
+  .grid{display:grid; grid-template-columns:repeat(auto-fill,minmax(280px,1fr)); gap:16px;}
+  .feat{background:var(--card); border:1px solid var(--line); border-radius:14px; padding:18px 20px;
+    box-shadow:var(--shadow);}
+  .feat .ico{font-size:26px;}
+  .feat h3{margin:8px 0 4px; font-size:16.5px;}
+  .feat p{margin:0; color:var(--ink-soft); font-size:14.5px; line-height:1.7;}
+
+  /* ステップ */
+  .steps{display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:16px;}
+  .step{background:var(--card); border:1px solid var(--line); border-radius:14px; padding:20px;}
+  .step .b{display:inline-flex; align-items:center; justify-content:center; width:34px;height:34px;
+    border-radius:50%; background:var(--accent); color:#fff; font-weight:700; margin-bottom:10px;}
+  .step h3{margin:0 0 6px; font-size:16px;}
+  .step p{margin:0; color:var(--ink-soft); font-size:14px;}
+
+  /* コード */
+  pre{background:var(--code-bg); border:1px solid var(--line); border-radius:12px; padding:16px 18px;
+    overflow-x:auto; font-family:ui-monospace,Consolas,monospace; font-size:14px; line-height:1.7;}
+  code{font-family:ui-monospace,Consolas,monospace;}
+  .cmt{color:var(--green);}
+
+  /* 表 */
+  table{width:100%; border-collapse:collapse; margin:8px 0 4px; font-size:14.5px; background:var(--card);
+    border-radius:12px; overflow:hidden; box-shadow:var(--shadow);}
+  th,td{border-bottom:1px solid var(--line); padding:11px 14px; text-align:left; vertical-align:top;}
+  th{background:var(--panel); font-size:13.5px;}
+  tr:last-child td{border-bottom:none;}
+  td .k{font-weight:700;}
+  .pill{display:inline-block; font-size:12px; padding:2px 9px; border-radius:12px; background:var(--line);
+    color:var(--ink-soft); white-space:nowrap;}
+  .pill.q{background:rgba(217,119,87,.16); color:var(--accent-dk);}
+  .pill.s{background:rgba(61,122,78,.16); color:var(--green);}
+
+  /* レイアウト図 */
+  .layout{display:grid; grid-template-columns:200px 1fr; gap:0; border:1px solid var(--line);
+    border-radius:14px; overflow:hidden; box-shadow:var(--shadow); background:var(--card);}
+  .layout .side{background:var(--panel); border-right:1px solid var(--line); padding:16px;}
+  .layout .side .mini{font-size:13px; color:var(--ink-soft); margin:6px 0; padding:6px 8px;
+    border-radius:8px; background:var(--card); border:1px solid var(--line);}
+  .layout .body{padding:16px; display:flex; flex-direction:column; min-height:220px;}
+  .layout .topbar{display:flex; justify-content:space-between; border-bottom:1px solid var(--line);
+    padding-bottom:10px; margin-bottom:10px; font-size:13px; color:var(--ink-soft);}
+  .layout .composer{margin-top:auto; border:1px solid var(--line); border-radius:12px; padding:10px;
+    background:var(--panel);}
+  .layout .composer .row{display:flex; gap:6px; flex-wrap:wrap; margin-bottom:8px;}
+  .chipx{font-size:11.5px; padding:3px 9px; border:1px solid var(--line); border-radius:8px;
+    background:var(--card); color:var(--ink-soft);}
+  .callout{display:flex; gap:6px; margin:4px 0;}
+
+  .note{background:var(--panel); border-left:4px solid var(--accent); border-radius:8px;
+    padding:12px 16px; margin:16px 0; color:var(--ink-soft); font-size:14.5px;}
+  .note.warn{border-left-color:var(--accent-dk);}
+  .note b{color:var(--ink);}
+
+  footer{margin-top:40px; padding:30px 0; border-top:1px solid var(--line); text-align:center;
+    color:var(--ink-soft); font-size:13px;}
+  @media(max-width:640px){ .layout{grid-template-columns:1fr;} .layout .side{border-right:none;border-bottom:1px solid var(--line);} .hero h1{font-size:26px;} }
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <button id="theme" onclick="toggleTheme()">🌓 テーマ</button>
+  <div class="wrap">
+    <span class="dot">✻</span>
+    <h1>社内文書アシスタント</h1>
+    <p>フォルダ内の文書をもとに回答する、完全ローカルの RAG チャットボット</p>
+    <div class="tags">
+      <span class="tag"><b>完全ローカル</b> ・ 社外送信なし</span>
+      <span class="tag">ブラウザUI(他PCから利用可)</span>
+      <span class="tag">Ollama + ChromaDB</span>
+    </div>
+  </div>
+</header>
+
+<div class="wrap">
+
+  <!-- 概要 -->
+  <section id="overview">
+    <h2><span class="n">i</span>これは何?</h2>
+    <p class="lead">
+      指定したフォルダ内の <b>PDF / Word / Excel / PowerPoint / テキスト</b> を読み込み、その内容を根拠に
+      質問へ回答する社内向けアシスタントです。AIの頭脳(LLM)・文書検索・データ保存はすべて
+      <b>このアプリを動かすPCの中だけ</b>で完結し、インターネットへ情報を送りません。
+      画面はブラウザUIなので、<b>同じネットワークにある他のPCからもアクセス</b>できます。
+    </p>
+  </section>
+
+  <!-- 主な機能 -->
+  <section id="features">
+    <h2><span class="n">1</span>主な機能</h2>
+    <p class="lead">Claude のような操作感で、社内文書に特化したRAG機能を備えています。</p>
+    <div class="grid">
+      <div class="feat"><div class="ico">📁</div><h3>参照資料フォルダの選択</h3>
+        <p>サーバ上のフォルダをブラウザから選んでインデックス化。複数フォルダに対応し、会話ごとに使う資料を選べます。</p></div>
+      <div class="feat"><div class="ico">🌐</div><h3>他PCのブラウザから利用</h3>
+        <p><code>0.0.0.0</code> で待受。起動時に表示されるアドレスを、社内LANの他PCのブラウザで開けます。</p></div>
+      <div class="feat"><div class="ico">💬</div><h3>複数会話・履歴保存</h3>
+        <p>会話を複数保持。サイドバーから切替・リネーム・削除でき、過去の会話も残ります。</p></div>
+      <div class="feat"><div class="ico">⏩</div><h3>ストリーミング・停止・再生成</h3>
+        <p>回答を逐次表示。途中で停止したり、同じ質問をもう一度生成し直せます。</p></div>
+      <div class="feat"><div class="ico">🧠</div><h3>工数(思考の深さ)</h3>
+        <p>推論モデルの thinking を「最小〜最大」で調整。じっくり考えさせることができ、思考過程も表示します。</p></div>
+      <div class="feat"><div class="ico">📝</div><h3>Markdown / コード表示</h3>
+        <p>表・箇条書き・コードを整形表示。コードブロックや回答をワンクリックでコピーできます。</p></div>
+      <div class="feat"><div class="ico">📎</div><h3>ファイル添付</h3>
+        <p>チャットに直接ファイルを添付(ドラッグ&ドロップ可)し、その内容について質問できます。</p></div>
+      <div class="feat"><div class="ico">🔎</div><h3>出典表示</h3>
+        <p>回答の根拠にした資料のファイル名・場所(ページやシート)を明示します。</p></div>
+      <div class="feat"><div class="ico">⚙</div><h3>細かな設定</h3>
+        <p>モデル・温度・回答長・参照件数・コンテキスト長・チャンク分割などを詳細に調整できます。</p></div>
+      <div class="feat"><div class="ico">⚡</div><h3>チャット欄クイック設定</h3>
+        <p>入力欄の上で「モデル・工数・長さ・参照件数」をその場で切り替えられます。</p></div>
+      <div class="feat"><div class="ico">🔐</div><h3>簡易パスワード認証</h3>
+        <p>LANに公開する際の保護。<code>.env</code> でパスワードを設定するとログイン画面が出ます。</p></div>
+      <div class="feat"><div class="ico">🌓</div><h3>ライト / ダークテーマ</h3>
+        <p>右上のボタンで配色を切替。好みや時間帯に合わせて見やすく。</p></div>
+    </div>
+  </section>
+
+  <!-- 画面構成 -->
+  <section id="layout">
+    <h2><span class="n">2</span>画面の構成</h2>
+    <p class="lead">大きく「サイドバー」「ヘッダー」「チャット欄」に分かれています。</p>
+    <div class="layout">
+      <div class="side">
+        <div class="mini">＋ 新しい会話</div>
+        <div class="mini">📄 会話の一覧(履歴)</div>
+        <div class="mini">📁 参照資料</div>
+        <div class="mini">⚙ 設定</div>
+        <div class="mini">⏏ ログアウト</div>
+      </div>
+      <div class="body">
+        <div class="topbar">
+          <span>会話タイトル(クリックで編集)</span>
+          <span>📁 資料&nbsp;&nbsp;モデル名</span>
+        </div>
+        <p style="color:var(--ink-soft);font-size:14px;margin:0;">ここに会話(質問と回答)が表示されます。回答には💭思考過程や📎出典も表示されます。</p>
+        <div class="composer">
+          <div class="row">
+            <span class="chipx">📎 添付</span>
+            <span class="chipx">モデル ▾</span>
+            <span class="chipx">工数 ▾</span>
+            <span class="chipx">長さ ▾</span>
+            <span class="chipx">参照件数 ▦</span>
+          </div>
+          <div class="row" style="margin:0;">
+            <span class="chipx" style="flex:1;">メッセージを入力…(Enterで送信 / Shift+Enterで改行)</span>
+            <span class="chipx" style="background:var(--accent);color:#fff;border-color:var(--accent);">➤ 送信</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- セットアップ -->
+  <section id="setup">
+    <h2><span class="n">3</span>セットアップと起動</h2>
+    <p class="lead">必要なもの: <b>Python 3.10+</b> ・ <b>Ollama</b>(ローカルLLM)・ 文書フォルダ</p>
+    <div class="steps">
+      <div class="step"><span class="b">1</span><h3>モデルを取得</h3>
+        <p>Ollama をインストールし、使うモデルを取得します(thinking対応モデル推奨)。</p></div>
+      <div class="step"><span class="b">2</span><h3>依存をインストール</h3>
+        <p>必要なパッケージを入れます。初回は埋め込みモデル等のDLで時間がかかります。</p></div>
+      <div class="step"><span class="b">3</span><h3>起動</h3>
+        <p>起動するとアクセスURLが表示されます。ブラウザで開けば利用開始です。</p></div>
+    </div>
+    <pre><span class="cmt"># ① モデル取得(例)</span>
+ollama pull qwen3:8b
+
+<span class="cmt"># ② 依存インストール</span>
+pip install -r requirements.txt
+
+<span class="cmt"># ③ 起動</span>
+python run.py</pre>
+    <div class="note"><b>起動後の表示例:</b><br>
+      このPC : <code>http://localhost:8000</code><br>
+      他のPCから : <code>http://192.168.x.x:8000</code></div>
+  </section>
+
+  <!-- 他PC -->
+  <section id="lan">
+    <h2><span class="n">4</span>他のPCのブラウザから使う</h2>
+    <p class="lead">同じネットワーク(社内LAN・同じWi-Fi)にあるPCから利用できます。</p>
+    <table>
+      <tr><th style="width:34px;">手順</th><th>内容</th></tr>
+      <tr><td><span class="pill">1</span></td><td>アプリを動かすPCで <code>HOST=0.0.0.0</code>(既定)にする</td></tr>
+      <tr><td><span class="pill">2</span></td><td>起動時に表示される <code>http://192.168.x.x:8000</code> を、他PCのブラウザで開く</td></tr>
+      <tr><td><span class="pill">3</span></td><td>つながらない場合は、サーバPCの<b>ファイアウォール</b>でポート(既定8000)の受信を許可</td></tr>
+      <tr><td><span class="pill">4</span></td><td>公開時は <code>.env</code> の <b>CHAT_PASSWORD を必ず設定</b>(同じLANの誰でも開けてしまうため)</td></tr>
+    </table>
+    <div class="note warn"><b>参照資料はサーバPC上のフォルダ</b>を選びます。各PC手元のファイルを使いたい場合は、
+      チャットの📎添付機能でファイルを送ってください。</div>
+  </section>
+
+  <!-- 使い方 -->
+  <section id="usage">
+    <h2><span class="n">5</span>使い方の流れ</h2>
+    <table>
+      <tr><th style="width:150px;">操作</th><th>説明</th></tr>
+      <tr><td class="k">資料を登録</td><td>左下「📁 参照資料」→「フォルダを選んで追加」→ サーバ上のフォルダを選択 → インデックス作成(状態が「準備完了」になればOK)</td></tr>
+      <tr><td class="k">会話で資料を有効化</td><td>「参照資料」一覧で、その会話で使う資料に☑チェック。ヘッダーに「📁 資料」バッジが出ます</td></tr>
+      <tr><td class="k">質問する</td><td>下部の入力欄に入力して送信。<b>Enter</b>で送信、<b>Shift+Enter</b>で改行</td></tr>
+      <tr><td class="k">途中で止める</td><td>生成中は送信ボタンが「■停止」に変わります。クリックで中断(途中までの回答は残ります)</td></tr>
+      <tr><td class="k">作り直す</td><td>回答の下「↻ 再生成」で、同じ質問にもう一度回答させます</td></tr>
+      <tr><td class="k">ファイルを添付</td><td>📎ボタン、または入力欄へドラッグ&ドロップ。添付内容について質問できます</td></tr>
+      <tr><td class="k">設定を変える</td><td>入力欄上のクイック設定で即変更。詳細は左下「⚙ 設定」で調整(新しい会話の既定になります)</td></tr>
+    </table>
+    <div class="note"><b>対応ファイル形式:</b>
+      <code>.pdf</code> <code>.docx</code> <code>.xlsx</code> <code>.pptx</code>
+      <code>.txt</code> <code>.md</code> <code>.csv</code> <code>.tsv</code> <code>.log</code> <code>.json</code>
+      <br>※ 画像だけのスキャンPDFはテキスト抽出できません(OCR未対応)。</div>
+  </section>
+
+  <!-- 設定の説明 -->
+  <section id="settings">
+    <h2><span class="n">6</span>設定項目の意味</h2>
+    <p class="lead">
+      <span class="pill q">クイック</span> = チャット欄から即変更(その会話のみ) ／
+      <span class="pill s">設定</span> = ⚙設定パネル(新しい会話の既定値)
+    </p>
+    <table>
+      <tr><th style="width:170px;">項目</th><th style="width:130px;">場所</th><th>説明</th></tr>
+      <tr><td class="k">モデル</td><td><span class="pill q">クイック</span><span class="pill s">設定</span></td>
+        <td>回答生成に使う Ollama モデル。インストール済みモデルから選びます</td></tr>
+      <tr><td class="k">工数(effort)</td><td><span class="pill q">クイック</span><span class="pill s">設定</span></td>
+        <td>思考の深さ。最小=速い/直球、最大=じっくり熟考。<b>thinking対応モデル</b>(qwen3等)で効果。非対応モデルは自動で通常生成に切替</td></tr>
+      <tr><td class="k">回答の長さ(num_predict)</td><td><span class="pill q">クイック</span><span class="pill s">設定</span></td>
+        <td>回答の最大トークン数。短い〜最大で調整</td></tr>
+      <tr><td class="k">参照件数(top_k)</td><td><span class="pill q">クイック</span><span class="pill s">設定</span></td>
+        <td>RAGで参照する資料チャンクの数。多いほど広く、少ないほど焦点的。0で資料参照オフ</td></tr>
+      <tr><td class="k">温度(temperature)</td><td><span class="pill s">設定</span></td>
+        <td>創造性・ばらつき。低い=固く正確、高い=柔軟で多様</td></tr>
+      <tr><td class="k">top_p</td><td><span class="pill s">設定</span></td>
+        <td>単語選択の多様性(核サンプリング)。通常は0.9前後</td></tr>
+      <tr><td class="k">コンテキスト長(num_ctx)</td><td><span class="pill s">設定</span></td>
+        <td>モデルが一度に扱える文脈の長さ。0=モデル既定</td></tr>
+      <tr><td class="k">システムプロンプト</td><td><span class="pill s">設定</span></td>
+        <td>AIの役割・口調・ルール。会話ごとに上書きも可能</td></tr>
+      <tr><td class="k">チャンクサイズ / オーバーラップ</td><td><span class="pill s">設定(詳細)</span></td>
+        <td>資料を分割する単位と重なり。次回のインデックス作成・再構築から反映</td></tr>
+    </table>
+  </section>
+
+  <!-- 仕組み -->
+  <section id="how">
+    <h2><span class="n">7</span>裏側の仕組み(RAG)</h2>
+    <p class="lead">RAG = Retrieval-Augmented Generation(検索で補強した生成)。次の流れで動きます。</p>
+    <div class="steps">
+      <div class="step"><span class="b">A</span><h3>取り込み</h3><p>フォルダ内の文書を読み込み、適度な長さに分割して<b>ベクトル化</b>し ChromaDB に保存します。</p></div>
+      <div class="step"><span class="b">B</span><h3>検索</h3><p>質問もベクトル化し、意味の近い資料チャンクを <b>top_k 件</b>取り出します。</p></div>
+      <div class="step"><span class="b">C</span><h3>生成</h3><p>取り出した資料を根拠として LLM に渡し、出典付きで回答を生成します。</p></div>
+    </div>
+    <div class="note">埋め込み(ベクトル化)には多言語対応の <code>intfloat/multilingual-e5-small</code> を既定で使用し、
+      日本語の文書・質問にも対応します。すべてローカルで処理されます。</div>
+  </section>
+
+  <!-- トラブルシューティング -->
+  <section id="trouble">
+    <h2><span class="n">8</span>困ったときは</h2>
+    <table>
+      <tr><th style="width:38%;">症状</th><th>対処</th></tr>
+      <tr><td>「Ollama に接続できません」</td><td><code>ollama serve</code> が動いているか、<code>OLLAMA_HOST</code> を確認</td></tr>
+      <tr><td>「(モデルなし)」と表示</td><td><code>ollama pull qwen3:8b</code> などでモデルを取得</td></tr>
+      <tr><td>他PCから開けない</td><td><code>HOST=0.0.0.0</code> か確認 + サーバPCのファイアウォールでポートを許可</td></tr>
+      <tr><td>回答が資料を参照しない</td><td>「参照資料」でその会話の資料にチェックが入っているか確認</td></tr>
+      <tr><td>PDFが読めない</td><td>画像のみのスキャンPDFは抽出不可(OCR未対応)</td></tr>
+      <tr><td>初回起動が遅い</td><td>埋め込みモデルの初回ダウンロード。2回目以降は高速</td></tr>
+    </table>
+    <div class="note">処理ログ・エラーはすべて、起動したターミナルに出力されます。</div>
+  </section>
+
+  <!-- セキュリティ -->
+  <section id="security">
+    <h2><span class="n">9</span>セキュリティとプライバシー</h2>
+    <div class="grid">
+      <div class="feat"><div class="ico">🔒</div><h3>外部送信なし</h3>
+        <p>LLM・埋め込み・ベクトルDBはすべてローカル。文書や質問が社外へ出ることはありません。</p></div>
+      <div class="feat"><div class="ico">🔑</div><h3>公開時はパスワードを</h3>
+        <p>他PCに公開する場合は <code>CHAT_PASSWORD</code> を必ず設定してください。</p></div>
+      <div class="feat"><div class="ico">🛡</div><h3>信頼できる範囲で</h3>
+        <p>フォルダ閲覧はサーバのファイルシステムを参照します。信頼できるネットワークで利用してください。</p></div>
+    </div>
+  </section>
+
+</div>
+
+<footer>
+  社内文書アシスタント (RAG Chatbot) ・ 完全ローカル動作 ・ 社外送信なし<br>
+  詳細なセットアップは <code>README.md</code> を参照してください。
+</footer>
+
+<script>
+  function applyTheme(t){
+    document.documentElement.setAttribute("data-theme", t);
+    try{ localStorage.setItem("guide-theme", t); }catch(e){}
+  }
+  function toggleTheme(){
+    const cur = document.documentElement.getAttribute("data-theme");
+    applyTheme(cur === "dark" ? "light" : "dark");
+  }
+  try{ applyTheme(localStorage.getItem("guide-theme") || "light"); }catch(e){}
+</script>
+</body>
+</html>
