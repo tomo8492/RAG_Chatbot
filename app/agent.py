@@ -103,17 +103,61 @@ _T_PLAN = {"type": "function", "function": {
     "parameters": {"type": "object", "properties": {
         "plan": {"type": "string", "description": "実行計画(Markdown。番号付きの手順で簡潔に)"}},
         "required": ["plan"]}}}
+_T_TODO = {"type": "function", "function": {
+    "name": "todo_write",
+    "description": "タスクの進捗チェックリストを更新する。多段の作業では計画/進捗をこれで管理する。毎回 todos 全体を渡す。",
+    "parameters": {"type": "object", "properties": {
+        "todos": {"type": "array", "description": "タスク一覧",
+                  "items": {"type": "object", "properties": {
+                      "content": {"type": "string", "description": "タスク内容"},
+                      "status": {"type": "string", "enum": ["pending", "in_progress", "completed"],
+                                 "description": "状態(pending/in_progress/completed)"}},
+                      "required": ["content", "status"]}}},
+        "required": ["todos"]}}}
 
 READ_TOOLS = [_T_LIST, _T_READ, _T_GLOB, _T_GREP]
 WRITE_TOOLS = [_T_WRITE, _T_EDIT, _T_CMD]
-PLAN_PHASE_TOOLS = READ_TOOLS + [_T_PLAN]
-EXEC_PHASE_TOOLS = READ_TOOLS + WRITE_TOOLS
+PLAN_PHASE_TOOLS = READ_TOOLS + [_T_TODO, _T_PLAN]
+EXEC_PHASE_TOOLS = READ_TOOLS + WRITE_TOOLS + [_T_TODO]
 
 READONLY = {"list_files", "read_file", "glob", "grep"}
 MUTATING = {"write_file", "edit_file", "run_command"}
 CONFIRM_IN_EXEC = {"run_command"}   # 計画承認後の実行フェーズで「確認が要る」重要操作
 
 IGNORE_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", ".idea", ".vscode", "dist", "build"}
+
+# プロジェクト指示(CLAUDE.md 等)。作業フォルダ直下にあれば自動で読み込む。
+PROJECT_FILES = ["CLAUDE.md", "AGENTS.md", ".claude/CLAUDE.md"]
+
+
+def read_project_instructions(ws: Path, limit: int = 8000) -> Optional[str]:
+    """作業フォルダの CLAUDE.md / AGENTS.md を読み、エージェントへの指示として返す。"""
+    for name in PROJECT_FILES:
+        try:
+            p = (ws / name)
+            if p.is_file():
+                text = p.read_text(encoding="utf-8", errors="replace").strip()
+                if text:
+                    return text[:limit] + ("\n...(省略)" if len(text) > limit else "")
+        except Exception:
+            continue
+    return None
+
+
+def _norm_todos(todos) -> list:
+    """todo_write の引数を正規化(content/status のみ・状態を検証)。"""
+    out = []
+    if isinstance(todos, list):
+        for t in todos:
+            if not isinstance(t, dict):
+                continue
+            content = str(t.get("content") or t.get("task") or "").strip()
+            status = str(t.get("status") or "pending").strip()
+            if status not in ("pending", "in_progress", "completed"):
+                status = "pending"
+            if content:
+                out.append({"content": content, "status": status})
+    return out
 
 
 # ============================================================
@@ -453,6 +497,14 @@ def run_stream(model: str, messages: list, workspace: str,
                     messages.append({"role": "tool", "content": result, "tool_name": name})
                     yield {"type": "done"}     # 追加指示を待つためここで一旦終了
                     return
+                messages.append({"role": "tool", "content": result, "tool_name": name})
+                continue
+
+            # --- TODO 進捗(メタ操作・常に許可) ---
+            if name == "todo_write":
+                todos = _norm_todos(args.get("todos"))
+                yield {"type": "todos", "todos": todos}
+                result = f"[OK] TODOを更新しました({len(todos)}件)"
                 messages.append({"role": "tool", "content": result, "tool_name": name})
                 continue
 

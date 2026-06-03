@@ -477,12 +477,16 @@ class ApproveBody(BaseModel):
 
 
 def _init_code_ctx(cid: str, ws: Path) -> list:
-    """システム+作業フォルダ案内+これまでのテキスト履歴から文脈を再構築。"""
+    """システム+作業フォルダ案内(+CLAUDE.md)+これまでのテキスト履歴から文脈を再構築。"""
     msgs: list = [
         {"role": "system", "content": agent.SYSTEM_PROMPT},
         {"role": "user", "content": f"作業フォルダの絶対パスは {ws} です。この中だけで作業してください。"},
-        {"role": "assistant", "content": "了解しました。依頼をどうぞ。"},
     ]
+    instructions = agent.read_project_instructions(ws)
+    if instructions:
+        msgs.append({"role": "user",
+                     "content": "このプロジェクトの指示書(CLAUDE.md 等)です。従ってください:\n\n" + instructions})
+    msgs.append({"role": "assistant", "content": "了解しました。依頼をどうぞ。"})
     for m in db.list_messages(cid):
         if m["role"] in ("user", "assistant"):
             msgs.append({"role": m["role"], "content": m["content"]})
@@ -553,10 +557,25 @@ def api_agent(cid: str, body: AgentBody) -> Response:
         log.info("エージェント開始 [conv=%s model=%s ws=%s allow=%s plan=%s] 依頼=%s",
                  cid, model, ws, allow_changes, plan_mode, content[:60])
         acc_text: list[str] = []
+        steps: list[dict] = []   # 再表示用にステップを保存(差分・計画・TODO含む)
         try:
             for ev in agent.run_stream(model, ctx, str(ws.resolve()), allow_changes, plan_mode):
-                if ev.get("type") == "assistant" and ev.get("text"):
+                t = ev.get("type")
+                if t == "assistant" and ev.get("text"):
                     acc_text.append(ev["text"])
+                    steps.append({"type": "assistant", "text": ev["text"]})
+                elif t == "tool_call":
+                    steps.append({"type": "tool_call", "name": ev.get("name"), "args": ev.get("args", {})})
+                elif t == "tool_result":
+                    s = {"type": "tool_result", "name": ev.get("name"),
+                         "status": ev.get("status"), "result": ev.get("result", "")}
+                    if ev.get("diff"):
+                        s["diff"] = ev["diff"]
+                    steps.append(s)
+                elif t == "plan":
+                    steps.append({"type": "plan", "plan": ev.get("plan", "")})
+                elif t == "todos":
+                    steps.append({"type": "todos", "todos": ev.get("todos", [])})
                 yield sse(ev)
         except GeneratorExit:
             log.info("エージェント停止(クライアント切断)[conv=%s]", cid)
@@ -566,7 +585,7 @@ def api_agent(cid: str, body: AgentBody) -> Response:
             yield sse({"type": "error", "error": str(e)})
         finally:
             text = "\n\n".join(t for t in acc_text if t).strip() or "(操作を実行しました)"
-            db.add_message(cid, "assistant", text)
+            db.add_message(cid, "assistant", text, sources=steps)
             _finish()
 
     headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"}
