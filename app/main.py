@@ -565,14 +565,26 @@ def api_agent(cid: str, body: AgentBody) -> Response:
         log.info("エージェント開始 [conv=%s model=%s ws=%s allow=%s plan=%s] 依頼=%s",
                  cid, model, ws, allow_changes, plan_mode, content[:60])
         acc_text: list[str] = []
-        steps: list[dict] = []   # 再表示用にステップを保存(差分・計画・TODO含む)
+        steps: list[dict] = []    # 再表示用にステップを保存(差分・計画・TODO含む)
+        buf: list[str] = []       # ストリーミング中の本文バッファ
+
+        def flush_text():
+            if buf:
+                tt = "".join(buf); buf.clear()
+                if tt.strip():
+                    steps.append({"type": "assistant", "text": tt})
+                    acc_text.append(tt)
+
         try:
             for ev in agent.run_stream(model, ctx, str(ws.resolve()), allow_changes, plan_mode):
                 t = ev.get("type")
-                if t == "assistant" and ev.get("text"):
-                    acc_text.append(ev["text"])
-                    steps.append({"type": "assistant", "text": ev["text"]})
-                elif t == "tool_call":
+                if t in ("assistant_delta", "assistant"):
+                    if ev.get("text"):
+                        buf.append(ev["text"])
+                    yield sse(ev)
+                    continue
+                flush_text()   # 区切り → それまでの本文を1ステップとして確定
+                if t == "tool_call":
                     steps.append({"type": "tool_call", "name": ev.get("name"), "args": ev.get("args", {})})
                 elif t == "tool_result":
                     s = {"type": "tool_result", "name": ev.get("name"),
@@ -592,7 +604,8 @@ def api_agent(cid: str, body: AgentBody) -> Response:
             log.exception("エージェントエラー")
             yield sse({"type": "error", "error": str(e)})
         finally:
-            text = "\n\n".join(t for t in acc_text if t).strip() or "(操作を実行しました)"
+            flush_text()
+            text = "\n\n".join(x for x in acc_text if x).strip() or "(操作を実行しました)"
             db.add_message(cid, "assistant", text, sources=steps)
             _finish()
 

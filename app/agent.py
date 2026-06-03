@@ -611,13 +611,22 @@ def _client():
     return ollama.Client(host=settings.ollama_host)
 
 
+def _tc_to_dict(tc) -> dict:
+    """ツール呼び出し(ollama ToolCall)を、文脈へ積むための dict に変換。"""
+    fn = getattr(tc, "function", None)
+    name = getattr(fn, "name", "") if fn is not None else ""
+    args = getattr(fn, "arguments", {}) if fn is not None else {}
+    return {"function": {"name": name, "arguments": args}}
+
+
 def run_stream(model: str, messages: list, workspace: str,
                allow_changes: bool, plan_mode: bool = True) -> Iterator[dict]:
     """
     エージェントを1依頼ぶん実行し、イベントを順次 yield する。
     イベント type:
-      assistant / tool_call / tool_result / confirm / plan / done / max_steps / error
+      assistant_delta / tool_call / tool_result / confirm / plan / todos / done / max_steps / error
     plan_mode=True のときは「調査→present_plan→承認→実行」。
+    各ステップの本文は逐次ストリーミング(assistant_delta)で流す。
     """
     ws = Path(workspace).resolve()
     client = _client()
@@ -625,25 +634,51 @@ def run_stream(model: str, messages: list, workspace: str,
 
     for _ in range(MAX_STEPS):
         tools = PLAN_PHASE_TOOLS if phase == "plan" else EXEC_PHASE_TOOLS
+        # --- 1ステップ生成(逐次ストリーミング。失敗時は非ストリームにフォールバック) ---
+        content_parts: list[str] = []
+        tool_calls: list = []
+        streamed = False
         try:
-            resp = client.chat(model=model, messages=messages, tools=tools)
+            for chunk in client.chat(model=model, messages=messages, tools=tools, stream=True):
+                cm = getattr(chunk, "message", None)
+                if cm is None:
+                    continue
+                c = getattr(cm, "content", None)
+                if c:
+                    content_parts.append(c)
+                    streamed = True
+                    yield {"type": "assistant_delta", "text": c}
+                for tc in (getattr(cm, "tool_calls", None) or []):
+                    tool_calls.append(tc)
         except Exception as e:
-            emsg = str(e)
-            log.warning("agent 生成失敗: %s", emsg)
-            if "tool" in emsg.lower():
-                emsg = (f"{emsg}\n(このモデルはツール呼び出しに未対応かもしれません。"
-                        "qwen3 等のツール対応モデルをお試しください)")
-            yield {"type": "error", "error": emsg}
-            return
+            if streamed or tool_calls:
+                log.warning("agent ストリーミング中断: %s", e)
+                yield {"type": "error", "error": str(e)}
+                return
+            # まだ何も出力していなければ非ストリームで再試行
+            try:
+                resp = client.chat(model=model, messages=messages, tools=tools)
+            except Exception as e2:
+                emsg = str(e2)
+                log.warning("agent 生成失敗: %s", emsg)
+                if "tool" in emsg.lower():
+                    emsg = (f"{emsg}\n(このモデルはツール呼び出しに未対応かもしれません。"
+                            "qwen3 等のツール対応モデルをお試しください)")
+                yield {"type": "error", "error": emsg}
+                return
+            cm = resp.message
+            c = getattr(cm, "content", None)
+            if c:
+                content_parts.append(c)
+                yield {"type": "assistant_delta", "text": c}
+            tool_calls = list(getattr(cm, "tool_calls", None) or [])
 
-        msg = resp.message
-        messages.append(msg)
+        content = "".join(content_parts)
+        asst_msg = {"role": "assistant", "content": content}
+        if tool_calls:
+            asst_msg["tool_calls"] = [_tc_to_dict(tc) for tc in tool_calls]
+        messages.append(asst_msg)
 
-        content = getattr(msg, "content", None)
-        if content:
-            yield {"type": "assistant", "text": content}
-
-        tool_calls = getattr(msg, "tool_calls", None)
         if not tool_calls:
             yield {"type": "done"}
             return
