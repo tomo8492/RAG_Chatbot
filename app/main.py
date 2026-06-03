@@ -21,7 +21,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import auth, db, export, llm, rag
+from . import agent, auth, db, export, llm, rag
 from .config import settings
 from .defaults import effective_for, get_defaults, set_defaults
 from .fsbrowse import count_supported_recursive, get_roots, list_dir
@@ -146,6 +146,7 @@ class ConvCreate(BaseModel):
     system_prompt: Optional[str] = None
     active_indexes: Optional[list] = None
     settings: Optional[dict] = None
+    kind: Optional[str] = None       # chat | code
 
 
 class ConvUpdate(BaseModel):
@@ -157,19 +158,21 @@ class ConvUpdate(BaseModel):
 
 
 @app.get("/api/conversations", dependencies=[Depends(auth.require_auth)])
-def api_list_conversations() -> list:
-    return db.list_conversations()
+def api_list_conversations(kind: Optional[str] = None) -> list:
+    return db.list_conversations(kind=kind)
 
 
 @app.post("/api/conversations", dependencies=[Depends(auth.require_auth)])
 def api_create_conversation(body: ConvCreate) -> dict:
     d = get_defaults()
+    kind = body.kind or "chat"
     conv = db.create_conversation(
-        title=body.title or "新しい会話",
+        title=body.title or ("新しいコード" if kind == "code" else "新しい会話"),
         model=body.model or d["model"],
         system_prompt=body.system_prompt,
         settings_json=body.settings or {},
         active_indexes=body.active_indexes or [],
+        kind=kind,
     )
     return _conv_with_effective(conv)
 
@@ -205,6 +208,9 @@ def api_delete_conversation(cid: str) -> dict:
         raise HTTPException(404, "会話が見つかりません")
     rag.delete_conv_collection(cid)
     db.delete_conversation(cid)
+    with _code_ctx_lock:
+        _code_ctx.pop(cid, None)
+        _code_running.discard(cid)
     return {"ok": True}
 
 
@@ -423,6 +429,123 @@ def api_generate(cid: str, body: GenerateBody) -> Response:
 
     headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"}
     return StreamingResponse(gen(), media_type="text/event-stream", headers=headers)
+
+
+# ============================================================
+#  コードエージェント(Code タブ)
+# ============================================================
+# 会話ごとのエージェント文脈(ツール往復を含む)をメモリ保持。
+# 再起動で消えるが、テキスト履歴はDBに残るため再構築できる。
+_code_ctx: dict[str, list] = {}
+_code_running: set[str] = set()
+_code_ctx_lock = threading.Lock()
+
+
+class AgentBody(BaseModel):
+    content: str = ""
+
+
+class ApproveBody(BaseModel):
+    action_id: str
+    approved: bool = False
+
+
+def _init_code_ctx(cid: str, ws: Path) -> list:
+    """システム+作業フォルダ案内+これまでのテキスト履歴から文脈を再構築。"""
+    msgs: list = [
+        {"role": "system", "content": agent.SYSTEM_PROMPT},
+        {"role": "user", "content": f"作業フォルダの絶対パスは {ws} です。この中だけで作業してください。"},
+        {"role": "assistant", "content": "了解しました。依頼をどうぞ。"},
+    ]
+    for m in db.list_messages(cid):
+        if m["role"] in ("user", "assistant"):
+            msgs.append({"role": m["role"], "content": m["content"]})
+    return msgs
+
+
+@app.post("/api/conversations/{cid}/agent", dependencies=[Depends(auth.require_auth)])
+def api_agent(cid: str, body: AgentBody) -> Response:
+    conv = db.get_conversation(cid)
+    if not conv:
+        raise HTTPException(404, "会話が見つかりません")
+    if conv.get("kind") != "code":
+        raise HTTPException(400, "コード用の会話ではありません")
+
+    s = conv.get("settings") or {}
+    workspace = (s.get("workspace") or "").strip()
+    allow_changes = bool(s.get("allow_changes"))
+    if not workspace:
+        raise HTTPException(400, "作業フォルダが設定されていません。先にフォルダを選択してください。")
+    ws = Path(workspace).expanduser()
+    if not ws.is_dir():
+        raise HTTPException(400, f"作業フォルダが存在しません: {workspace}")
+
+    content = (body.content or "").strip()
+    if not content:
+        raise HTTPException(400, "依頼が空です")
+
+    eff = effective_for(conv)
+    model = eff["model"]
+
+    # 文脈を用意(新規ならDB履歴から再構築) → 依頼をDBへ保存 → 文脈へ追加
+    with _code_ctx_lock:
+        if cid in _code_running:
+            raise HTTPException(409, "この会話は別の処理を実行中です")
+        ctx = _code_ctx.get(cid)
+        if ctx is None:
+            ctx = _init_code_ctx(cid, ws.resolve())
+            _code_ctx[cid] = ctx
+        _code_running.add(cid)
+
+    user_msg = db.add_message(cid, "user", content)
+    ctx.append({"role": "user", "content": content})
+    if conv.get("title") in (None, "", "新しい会話", "新しいコード"):
+        title = content.splitlines()[0][:30] if content.strip() else "コード"
+        db.update_conversation(cid, title=title or "コード")
+
+    def _finish():
+        with _code_ctx_lock:
+            _code_running.discard(cid)
+
+    def gen():
+        yield sse({"type": "user_saved", "message": user_msg})
+        if not model:
+            yield sse({"type": "error", "error": "モデルが選択されていません。"})
+            _finish()
+            return
+        if not llm.is_ollama_available():
+            yield sse({"type": "error",
+                       "error": f"Ollama に接続できません({settings.ollama_host})。`ollama serve` を起動してください。"})
+            _finish()
+            return
+
+        log.info("エージェント開始 [conv=%s model=%s ws=%s allow=%s] 依頼=%s",
+                 cid, model, ws, allow_changes, content[:60])
+        acc_text: list[str] = []
+        try:
+            for ev in agent.run_stream(model, ctx, str(ws.resolve()), allow_changes):
+                if ev.get("type") == "assistant" and ev.get("text"):
+                    acc_text.append(ev["text"])
+                yield sse(ev)
+        except GeneratorExit:
+            log.info("エージェント停止(クライアント切断)[conv=%s]", cid)
+            raise
+        except Exception as e:
+            log.exception("エージェントエラー")
+            yield sse({"type": "error", "error": str(e)})
+        finally:
+            text = "\n\n".join(t for t in acc_text if t).strip() or "(操作を実行しました)"
+            db.add_message(cid, "assistant", text)
+            _finish()
+
+    headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"}
+    return StreamingResponse(gen(), media_type="text/event-stream", headers=headers)
+
+
+@app.post("/api/code/approve", dependencies=[Depends(auth.require_auth)])
+def api_code_approve(body: ApproveBody) -> dict:
+    ok = agent.resolve(body.action_id, body.approved)
+    return {"ok": ok}
 
 
 # ============================================================

@@ -54,6 +54,7 @@ def init_db() -> None:
                 system_prompt TEXT,
                 active_indexes TEXT NOT NULL DEFAULT '[]',
                 settings      TEXT NOT NULL DEFAULT '{}',
+                kind          TEXT NOT NULL DEFAULT 'chat',
                 created_at    TEXT NOT NULL,
                 updated_at    TEXT NOT NULL
             );
@@ -89,6 +90,10 @@ def init_db() -> None:
             );
             """
         )
+        # 既存DBへの後方互換マイグレーション(kind 列の追加)
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(conversations)").fetchall()}
+        if "kind" not in cols:
+            conn.execute("ALTER TABLE conversations ADD COLUMN kind TEXT NOT NULL DEFAULT 'chat'")
         conn.commit()
     log.info("DB 初期化完了: %s", settings.db_path)
 
@@ -99,16 +104,18 @@ def init_db() -> None:
 def create_conversation(title: str = "新しい会話", model: Optional[str] = None,
                         system_prompt: Optional[str] = None,
                         settings_json: Optional[dict] = None,
-                        active_indexes: Optional[list] = None) -> dict:
+                        active_indexes: Optional[list] = None,
+                        kind: str = "chat") -> dict:
     cid = _uid()
     now = _now()
     with _write_lock, _connect() as conn:
         conn.execute(
-            "INSERT INTO conversations (id, title, model, system_prompt, active_indexes, settings, created_at, updated_at)"
-            " VALUES (?,?,?,?,?,?,?,?)",
+            "INSERT INTO conversations (id, title, model, system_prompt, active_indexes, settings, kind, created_at, updated_at)"
+            " VALUES (?,?,?,?,?,?,?,?,?)",
             (cid, title, model, system_prompt,
              json.dumps(active_indexes or [], ensure_ascii=False),
              json.dumps(settings_json or {}, ensure_ascii=False),
+             kind or "chat",
              now, now),
         )
         conn.commit()
@@ -121,11 +128,16 @@ def get_conversation(cid: str) -> Optional[dict]:
     return _conv_to_dict(row) if row else None
 
 
-def list_conversations() -> list[dict]:
+def list_conversations(kind: Optional[str] = None) -> list[dict]:
     with _connect() as conn:
-        rows = conn.execute(
-            "SELECT * FROM conversations ORDER BY updated_at DESC"
-        ).fetchall()
+        if kind:
+            rows = conn.execute(
+                "SELECT * FROM conversations WHERE kind=? ORDER BY updated_at DESC", (kind,)
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM conversations ORDER BY updated_at DESC"
+            ).fetchall()
     return [_conv_to_dict(r) for r in rows]
 
 
@@ -166,6 +178,7 @@ def _conv_to_dict(row: sqlite3.Row) -> dict:
     d = dict(row)
     d["active_indexes"] = json.loads(d.get("active_indexes") or "[]")
     d["settings"] = json.loads(d.get("settings") or "{}")
+    d.setdefault("kind", "chat")
     return d
 
 

@@ -16,6 +16,7 @@ const LOGO_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" str
 
 const State = {
   config: null,
+  mode: "chat",         // chat | code(タブ)
   conversations: [],
   current: null,        // 現在の会話(effective 含む)
   models: [],
@@ -74,6 +75,7 @@ function toggleTheme() {
    ============================================================ */
 async function init() {
   applyTheme(localStorage.getItem("theme") || "light");
+  document.body.dataset.mode = State.mode;
   bindGlobalEvents();
   try {
     State.config = await api("/api/config");
@@ -116,11 +118,38 @@ async function boot() {
   if (State.config.auth_enabled) $("logout-btn").classList.remove("hidden");
   await Promise.all([loadModels(), loadDefaults(), loadIndexes()]);
   await loadConversations();
-  if (State.conversations.length) {
-    await selectConversation(State.conversations[0].id);
+  const mine = convsOfMode();
+  if (mine.length) {
+    await selectConversation(mine[0].id);
   } else {
     await newConversation();
   }
+}
+
+/* ============================================================
+   モード(Chat / Code)タブ
+   ============================================================ */
+function convsOfMode() {
+  return State.conversations.filter((c) => (c.kind || "chat") === State.mode);
+}
+
+async function setMode(mode) {
+  if (mode === State.mode || State.streaming) {
+    if (State.streaming) toast("生成中は切り替えできません");
+    return;
+  }
+  State.mode = mode;
+  document.body.dataset.mode = mode;
+  document.querySelectorAll(".mode-tab").forEach((t) =>
+    t.classList.toggle("active", t.dataset.mode === mode));
+  $("new-chat").textContent = mode === "code" ? "＋ 新しいコード" : "＋ 新しい会話";
+  $("input").placeholder = mode === "code"
+    ? "依頼を入力…(例: READMEに使い方の章を追記して)"
+    : "メッセージを入力…(Shift+Enterで改行)";
+  renderConversationList();
+  const mine = convsOfMode();
+  if (mine.length) await selectConversation(mine[0].id);
+  else await newConversation(mode);
 }
 
 /* ============================================================
@@ -168,7 +197,7 @@ async function loadConversations() {
 function renderConversationList() {
   const list = $("conv-list");
   list.innerHTML = "";
-  State.conversations.forEach((c) => {
+  convsOfMode().forEach((c) => {
     const item = el("div", "conv-item" + (State.current && c.id === State.current.id ? " active" : ""));
     item.appendChild(el("span", "title", escapeHtml(c.title || "新しい会話")));
     const del = el("span", "del", "🗑");
@@ -180,8 +209,9 @@ function renderConversationList() {
   });
 }
 
-async function newConversation() {
-  const conv = await api("/api/conversations", { method: "POST", body: JSON.stringify({}) });
+async function newConversation(kind) {
+  kind = kind || State.mode;
+  const conv = await api("/api/conversations", { method: "POST", body: JSON.stringify({ kind }) });
   State.conversations.unshift(conv);
   await selectConversation(conv.id);
   renderConversationList();
@@ -195,11 +225,22 @@ async function selectConversation(cid) {
   State.pendingImages = [];
   renderAttachChips();
   renderConversationList();
-  $("chat-title").value = conv.title || "新しい会話";
+  $("chat-title").value = conv.title || (conv.kind === "code" ? "新しいコード" : "新しい会話");
   syncQuickControls();
   updateHeaderBadges();
+  if ((conv.kind || "chat") === "code") updateCodeBar(conv);
   renderMessages(conv.messages || []);
   closeSidebarMobile();
+}
+
+function updateCodeBar(conv) {
+  const s = conv.settings || {};
+  const folder = s.workspace || "";
+  const f = $("cb-folder");
+  f.textContent = folder || "未設定";
+  f.title = folder || "";
+  f.classList.toggle("set", !!folder);
+  $("cb-allow").checked = !!s.allow_changes;
 }
 
 async function deleteConversation(cid) {
@@ -296,10 +337,18 @@ function renderMessages(messages) {
 
 function buildWelcome() {
   const w = el("div", "welcome");
-  w.innerHTML = `<div class="brand-big"><span class="dot">${LOGO_SVG}</span></div>
-    <h2>こんにちは</h2>
-    <p class="muted">参照資料フォルダを選んで質問するか、そのまま会話を始められます。<br/>
-    ファイルを添付して内容について質問することもできます。</p>`;
+  if (State.mode === "code") {
+    w.innerHTML = `<div class="brand-big"><span class="dot">${LOGO_SVG}</span></div>
+      <h2>コードエージェント</h2>
+      <p class="muted">作業フォルダを選び、依頼を入力してください。<br/>
+      AIがフォルダ内のファイルを読み・作成・編集し、コマンドも実行できます。<br/>
+      変更・実行は<strong>「変更を許可」をオンにして、毎回承認</strong>したときだけ行われます。</p>`;
+  } else {
+    w.innerHTML = `<div class="brand-big"><span class="dot">${LOGO_SVG}</span></div>
+      <h2>こんにちは</h2>
+      <p class="muted">参照資料フォルダを選んで質問するか、そのまま会話を始められます。<br/>
+      ファイルを添付して内容について質問することもできます。</p>`;
+  }
   return w;
 }
 
@@ -362,7 +411,7 @@ function buildAssistantActions(refs, isLast) {
   };
   refs.actions.appendChild(copy);
   refs.actions.appendChild(makeSaveMenu(() => refs.row.dataset.raw || ""));
-  if (isLast) {
+  if (isLast && (!State.current || (State.current.kind || "chat") !== "code")) {
     const regen = el("button", null, "↻ 再生成");
     regen.onclick = () => regenerate();
     refs.actions.appendChild(regen);
@@ -617,11 +666,197 @@ function stopGeneration() {
   if (State.controller) State.controller.abort();
 }
 
+/* 送信ボタン/Enter のモード振り分け */
+function onSend() {
+  if (State.mode === "code") sendCode();
+  else send();
+}
+
+/* ============================================================
+   Code: コーディングエージェント
+   ============================================================ */
+async function sendCode() {
+  if (State.streaming || !State.current) return;
+  const s = State.current.settings || {};
+  if (!s.workspace) { toast("先に「フォルダを選択」で作業フォルダを設定してください"); return; }
+  const text = $("input").value.trim();
+  if (!text) return;
+  $("input").value = ""; autoResize();
+
+  const welcome = $("messages").querySelector(".welcome");
+  if (welcome) welcome.remove();
+
+  const urow = el("div", "msg-row user");
+  const bubble = el("div", "bubble"); bubble.textContent = text;
+  urow.appendChild(bubble);
+  $("messages").appendChild(urow);
+
+  await streamAgent({ content: text });
+  await loadConversations(); // タイトル更新を反映
+}
+
+async function streamAgent(payload) {
+  const row = el("div", "msg-row assistant");
+  row.innerHTML = `<div class="avatar">${LOGO_SVG}</div>
+    <div class="msg-body"><div class="msg-name">Code エージェント</div>
+    <div class="agent-log"></div></div>`;
+  const logBox = row.querySelector(".agent-log");
+  $("messages").appendChild(row);
+  scrollToBottom();
+
+  setStreaming(true);
+  State.controller = new AbortController();
+  let curText = null;  // 連続する assistant テキストの描画先
+
+  const addStepCall = (name, args) => {
+    curText = null;
+    const div = el("div", "step-call",
+      `▸ <span class="tool-name">${escapeHtml(name)}</span> ${escapeHtml(agentArgsSummary(name, args))}`);
+    logBox.appendChild(div); scrollToBottom();
+  };
+  const addStepResult = (status, result) => {
+    curText = null;
+    const div = el("div", "step-result" + (status && status !== "ok" ? " " + status : ""));
+    div.textContent = trimResult(result);
+    logBox.appendChild(div); scrollToBottom();
+  };
+  const addText = (t) => {
+    if (!curText) { curText = el("div", "md agent-text"); curText._raw = ""; logBox.appendChild(curText); }
+    curText._raw += t;
+    renderMarkdown(curText, curText._raw, true);
+    scrollToBottom();
+  };
+
+  try {
+    const res = await fetch(`/api/conversations/${State.current.id}/agent`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload), signal: State.controller.signal,
+    });
+    if (res.status === 401) { showLogin(); throw new Error("認証が必要です"); }
+    if (!res.ok) { let d = res.statusText; try { d = (await res.json()).detail || d; } catch (_) {} throw new Error(d); }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      let idx;
+      while ((idx = buf.indexOf("\n\n")) >= 0) {
+        const chunk = buf.slice(0, idx); buf = buf.slice(idx + 2);
+        const line = chunk.replace(/^data: /, "");
+        if (!line) continue;
+        let ev; try { ev = JSON.parse(line); } catch (_) { continue; }
+        switch (ev.type) {
+          case "assistant": if (ev.text) addText(ev.text); break;
+          case "tool_call": addStepCall(ev.name, ev.args || {}); break;
+          case "tool_result": addStepResult(ev.status, ev.result || ""); break;
+          case "confirm": curText = null; logBox.appendChild(buildConfirmCard(ev)); scrollToBottom(); break;
+          case "error": addStepResult("rejected", "⚠ " + (ev.error || "エラー")); toast("エラー: " + (ev.error || "")); break;
+          case "max_steps": addStepResult("blocked", "最大ステップ数に達しました。続けるには再度指示してください。"); break;
+          case "done": case "user_saved": break;
+        }
+      }
+    }
+  } catch (e) {
+    rejectOpenConfirms(logBox);   // 停止/切断時はサーバ側の承認待ちを解放する
+    if (e.name === "AbortError") addStepResult("rejected", "停止しました");
+    else { addStepResult("rejected", "⚠ " + e.message); toast("エラー: " + e.message); }
+  } finally {
+    finishConfirmCards(logBox);
+    setStreaming(false);
+    State.controller = null;
+  }
+}
+
+// 未応答の承認カードを「拒否」としてサーバへ送り、待機中のエージェントを解放
+function rejectOpenConfirms(box) {
+  box.querySelectorAll(".confirm-card:not([data-resolved])").forEach((card) => {
+    const aid = card.dataset.actionId;
+    if (aid) {
+      api("/api/code/approve", { method: "POST", body: JSON.stringify({ action_id: aid, approved: false }) })
+        .catch(() => {});
+    }
+  });
+}
+
+function agentArgsSummary(name, args) {
+  if (name === "write_file") return `${args.path || ""} (${args.length || 0}字)`;
+  if (name === "run_command") return args.command || "";
+  if (name === "read_file") return args.path || "";
+  return "";
+}
+function trimResult(s) {
+  s = String(s == null ? "" : s);
+  return s.length > 4000 ? s.slice(0, 4000) + "\n…(省略)" : s;
+}
+
+function buildConfirmCard(ev) {
+  const card = el("div", "confirm-card");
+  card.dataset.actionId = ev.action_id;
+  const isCmd = ev.name === "run_command";
+  card.appendChild(el("div", "confirm-title",
+    isCmd ? "⚠ このコマンドを実行しますか?" : "⚠ このファイル変更を適用しますか?"));
+  if (isCmd) {
+    card.appendChild(el("div", "confirm-cmd", "$ " + escapeHtml(ev.command || "")));
+  } else {
+    card.appendChild(el("div", "confirm-meta",
+      `${escapeHtml(ev.path || "")} ・ ${ev.exists ? "上書き" : "新規作成"} ・ ${ev.length || 0}字`));
+    const diff = el("div", "confirm-diff");
+    diff.innerHTML = colorizeDiff(ev.diff || "(差分なし)");
+    card.appendChild(diff);
+  }
+  const actions = el("div", "confirm-actions");
+  const ok = el("button", "btn primary", isCmd ? "実行する" : "適用する");
+  const no = el("button", "btn", "拒否");
+  const status = el("span", "confirm-status");
+  ok.onclick = () => respondConfirm(card, ev.action_id, true, status, [ok, no]);
+  no.onclick = () => respondConfirm(card, ev.action_id, false, status, [ok, no]);
+  actions.appendChild(ok); actions.appendChild(no); actions.appendChild(status);
+  card.appendChild(actions);
+  return card;
+}
+
+function colorizeDiff(diff) {
+  return diff.split("\n").map((ln) => {
+    const safe = escapeHtml(ln);
+    if (ln.startsWith("+") && !ln.startsWith("+++")) return `<span class="add">${safe}</span>`;
+    if (ln.startsWith("-") && !ln.startsWith("---")) return `<span class="del">${safe}</span>`;
+    return safe;
+  }).join("\n");
+}
+
+async function respondConfirm(card, actionId, approved, statusEl, btns) {
+  btns.forEach((b) => (b.disabled = true));
+  try {
+    await api("/api/code/approve", {
+      method: "POST", body: JSON.stringify({ action_id: actionId, approved }),
+    });
+    statusEl.textContent = approved ? "承認しました" : "拒否しました";
+    statusEl.className = "confirm-status " + (approved ? "ok" : "no");
+    card.dataset.resolved = "1";
+  } catch (e) {
+    statusEl.textContent = "送信失敗: " + e.message;
+    statusEl.className = "confirm-status no";
+    btns.forEach((b) => (b.disabled = false));
+  }
+}
+
+function finishConfirmCards(box) {
+  box.querySelectorAll(".confirm-card:not([data-resolved])").forEach((card) => {
+    card.querySelectorAll("button").forEach((b) => (b.disabled = true));
+    const st = card.querySelector(".confirm-status");
+    if (st && !st.textContent) { st.textContent = "(終了)"; st.className = "confirm-status no"; }
+  });
+}
+
 /* ============================================================
    添付ファイル
    ============================================================ */
 async function handleFiles(files) {
   if (!State.current) return;
+  if (State.mode === "code") { toast("コードモードでは添付は使いません(作業フォルダを操作します)"); return; }
   for (const file of files) {
     toast(`「${file.name}」を取り込み中…`);
     const fd = new FormData();
@@ -677,6 +912,7 @@ function addImageFile(file) {
 
 // クリップボードから画像を貼り付け(スクショの Ctrl+V)
 function handlePaste(e) {
+  if (State.mode === "code") return;   // コードモードは画像添付なし
   const items = (e.clipboardData && e.clipboardData.items) || [];
   let found = false;
   for (const it of items) {
@@ -822,9 +1058,11 @@ async function deleteIndex(iid) {
 /* ============================================================
    フォルダブラウザ
    ============================================================ */
-const FB = { path: null, selected: null };
+const FB = { path: null, selected: null, purpose: "index" };
 
-async function openFolderBrowser() {
+async function openFolderBrowser(purpose) {
+  FB.purpose = purpose || "index";
+  $("fb-pick").textContent = FB.purpose === "workspace" ? "このフォルダを使う" : "このフォルダを追加";
   $("folder-modal").classList.remove("hidden");
   try {
     const { roots } = await api("/api/fs/roots");
@@ -881,6 +1119,10 @@ async function fbNavigate(path) {
 async function pickFolder() {
   if (!FB.selected) return;
   $("folder-modal").classList.add("hidden");
+  if (FB.purpose === "workspace") {
+    await setCodeWorkspace(FB.selected);
+    return;
+  }
   try {
     const idx = await api("/api/indexes", {
       method: "POST", body: JSON.stringify({ paths: [FB.selected] }),
@@ -888,6 +1130,29 @@ async function pickFolder() {
     toast(`「${idx.name}」のインデックス作成を開始しました`);
     await loadIndexes(); renderKbList();
   } catch (e) { toast("作成失敗: " + e.message); }
+}
+
+/* Code: 作業フォルダの設定 / 変更許可トグル(会話設定に保存) */
+async function setCodeWorkspace(path) {
+  if (!State.current) return;
+  try {
+    const conv = await api(`/api/conversations/${State.current.id}`, {
+      method: "PATCH", body: JSON.stringify({ settings: { workspace: path } }),
+    });
+    State.current = conv;
+    updateCodeBar(conv);
+    toast("作業フォルダを設定しました");
+  } catch (e) { toast("設定失敗: " + e.message); }
+}
+
+async function setCodeAllow(on) {
+  if (!State.current) return;
+  try {
+    const conv = await api(`/api/conversations/${State.current.id}`, {
+      method: "PATCH", body: JSON.stringify({ settings: { allow_changes: !!on } }),
+    });
+    State.current = conv;
+  } catch (e) { toast("設定失敗: " + e.message); $("cb-allow").checked = !on; }
 }
 
 /* ============================================================
@@ -909,19 +1174,26 @@ function bindGlobalEvents() {
   $("login-password").addEventListener("keydown", (e) => { if (e.key === "Enter") doLogin(); });
 
   $("theme-toggle").onclick = toggleTheme;
-  $("new-chat").onclick = newConversation;
+  $("new-chat").onclick = () => newConversation();
   $("logout-btn").onclick = async () => { await api("/api/logout", { method: "POST" }); location.reload(); };
   $("toggle-sidebar").onclick = () => $("sidebar").classList.toggle("open");
+
+  // Chat / Code タブ
+  document.querySelectorAll(".mode-tab").forEach((t) =>
+    (t.onclick = () => setMode(t.dataset.mode)));
+  // Code: 作業フォルダ / 変更許可
+  $("cb-pick").onclick = () => openFolderBrowser("workspace");
+  $("cb-allow").onchange = (e) => setCodeAllow(e.target.checked);
 
   $("chat-title").addEventListener("change", renameConversation);
   $("chat-title").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); $("chat-title").blur(); } });
 
-  $("send-btn").onclick = send;
+  $("send-btn").onclick = onSend;
   $("stop-btn").onclick = stopGeneration;
   const input = $("input");
   input.addEventListener("input", autoResize);
   input.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); onSend(); }
   });
 
   $("attach-btn").onclick = () => $("file-input").click();
@@ -938,6 +1210,7 @@ function bindGlobalEvents() {
   window.addEventListener("dragleave", (e) => { dragDepth = Math.max(0, dragDepth - 1); if (dragDepth === 0) hideDropOverlay(); });
   window.addEventListener("drop", (e) => {
     e.preventDefault(); dragDepth = 0; hideDropOverlay();
+    if (State.mode === "code") return;   // コードモードは添付なし
     if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length) {
       if (!State.current) { toast("先に会話を開いてください"); return; }
       routeDroppedFiles(e.dataTransfer.files);
@@ -956,7 +1229,7 @@ function bindGlobalEvents() {
   $("save-settings").onclick = saveSettings;
   // KBモーダル
   $("open-kb").onclick = openKb;
-  $("add-kb").onclick = openFolderBrowser;
+  $("add-kb").onclick = () => openFolderBrowser("index");
   // フォルダ
   $("fb-pick").onclick = pickFolder;
   $("fb-go").onclick = () => fbNavigate($("fb-path-input").value.trim());
