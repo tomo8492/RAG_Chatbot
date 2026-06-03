@@ -157,6 +157,12 @@ def stream_answer(st: CliState, question: str):
         print("\n[停止しました]")
         if acc:
             st.history.append({"role": "assistant", "content": acc})
+    except Exception as e:
+        print(f"\n[エラー] {e}")
+        if acc:
+            st.history.append({"role": "assistant", "content": acc})
+        elif st.history and st.history[-1]["role"] == "user":
+            st.history.pop()  # 失敗したターンを履歴から除去
 
 
 HELP = """コマンド:

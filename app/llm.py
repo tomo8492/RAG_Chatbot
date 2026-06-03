@@ -45,15 +45,17 @@ EFFORT_LEVELS = {
 }
 
 
-def _client():
+def _client(timeout: Optional[float] = None):
     import ollama
+    if timeout is not None:
+        return ollama.Client(host=settings.ollama_host, timeout=timeout)
     return ollama.Client(host=settings.ollama_host)
 
 
 def list_models() -> list[dict]:
     """インストール済みモデル一覧。失敗時は空リスト。"""
     try:
-        data = _client().list()
+        data = _client(timeout=10).list()
         models = []
         for m in data.get("models", []):
             name = m.get("model") or m.get("name")
@@ -70,7 +72,7 @@ def list_models() -> list[dict]:
 
 def is_ollama_available() -> bool:
     try:
-        _client().list()
+        _client(timeout=5).list()
         return True
     except Exception:
         return False
