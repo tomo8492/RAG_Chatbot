@@ -4,6 +4,7 @@ FastAPI 本体。API ルートと SSE ストリーミング生成。
 """
 from __future__ import annotations
 
+import base64
 import ipaddress
 import json
 import re
@@ -256,8 +257,35 @@ async def api_attach(cid: str, file: UploadFile = File(...)) -> dict:
 # ============================================================
 class GenerateBody(BaseModel):
     content: str = ""
-    attachments: list[str] = []
-    mode: str = "send"   # send | regenerate
+    attachments: list[str] = []     # 文書添付のファイル名
+    images: list[str] = []          # 画像(base64 / data URL)
+    mode: str = "send"              # send | regenerate
+
+
+_IMG_EXT = {"image/png": "png", "image/jpeg": "jpg", "image/jpg": "jpg",
+            "image/gif": "gif", "image/webp": "webp", "image/bmp": "bmp"}
+
+
+def _save_b64_image(raw: str) -> Optional[tuple[str, str]]:
+    """data URL / base64 を保存し (保存ファイル名, 純base64) を返す。失敗時 None。"""
+    ext = "png"
+    b64 = raw.strip()
+    if b64.startswith("data:"):
+        try:
+            header, b64 = b64.split(",", 1)
+            mime = header[5:].split(";")[0].strip().lower()
+            ext = _IMG_EXT.get(mime, "png")
+        except ValueError:
+            return None
+    try:
+        data = base64.b64decode(b64, validate=False)
+    except Exception:
+        return None
+    if not data or len(data) > 16 * 1024 * 1024:   # 16MB 上限
+        return None
+    name = f"img_{uuid.uuid4().hex}.{ext}"
+    (settings.upload_dir / name).write_bytes(data)
+    return name, b64
 
 
 @app.post("/api/conversations/{cid}/generate", dependencies=[Depends(auth.require_auth)])
@@ -271,6 +299,7 @@ def api_generate(cid: str, body: GenerateBody) -> Response:
 
     # --- 対象クエリとユーザーメッセージの確定 ---
     user_msg = None
+    image_b64s: list[str] = []
     if mode == "regenerate":
         msgs = db.list_messages(cid)
         # 末尾の assistant 群を削除し、最後の user を対象にする
@@ -283,15 +312,32 @@ def api_generate(cid: str, body: GenerateBody) -> Response:
             raise HTTPException(400, "再生成できるメッセージがありません")
         db.delete_messages_from(cid, last_user["seq"] + 1)
         query = last_user["content"]
+        # 直近ユーザー発話に画像があれば再読込(再生成でも画像を見られるように)
+        for a in (last_user.get("attachments") or []):
+            if isinstance(a, dict) and a.get("type") == "image" and a.get("file"):
+                try:
+                    data = (settings.upload_dir / a["file"]).read_bytes()
+                    image_b64s.append(base64.b64encode(data).decode("ascii"))
+                except Exception:
+                    pass
     else:
         content = (body.content or "").strip()
-        if not content:
+        if not content and not body.images:
             raise HTTPException(400, "メッセージが空です")
-        user_msg = db.add_message(cid, "user", content, attachments=body.attachments)
-        query = content
+        # 画像を保存して添付に記録
+        image_atts: list = []
+        for raw in (body.images or [])[:6]:
+            saved = _save_b64_image(raw)
+            if saved:
+                name, b64 = saved
+                image_atts.append({"type": "image", "file": name})
+                image_b64s.append(b64)
+        attachments = list(body.attachments or []) + image_atts
+        user_msg = db.add_message(cid, "user", content or "(画像)", attachments=attachments)
+        query = content or "画像について"
         # 初回メッセージならタイトルを自動設定
         if (conv.get("title") in (None, "", "新しい会話")):
-            title = content.strip().splitlines()[0][:30]
+            title = (content or "画像").strip().splitlines()[0][:30]
             db.update_conversation(cid, title=title or "新しい会話")
 
     # --- RAG 検索 ---
@@ -312,7 +358,12 @@ def api_generate(cid: str, body: GenerateBody) -> Response:
 
     history = db.list_messages(cid)
     messages = llm.build_messages(eff["system_prompt"], history, hits)
-    model = eff["model"]
+    use_vision = bool(image_b64s)
+    model = llm.resolve_installed(settings.vision_model) if use_vision else eff["model"]
+    if use_vision and messages and messages[-1].get("role") == "user":
+        messages[-1]["images"] = image_b64s
+        if (messages[-1].get("content") or "").strip() in ("", "(画像)"):
+            messages[-1]["content"] = "添付された画像の内容を読み取り、日本語で説明・回答してください。"
 
     def gen():
         if user_msg:
@@ -324,6 +375,14 @@ def api_generate(cid: str, body: GenerateBody) -> Response:
             yield sse({"type": "error",
                        "error": f"Ollama に接続できません({settings.ollama_host})。`ollama serve` を起動してください。"})
             return
+        if use_vision:
+            if not settings.vision_model:
+                yield sse({"type": "error", "error": "画像を理解するにはVisionモデルが必要です。.env の VISION_MODEL を設定してください。"})
+                return
+            if not llm.is_model_installed(settings.vision_model):
+                yield sse({"type": "error",
+                           "error": f"Visionモデル『{settings.vision_model}』が見つかりません。`ollama pull {settings.vision_model}` を実行してください。"})
+                return
         if sources:
             yield sse({"type": "sources", "sources": sources})
 
@@ -486,6 +545,14 @@ def api_export(body: ExportBody) -> Response:
 # ============================================================
 #  フロントエンド
 # ============================================================
+@app.get("/api/uploads/{name}", dependencies=[Depends(auth.require_auth)])
+def api_upload_file(name: str) -> FileResponse:
+    safe = (settings.upload_dir / name).resolve()
+    if settings.upload_dir.resolve() not in safe.parents or not safe.is_file():
+        raise HTTPException(404, "ファイルが見つかりません")
+    return FileResponse(str(safe))
+
+
 @app.get("/")
 def index() -> FileResponse:
     return FileResponse(str(STATIC_DIR / "index.html"))

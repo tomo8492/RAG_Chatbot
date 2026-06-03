@@ -70,6 +70,27 @@ def list_models() -> list[dict]:
         return []
 
 
+def resolve_installed(name: str) -> str:
+    """'qwen2.5vl' のようなタグ無し指定を、インストール済みの実タグに解決する。"""
+    if not name:
+        return name
+    models = [m["name"] for m in list_models()]
+    if name in models:
+        return name
+    base = name.split(":")[0]
+    for m in models:
+        if m.split(":")[0] == base:
+            return m
+    return name  # 見つからなければそのまま(Ollama側でエラー判定)
+
+
+def is_model_installed(name: str) -> bool:
+    if not name:
+        return False
+    base = name.split(":")[0]
+    return any(m.split(":")[0] == base for m in (x["name"] for x in list_models()))
+
+
 def is_ollama_available() -> bool:
     try:
         _client(timeout=5).list()
