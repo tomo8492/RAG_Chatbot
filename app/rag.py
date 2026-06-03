@@ -220,7 +220,10 @@ def retrieve(query: str, index_ids: list[str], conversation_id: Optional[str] = 
         names.append(_conv_collection_name(conversation_id))
 
     client = _get_client()
-    existing = {c.name for c in client.list_collections()}
+    # list_collections() は chromadb のバージョンにより Collection か str を返す
+    existing = set()
+    for c in client.list_collections():
+        existing.add(c if isinstance(c, str) else getattr(c, "name", None))
     target = [n for n in names if n in existing]
     if not target:
         return []
