@@ -383,6 +383,20 @@ body[data-mode="code"] .code-bar.only-code { display: flex; }
 .todo-item.completed { color: var(--ink-soft); text-decoration: line-through; }
 .todo-item.in_progress { color: var(--accent-dk); font-weight: 600; }
 
+/* ユーザーへの質問カード(選択式) */
+.ask-card { border-color: var(--accent); }
+.ask-card .confirm-title { color: var(--accent-dk); }
+.ask-options { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+.ask-opt { padding: 7px 14px; }
+.ask-opt-static { border: 1px solid var(--line); border-radius: 8px; padding: 4px 10px;
+  font-size: 12.5px; color: var(--ink-soft); }
+.ask-free { display: flex; gap: 8px; }
+.ask-input { flex: 1; padding: 8px 11px; border: 1px solid var(--line); border-radius: 9px;
+  background: var(--panel); color: var(--ink); font-family: inherit; font-size: 13.5px; }
+.ask-input:focus { outline: none; border-color: var(--accent); }
+.ask-status:empty { display: none; }
+.ask-status { margin-top: 8px; }
+
 /* 実行計画カード(承認で実行フェーズへ) */
 .plan-card { border-color: var(--green); }
 .plan-card .confirm-title { color: var(--green); }
