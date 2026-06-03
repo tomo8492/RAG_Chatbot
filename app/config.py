@@ -56,7 +56,7 @@ class Settings:
 
         # --- Ollama ---
         self.ollama_host: str = os.getenv("OLLAMA_HOST", "http://localhost:11434").strip()
-        self.chat_model: str = os.getenv("CHAT_MODEL", "qwen3:8b").strip()
+        self.chat_model: str = os.getenv("CHAT_MODEL", "qwen3-32b:latest").strip()
 
         # --- 埋め込み ---
         self.embed_backend: str = os.getenv("EMBED_BACKEND", "sentence-transformers").strip().lower()
