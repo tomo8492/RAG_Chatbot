@@ -7,8 +7,8 @@
   --card: #FFFFFF;
   --ink: #2B2A27;
   --ink-soft: #6E6B63;
-  --accent: #D97757;
-  --accent-dk: #C25B3C;
+  --accent: #4C6EF5;
+  --accent-dk: #3B5BDB;
   --stop: #B5483A;
   --line: #E3DFD3;
   --green: #3D7A4E;
@@ -23,8 +23,8 @@
   --card: #2D2B27;
   --ink: #ECE9E1;
   --ink-soft: #A39E92;
-  --accent: #D97757;
-  --accent-dk: #E08B6E;
+  --accent: #5C7CFA;
+  --accent-dk: #748FFC;
   --stop: #C8584A;
   --line: #3A3833;
   --green: #6FAE7E;
@@ -291,3 +291,14 @@ body {
   .composer-toolbar { gap: 8px; }
   .msg-row { padding: 8px 14px; }
 }
+
+/* ブランドアイコン(SVG)のサイズ */
+.dot svg, .avatar svg { width: 56%; height: 56%; display: block; }
+.avatar svg { width: 60%; height: 60%; }
+
+/* フォルダブラウザ: パス直接入力 */
+.fb-input-row { display: flex; gap: 8px; margin-bottom: 12px; }
+.fb-input-row input { flex: 1; padding: 9px 11px; border: 1px solid var(--line); border-radius: 9px;
+  background: var(--panel); color: var(--ink); font-size: 13.5px; font-family: inherit; }
+.fb-input-row input:focus { outline: none; border-color: var(--accent); }
+.fb-input-row .btn { padding: 9px 16px; }

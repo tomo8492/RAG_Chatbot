@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 import string
+import time
 from pathlib import Path
 
 from .loaders import SUPPORTED_EXTS
@@ -93,28 +94,30 @@ def list_dir(path: str | None) -> dict:
     }
 
 
-def count_supported_recursive(paths: list[str]) -> int:
-    """選択フォルダ群の対応ファイル総数(再帰)。見積り表示用。"""
+def count_supported_recursive(paths: list[str], max_files: int = 5000,
+                              time_budget: float = 2.0) -> tuple[int, bool]:
+    """
+    選択フォルダ群の対応ファイル数(再帰・見積り用)。
+    巨大ツリーや権限エラーで固まらないよう、件数・時間で打ち切る。
+    戻り値: (件数, 打ち切ったか)
+    """
     total = 0
-    seen: set[str] = set()
+    start = time.monotonic()
     for path in paths:
         base = Path(path)
         if not base.exists():
             continue
         if base.is_file():
-            iterable = [base]
-        else:
-            try:
-                iterable = base.rglob("*")
-            except OSError:
-                continue
-        for f in iterable:
-            try:
-                if f.is_file() and f.suffix.lower() in SUPPORTED_EXTS:
-                    key = str(f.resolve())
-                    if key not in seen:
-                        seen.add(key)
-                        total += 1
-            except OSError:
-                continue
-    return total
+            if base.suffix.lower() in SUPPORTED_EXTS:
+                total += 1
+            continue
+        # os.walk は onerror で権限エラーを握りつぶせる(rglob と違い途中で例外を投げない)
+        for _root, _dirs, filenames in os.walk(base, onerror=lambda e: None):
+            for fn in filenames:
+                if os.path.splitext(fn)[1].lower() in SUPPORTED_EXTS:
+                    total += 1
+                    if total >= max_files:
+                        return total, True
+            if time.monotonic() - start > time_budget:
+                return total, True
+    return total, False

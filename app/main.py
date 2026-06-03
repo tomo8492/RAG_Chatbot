@@ -409,11 +409,15 @@ def api_fs(path: Optional[str] = None) -> dict:
         raise HTTPException(404, str(e))
     except PermissionError as e:
         raise HTTPException(403, str(e))
+    except Exception as e:
+        log.exception("フォルダ一覧取得失敗: %s", path)
+        raise HTTPException(400, f"このフォルダは開けません: {e}")
 
 
 @app.post("/api/fs/estimate", dependencies=[Depends(auth.require_auth)])
 def api_fs_estimate(paths: list[str] = Body(..., embed=True)) -> dict:
-    return {"count": count_supported_recursive(paths)}
+    count, capped = count_supported_recursive(paths)
+    return {"count": count, "capped": capped}
 
 
 # ============================================================
