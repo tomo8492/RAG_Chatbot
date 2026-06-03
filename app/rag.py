@@ -209,11 +209,18 @@ def delete_conv_collection(cid: str) -> None:
 # ============================================================
 #  検索
 # ============================================================
+UNLIMITED_TOP_K = 9999  # これ以上は「上限なし(全件取得)」とみなすセンチネル
+
+
 def retrieve(query: str, index_ids: list[str], conversation_id: Optional[str] = None,
              top_k: int = 5) -> list[dict]:
-    """有効インデックス + 会話添付を横断検索し、上位 top_k を返す。"""
+    """有効インデックス + 会話添付を横断検索し、上位 top_k を返す。
+
+    top_k <= 0 で参照なし、top_k >= UNLIMITED_TOP_K で上限なし(全件)。
+    """
     if top_k <= 0:
         return []
+    unlimited = top_k >= UNLIMITED_TOP_K
 
     names: list[str] = [_index_collection_name(i) for i in index_ids]
     if conversation_id:
@@ -238,7 +245,8 @@ def retrieve(query: str, index_ids: list[str], conversation_id: Optional[str] = 
             n = col.count()
             if n == 0:
                 continue
-            res = col.query(query_embeddings=[qvec], n_results=min(top_k, n))
+            n_results = n if unlimited else min(top_k, n)
+            res = col.query(query_embeddings=[qvec], n_results=n_results)
             docs = res.get("documents", [[]])[0]
             metas = res.get("metadatas", [[]])[0]
             dists = res.get("distances", [[]])[0]
@@ -256,7 +264,7 @@ def retrieve(query: str, index_ids: list[str], conversation_id: Optional[str] = 
             log.exception("コレクション検索失敗: %s", name)
 
     hits.sort(key=lambda h: h["distance"])
-    return hits[:top_k]
+    return hits if unlimited else hits[:top_k]
 
 
 def reset_all() -> None:
