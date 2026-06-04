@@ -145,8 +145,12 @@
           </div>
           <div class="composer-input">
             <textarea id="input" rows="1" placeholder="メッセージを入力…(Shift+Enterで改行)"></textarea>
-            <button id="send-btn" class="btn primary send" title="送信">➤</button>
-            <button id="stop-btn" class="btn stop send hidden" title="停止">■</button>
+            <button id="send-btn" class="btn primary send" title="送信">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="20" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>
+            </button>
+            <button id="stop-btn" class="btn stop send hidden" title="停止">
+              <svg viewBox="0 0 24 24" fill="currentColor"><rect x="6.5" y="6.5" width="11" height="11" rx="2.5"/></svg>
+            </button>
           </div>
           <div class="composer-foot muted">ローカルLLM ・ 社外送信なし</div>
         </div>
