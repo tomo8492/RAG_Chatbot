@@ -868,7 +868,7 @@ function renderCodeSteps(container, steps) {
         break;
       case "plan": container.appendChild(planStaticEl(ev.plan)); pend = null; break;
       case "todos": todoEl = renderTodos(container, ev.todos, todoEl); break;
-      case "ask": container.appendChild(askStaticEl(ev.question, ev.options)); pend = null; break;
+      case "ask": container.appendChild(askStaticEl(ev.question, ev.options, ev.context)); pend = null; break;
     }
   });
 }
@@ -989,18 +989,38 @@ function rejectOpenConfirms(box) {
 }
 
 // ユーザーへの質問カード(選択肢 + 自由記述)
+// 選択肢を {label, description, recommended} に正規化(文字列・オブジェクトの両対応)
+function optOf(o) {
+  if (o && typeof o === "object") {
+    return { label: String(o.label || o.text || o.value || "").trim(),
+             description: String(o.description || o.desc || "").trim(),
+             recommended: !!(o.recommended || o.default) };
+  }
+  return { label: String(o == null ? "" : o).trim(), description: "", recommended: false };
+}
+// 選択肢ボタン(見出し + 説明 + 推奨バッジ)。クリックで label を回答として送る。
+function askOptEl(o, onPick) {
+  const node = el(onPick ? "button" : "div", "ask-opt" + (o.recommended ? " rec" : "") + (onPick ? "" : " static"));
+  const main = el("div", "ask-opt-main");
+  main.appendChild(el("span", "ask-opt-label", escapeHtml(o.label)));
+  if (o.recommended) main.appendChild(el("span", "ask-opt-rec", "推奨"));
+  node.appendChild(main);
+  if (o.description) node.appendChild(el("div", "ask-opt-desc", escapeHtml(o.description)));
+  if (onPick) node.onclick = () => onPick(o.label);
+  return node;
+}
 function buildAskCard(ev) {
   const card = el("div", "confirm-card ask-card");
   card.dataset.actionId = ev.action_id;
   card.dataset.kind = "ask";
   card.appendChild(el("div", "confirm-title", "❓ " + (ev.question || "どう進めますか?")));
-  const opts = el("div", "ask-options");
-  (ev.options || []).forEach((o) => {
-    const btn = el("button", "btn ask-opt", o);
-    btn.onclick = () => submitAnswer(card, ev.action_id, o);
-    opts.appendChild(btn);
-  });
-  if ((ev.options || []).length) card.appendChild(opts);
+  if (ev.context) card.appendChild(el("div", "ask-context", escapeHtml(ev.context)));
+  const list = (ev.options || []).map(optOf).filter((o) => o.label);
+  if (list.length) {
+    const opts = el("div", "ask-options");
+    list.forEach((o) => opts.appendChild(askOptEl(o, (label) => submitAnswer(card, ev.action_id, label))));
+    card.appendChild(opts);
+  }
   const row = el("div", "ask-free");
   const input = el("input", "ask-input"); input.type = "text"; input.placeholder = "その他(自由に入力)…";
   const send = el("button", "btn ask-send", "送信");
@@ -1029,12 +1049,14 @@ async function submitAnswer(card, actionId, answer) {
 }
 
 // 保存済みステップ再表示用:質問(静的)
-function askStaticEl(question, options) {
+function askStaticEl(question, options, context) {
   const card = el("div", "confirm-card ask-card");
   card.appendChild(el("div", "confirm-title", "❓ " + (question || "")));
-  if (options && options.length) {
+  if (context) card.appendChild(el("div", "ask-context", escapeHtml(context)));
+  const list = (options || []).map(optOf).filter((o) => o.label);
+  if (list.length) {
     const opts = el("div", "ask-options");
-    options.forEach((o) => opts.appendChild(el("span", "ask-opt-static", o)));
+    list.forEach((o) => opts.appendChild(askOptEl(o, null)));
     card.appendChild(opts);
   }
   return card;

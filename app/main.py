@@ -610,6 +610,7 @@ def api_agent(cid: str, body: AgentBody) -> Response:
                     steps.append({"type": "todos", "todos": ev.get("todos", [])})
                 elif t == "ask":
                     steps.append({"type": "ask", "question": ev.get("question", ""),
+                                  "context": ev.get("context", ""),
                                   "options": ev.get("options", [])})
                 yield sse(ev)
         except GeneratorExit:
