@@ -254,8 +254,13 @@ def to_html(md: str, title: str = "回答") -> bytes:
             body.append(f'<div class="table-wrap"><table><thead><tr>{head}</tr></thead>'
                         f"<tbody>{rows}</tbody></table></div>")
 
+    return _html_page(title, "\n".join(body)).encode("utf-8")
+
+
+def _html_page(title: str, body_html: str) -> str:
+    """整ったドキュメントの外枠(CSS・タイトル・日付・フッター)に本文HTMLを差し込む。"""
     date = datetime.now().strftime("%Y年%m月%d日")
-    doc = f"""<!DOCTYPE html>
+    return f"""<!DOCTYPE html>
 <html lang="ja">
 <head>
 <meta charset="UTF-8">
@@ -270,13 +275,48 @@ def to_html(md: str, title: str = "回答") -> bytes:
 <div class="doc-date">{date}</div>
 </header>
 <div class="doc-body">
-{chr(10).join(body)}
+{body_html}
 </div>
 <footer class="doc-footer">社内文書アシスタントで作成</footer>
 </main>
 </body>
 </html>"""
-    return doc.encode("utf-8")
+
+
+def _extract_html_document(content: str, title: str) -> str | None:
+    """回答に実HTMLが含まれていれば、本物のHTMLページ文字列を返す(無ければ None)。
+
+    - 完全なHTML(<style>あり) → モデルのデザインを尊重して丸ごと出力。
+    - <body> や HTMLフラグメント → 本文だけ抜き出して当アプリの整ったテンプレに差し込む。
+    """
+    s = (content or "").strip()
+    code = None
+    if re.match(r"(?is)^\s*(<!doctype html|<html\b)", s):
+        code = s
+    else:
+        for b in parse_blocks(content):
+            if b["type"] == "code":
+                bt = b["text"]
+                if (b.get("lang", "").lower() in ("html", "htm", "xml")) or \
+                        re.search(r"(?is)<!doctype html|<html\b|<body\b|<h[1-6][ >]|<table\b|<div\b", bt):
+                    code = bt
+                    break
+    if not code:
+        return None
+    has_full = bool(re.search(r"(?is)<html\b", code))
+    has_style = bool(re.search(r"(?is)<style\b|<link[^>]+stylesheet", code))
+    if has_full and has_style:
+        return code  # 自前でデザイン済み → そのまま
+    m = re.search(r"(?is)<body[^>]*>(.*?)</body>", code)
+    if m:
+        inner = m.group(1)
+    elif not has_full:
+        inner = code  # フラグメント
+    else:
+        inner = re.sub(r"(?is)^.*?<html[^>]*>", "", code)
+        inner = re.sub(r"(?is)</html\s*>\s*$", "", inner)
+        inner = re.sub(r"(?is)<head\b.*?</head>", "", inner)
+    return _html_page(title, inner.strip())
 
 
 def to_docx(md: str, title: str = "回答") -> bytes:
@@ -478,6 +518,10 @@ def export_content(content: str, fmt: str, ext: str | None = None,
         safe_ext = re.sub(r"[^A-Za-z0-9]", "", (ext or "txt")) or "txt"
         return content.encode("utf-8"), MIME["code"], safe_ext
     if fmt == "html":
+        # 回答に実HTMLが含まれていれば、コードとして見せずに本物のHTMLページとして出力
+        doc = _extract_html_document(content, title)
+        if doc is not None:
+            return doc.encode("utf-8"), MIME["html"], "html"
         return to_html(content, title), MIME["html"], "html"
     if fmt == "docx":
         return to_docx(content, title), MIME["docx"], "docx"
