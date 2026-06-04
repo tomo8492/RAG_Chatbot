@@ -637,6 +637,24 @@ def _action_detail(ws: Path, name: str, args: dict) -> dict:
 # ============================================================
 CTX_CHAR_LIMIT = 60000   # 文脈の合計文字数がこれを超えたら圧縮
 
+# コーディング向け生成パラメータ(安定性重視・ツール呼び出し優先で think は付けない)
+AGENT_TEMPERATURE = 0.2
+AGENT_TOP_P = 0.9
+AGENT_NUM_PREDICT = 8192   # 1ステップの最大出力。長い編集/差分が途中で切れないよう大きめ
+
+
+def _gen_options(num_ctx: Optional[int] = None) -> dict:
+    """エージェントの生成オプション。サンプリングはコーディング向けに固定し、
+    num_ctx(コンテキスト長)だけは会話設定の値を反映する(0/None はモデル既定)。"""
+    opt = {
+        "temperature": AGENT_TEMPERATURE,
+        "top_p": AGENT_TOP_P,
+        "num_predict": AGENT_NUM_PREDICT,
+    }
+    if num_ctx:
+        opt["num_ctx"] = int(num_ctx)
+    return opt
+
 
 def _text_of(m) -> str:
     if isinstance(m, dict):
@@ -685,14 +703,17 @@ def compact_ctx(messages: list, summarizer) -> bool:
     return True
 
 
-def compact_ctx_with_model(model: str, messages: list) -> bool:
-    """モデルを使って文脈を圧縮(必要時のみ)。"""
+def compact_ctx_with_model(model: str, messages: list, num_ctx: Optional[int] = None) -> bool:
+    """モデルを使って文脈を圧縮(必要時のみ)。num_ctx を渡すと要約対象の取りこぼしを防ぐ。"""
     def summarizer(text: str) -> str:
+        opt = {"num_predict": 400}
+        if num_ctx:
+            opt["num_ctx"] = int(num_ctx)
         try:
             r = _client().chat(model=model, messages=[
                 {"role": "system", "content": "次の作業ログを、後で作業を再開できるよう日本語で簡潔に要約してください。"
                  "重要な決定・変更したファイル・実行結果・残タスクを箇条書きで。"},
-                {"role": "user", "content": text}], options={"num_predict": 400})
+                {"role": "user", "content": text}], options=opt)
             return getattr(r.message, "content", "") or ""
         except Exception:
             return ""
@@ -724,7 +745,8 @@ def _tc_to_dict(tc) -> dict:
 
 
 def run_stream(model: str, messages: list, workspace: str,
-               allow_changes: bool, plan_mode: bool = True) -> Iterator[dict]:
+               allow_changes: bool, plan_mode: bool = True,
+               num_ctx: Optional[int] = None) -> Iterator[dict]:
     """
     エージェントを1依頼ぶん実行し、イベントを順次 yield する。
     イベント type:
@@ -734,6 +756,7 @@ def run_stream(model: str, messages: list, workspace: str,
     """
     ws = Path(workspace).resolve()
     client = _client()
+    options = _gen_options(num_ctx)   # コーディング向け生成設定(num_ctx は会話設定を反映)
     phase = "plan" if plan_mode else "execute"
     investigated = False     # 調査(読み取り)系ツールを使ったか
     ask_redirected = False   # 「調査前の聞き返し」を一度リダイレクトしたか
@@ -741,7 +764,7 @@ def run_stream(model: str, messages: list, workspace: str,
     for _ in range(MAX_STEPS):
         # 実行の途中でも文脈が大きくなったら自動圧縮(溢れ防止。Claude同様)
         try:
-            if _ctx_chars(messages) > CTX_CHAR_LIMIT and compact_ctx_with_model(model, messages):
+            if _ctx_chars(messages) > CTX_CHAR_LIMIT and compact_ctx_with_model(model, messages, num_ctx):
                 log.info("文脈を自動圧縮しました(実行中)")
         except Exception:
             log.exception("実行中の文脈圧縮に失敗(無視して続行)")
@@ -751,7 +774,8 @@ def run_stream(model: str, messages: list, workspace: str,
         tool_calls: list = []
         streamed = False
         try:
-            for chunk in client.chat(model=model, messages=messages, tools=tools, stream=True):
+            for chunk in client.chat(model=model, messages=messages, tools=tools,
+                                     stream=True, options=options):
                 cm = getattr(chunk, "message", None)
                 if cm is None:
                     continue
@@ -769,7 +793,7 @@ def run_stream(model: str, messages: list, workspace: str,
                 return
             # まだ何も出力していなければ非ストリームで再試行
             try:
-                resp = client.chat(model=model, messages=messages, tools=tools)
+                resp = client.chat(model=model, messages=messages, tools=tools, options=options)
             except Exception as e2:
                 emsg = str(e2)
                 log.warning("agent 生成失敗: %s", emsg)

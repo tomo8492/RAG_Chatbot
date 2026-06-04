@@ -533,6 +533,7 @@ def api_agent(cid: str, body: AgentBody) -> Response:
 
     eff = effective_for(conv)
     model = eff["model"]
+    num_ctx = int(eff["num_ctx"]) or None   # 0 はモデル既定。Chat と同じく設定値を反映
 
     # 文脈を用意(新規ならDB履歴から再構築) → 依頼をDBへ保存 → 文脈へ追加
     with _code_ctx_lock:
@@ -547,7 +548,7 @@ def api_agent(cid: str, body: AgentBody) -> Response:
     user_msg = db.add_message(cid, "user", content)
     # 文脈が大きくなっていれば自動圧縮(古い履歴を要約に置換)してから依頼を追加
     try:
-        if agent.compact_ctx_with_model(model, ctx):
+        if agent.compact_ctx_with_model(model, ctx, num_ctx):
             log.info("文脈を自動圧縮しました [conv=%s]", cid)
     except Exception:
         log.exception("文脈圧縮に失敗(無視して続行)")
@@ -586,7 +587,7 @@ def api_agent(cid: str, body: AgentBody) -> Response:
                     acc_text.append(tt)
 
         try:
-            for ev in agent.run_stream(model, ctx, str(ws.resolve()), allow_changes, plan_mode):
+            for ev in agent.run_stream(model, ctx, str(ws.resolve()), allow_changes, plan_mode, num_ctx):
                 t = ev.get("type")
                 if t in ("assistant_delta", "assistant"):
                     if ev.get("text"):
