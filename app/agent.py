@@ -699,6 +699,8 @@ def run_stream(model: str, messages: list, workspace: str,
     ws = Path(workspace).resolve()
     client = _client()
     phase = "plan" if plan_mode else "execute"
+    investigated = False     # 調査(読み取り)系ツールを使ったか
+    ask_redirected = False   # 「調査前の聞き返し」を一度リダイレクトしたか
 
     for _ in range(MAX_STEPS):
         tools = PLAN_PHASE_TOOLS if phase == "plan" else EXEC_PHASE_TOOLS
@@ -760,6 +762,8 @@ def run_stream(model: str, messages: list, workspace: str,
                 except Exception:
                     args = {}
             args = args or {}
+            if name in READONLY or name == "summarize_path":
+                investigated = True
 
             # --- 計画の提示と承認 ---
             if name == "present_plan":
@@ -791,6 +795,17 @@ def run_stream(model: str, messages: list, workspace: str,
 
             # --- ユーザーへの質問(選択式)。回答を待って続行 ---
             if name == "ask_user":
+                # ガード: 調査もせず最初に聞き返すのは「質問の丸投げ」の可能性が高い。
+                # 一度だけリダイレクトし、まず自分で調べる/答えるよう促す(無限ループは防ぐ)。
+                if not investigated and not ask_redirected:
+                    ask_redirected = True
+                    result = ("[ガイド] まだ何も調査していません。ユーザーは多くの場合『答え』を求めています。"
+                              "聞き返す前に list_files / read_file / grep などで調べ、"
+                              "使い方・調べもの・原因調査の質問なら推測せず自分で結論を答えてください。"
+                              "本当に作業方針が分岐して結果が変わる場合に限り ask_user を使ってください。")
+                    yield {"type": "tool_result", "name": "ask_user", "status": "redirected", "result": result}
+                    messages.append({"role": "tool", "content": result, "tool_name": name})
+                    continue
                 question = str(args.get("question") or "").strip() or "どう進めますか?"
                 options = [str(o).strip() for o in (args.get("options") or []) if str(o).strip()][:4]
                 aid = new_pending()
