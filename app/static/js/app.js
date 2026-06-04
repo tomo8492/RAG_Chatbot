@@ -1001,6 +1001,7 @@ function optOf(o) {
 // 選択肢ボタン(見出し + 説明 + 推奨バッジ)。クリックで label を回答として送る。
 function askOptEl(o, onPick) {
   const node = el(onPick ? "button" : "div", "ask-opt" + (o.recommended ? " rec" : "") + (onPick ? "" : " static"));
+  if (onPick) node.type = "button";
   const main = el("div", "ask-opt-main");
   main.appendChild(el("span", "ask-opt-label", escapeHtml(o.label)));
   if (o.recommended) main.appendChild(el("span", "ask-opt-rec", "推奨"));
@@ -1013,7 +1014,7 @@ function buildAskCard(ev) {
   const card = el("div", "confirm-card ask-card");
   card.dataset.actionId = ev.action_id;
   card.dataset.kind = "ask";
-  card.appendChild(el("div", "confirm-title", "❓ " + (ev.question || "どう進めますか?")));
+  card.appendChild(el("div", "confirm-title", "❓ " + escapeHtml(ev.question || "どう進めますか?")));
   if (ev.context) card.appendChild(el("div", "ask-context", escapeHtml(ev.context)));
   const list = (ev.options || []).map(optOf).filter((o) => o.label);
   if (list.length) {
@@ -1023,10 +1024,13 @@ function buildAskCard(ev) {
   }
   const row = el("div", "ask-free");
   const input = el("input", "ask-input"); input.type = "text"; input.placeholder = "その他(自由に入力)…";
-  const send = el("button", "btn ask-send", "送信");
+  const send = el("button", "btn ask-send", "送信"); send.type = "button";
   const submitFree = () => { const v = input.value.trim(); if (v) submitAnswer(card, ev.action_id, v); };
   send.onclick = submitFree;
-  input.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); submitFree(); } });
+  input.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter" || e.isComposing || e.keyCode === 229) return;  // 日本語IME変換中は送信しない
+    e.preventDefault(); submitFree();
+  });
   row.appendChild(input); row.appendChild(send);
   card.appendChild(row);
   card.appendChild(el("div", "confirm-status ask-status"));
@@ -1051,7 +1055,7 @@ async function submitAnswer(card, actionId, answer) {
 // 保存済みステップ再表示用:質問(静的)
 function askStaticEl(question, options, context) {
   const card = el("div", "confirm-card ask-card");
-  card.appendChild(el("div", "confirm-title", "❓ " + (question || "")));
+  card.appendChild(el("div", "confirm-title", "❓ " + escapeHtml(question || "")));
   if (context) card.appendChild(el("div", "ask-context", escapeHtml(context)));
   const list = (options || []).map(optOf).filter((o) => o.label);
   if (list.length) {

@@ -276,8 +276,17 @@ def _norm_todos(todos) -> list:
 def _norm_options(raw) -> list:
     """ask_user の選択肢を {label, description, recommended} に正規化。
     文字列・オブジェクトのどちらで来ても受け取れるようにする(弱いモデル対策)。"""
+    if isinstance(raw, str):                      # 配列をJSON文字列で渡すモデルがある
+        try:
+            raw = json.loads(raw)
+        except Exception:
+            return []
+    if isinstance(raw, dict):                     # 単一選択肢をオブジェクトのまま渡す場合
+        raw = [raw]
+    if not isinstance(raw, (list, tuple)):
+        return []
     out, rec_used = [], False
-    for o in (raw or []):
+    for o in raw:
         if isinstance(o, dict):
             label = str(o.get("label") or o.get("text") or o.get("value") or o.get("title") or "").strip()
             desc = str(o.get("description") or o.get("desc") or o.get("detail") or "").strip()
