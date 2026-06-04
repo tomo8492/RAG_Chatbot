@@ -21,7 +21,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import agent, auth, db, export, llm, rag, safety
+from . import agent, auth, db, export, llm, rag, safety, summarize
 from .config import settings
 from .defaults import effective_for, get_defaults, set_defaults
 from .fsbrowse import count_supported_recursive, get_roots, list_dir
@@ -686,6 +686,50 @@ def api_rebuild_index(iid: str) -> dict:
     db.update_index(iid, status="building", error=None)
     _build_async(iid, idx["paths"])
     return db.get_index(iid)
+
+
+class SummarizeBody(BaseModel):
+    instruction: str = ""
+    model: Optional[str] = None
+
+
+@app.post("/api/indexes/{iid}/summarize", dependencies=[Depends(auth.require_auth)])
+def api_index_summarize(iid: str, body: SummarizeBody) -> Response:
+    """資料フォルダ配下の全ファイルを map-reduce で一括要約(進捗をSSEで配信)。"""
+    idx = db.get_index(iid)
+    if not idx:
+        raise HTTPException(404, "資料が見つかりません")
+    files = rag.scan_files(idx.get("paths") or [])
+    model = body.model or get_defaults()["model"]
+    instruction = (body.instruction or "").strip()
+
+    def gen():
+        if not files:
+            yield sse({"type": "error", "error": "対象ファイルがありません"})
+            return
+        if not model:
+            yield sse({"type": "error", "error": "モデルが選択されていません"})
+            return
+        if not llm.is_ollama_available():
+            yield sse({"type": "error",
+                       "error": f"Ollama に接続できません({settings.ollama_host})。"})
+            return
+        yield sse({"type": "start", "files": len(files)})
+        log.info("一括要約 開始 [idx=%s files=%d model=%s] 観点=%s",
+                 iid, len(files), model, instruction[:40])
+        fn = summarize.model_summarize_fn(model, instruction)
+        try:
+            for ev in summarize.stream_summarize(files, instruction, fn):
+                yield sse(ev)
+        except GeneratorExit:
+            log.info("一括要約 停止(クライアント切断)[idx=%s]", iid)
+            raise
+        except Exception as e:
+            log.exception("一括要約エラー")
+            yield sse({"type": "error", "error": str(e)})
+
+    headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"}
+    return StreamingResponse(gen(), media_type="text/event-stream", headers=headers)
 
 
 @app.delete("/api/indexes/{iid}", dependencies=[Depends(auth.require_auth)])

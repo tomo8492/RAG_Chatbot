@@ -964,7 +964,7 @@ function agentArgsSummary(name, args) {
   if (name === "edit_file") return args.path || "";
   if (name === "run_command" || name === "run_background") return args.command || "";
   if (name === "command_output" || name === "stop_command") return "job " + (args.job_id || "");
-  if (name === "read_file") return args.path || "";
+  if (name === "read_file" || name === "summarize_path") return args.path || "";
   if (name === "glob" || name === "grep") return args.pattern || "";
   return "";
 }
@@ -1222,6 +1222,11 @@ function renderKbList() {
     if (idx.error) card.appendChild(el("div", "kb-status error", escapeHtml(idx.error)));
     const actions = el("div", "kb-actions");
     actions.style.marginTop = "8px";
+    if (idx.status === "ready") {
+      const sum = el("button", "btn", "📝 要約");
+      sum.onclick = () => summarizeIndex(idx.id, idx.name);
+      actions.appendChild(sum);
+    }
     const rebuild = el("button", "btn", "↻ 再構築");
     rebuild.onclick = () => rebuildIndex(idx.id);
     const del = el("button", "btn", "🗑 削除");
@@ -1246,6 +1251,79 @@ async function toggleActiveIndex(iid, on) {
     method: "PATCH", body: JSON.stringify({ active_indexes: active }),
   });
   updateHeaderBadges();
+}
+
+/* ---------- 資料の一括要約(map-reduce) ---------- */
+const SummaryState = { iid: null, controller: null, running: false, text: "" };
+
+function summarizeIndex(iid, name) {
+  SummaryState.iid = iid;
+  SummaryState.text = "";
+  $("summary-progress").textContent = "";
+  $("summary-result").innerHTML = "";
+  $("summary-save-wrap").innerHTML = "";
+  $("summary-instruction").value = "";
+  $("summary-modal").querySelector("h2").textContent = "📝 一括要約: " + name;
+  $("summary-modal").classList.remove("hidden");
+}
+
+function closeSummary() {
+  if (SummaryState.running && SummaryState.controller) SummaryState.controller.abort();
+  $("summary-modal").classList.add("hidden");
+}
+
+async function runSummary() {
+  if (SummaryState.running || !SummaryState.iid) return;
+  SummaryState.running = true;
+  SummaryState.text = "";
+  SummaryState.controller = new AbortController();
+  $("summary-run").classList.add("hidden");
+  $("summary-stop").classList.remove("hidden");
+  $("summary-result").innerHTML = "";
+  $("summary-save-wrap").innerHTML = "";
+  $("summary-progress").textContent = "準備中…";
+  const instruction = $("summary-instruction").value.trim();
+  try {
+    const res = await fetch(`/api/indexes/${SummaryState.iid}/summarize`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ instruction }), signal: SummaryState.controller.signal,
+    });
+    if (res.status === 401) { showLogin(); throw new Error("認証が必要です"); }
+    if (!res.ok) { let d = res.statusText; try { d = (await res.json()).detail || d; } catch (_) {} throw new Error(d); }
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      let idx;
+      while ((idx = buf.indexOf("\n\n")) >= 0) {
+        const line = buf.slice(0, idx).replace(/^data: /, ""); buf = buf.slice(idx + 2);
+        if (!line) continue;
+        let ev; try { ev = JSON.parse(line); } catch (_) { continue; }
+        if (ev.type === "start") $("summary-progress").textContent = `${ev.files} 件を要約します…`;
+        else if (ev.type === "progress") $("summary-progress").textContent = ev.msg || "";
+        else if (ev.type === "result") {
+          SummaryState.text = ev.text || "";
+          renderMarkdown($("summary-result"), SummaryState.text, true);
+          $("summary-progress").textContent = "完了";
+          $("summary-save-wrap").appendChild(makeSaveMenu(() => SummaryState.text));
+        } else if (ev.type === "error") {
+          $("summary-progress").textContent = "エラー: " + (ev.error || "");
+          toast("要約エラー: " + (ev.error || ""));
+        }
+      }
+    }
+  } catch (e) {
+    if (e.name === "AbortError") $("summary-progress").textContent = "停止しました";
+    else { $("summary-progress").textContent = "エラー: " + e.message; toast(e.message); }
+  } finally {
+    SummaryState.running = false;
+    SummaryState.controller = null;
+    $("summary-run").classList.remove("hidden");
+    $("summary-stop").classList.add("hidden");
+  }
 }
 
 async function rebuildIndex(iid) {
@@ -1475,6 +1553,11 @@ function bindGlobalEvents() {
   // KBモーダル
   $("open-kb").onclick = openKb;
   $("add-kb").onclick = () => openFolderBrowser("index");
+  // 一括要約モーダル
+  $("summary-run").onclick = runSummary;
+  $("summary-stop").onclick = () => { if (SummaryState.controller) SummaryState.controller.abort(); };
+  $("summary-close").onclick = closeSummary;
+  $("summary-close2").onclick = closeSummary;
   // フォルダ
   $("fb-pick").onclick = pickFolder;
   $("fb-go").onclick = () => fbNavigate($("fb-path-input").value.trim());

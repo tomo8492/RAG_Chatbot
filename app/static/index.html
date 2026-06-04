@@ -255,6 +255,31 @@
     </div>
   </div>
 
+  <!-- ============ 一括要約モーダル ============ -->
+  <div id="summary-modal" class="overlay hidden">
+    <div class="modal">
+      <div class="modal-head"><h2>📝 資料の一括要約</h2><button class="icon-btn" id="summary-close">✕</button></div>
+      <div class="modal-body">
+        <p class="muted small">フォルダ内の全ファイルを1件ずつ要約し、まとめます(map-reduce)。
+          数百ファイルは時間がかかります。停止できます。</p>
+        <div class="field">
+          <label>観点・依頼(任意)</label>
+          <input type="text" id="summary-instruction" placeholder="例: 各規定の目的と対象を一覧で" />
+        </div>
+        <div class="summary-controls">
+          <button class="btn primary" id="summary-run">要約を実行</button>
+          <button class="btn stop hidden" id="summary-stop">停止</button>
+          <span id="summary-progress" class="muted small"></span>
+        </div>
+        <div id="summary-result" class="md summary-result"></div>
+      </div>
+      <div class="modal-foot">
+        <span id="summary-save-wrap"></span>
+        <button class="btn" id="summary-close2">閉じる</button>
+      </div>
+    </div>
+  </div>
+
   <!-- ============ フォルダ選択モーダル ============ -->
   <div id="folder-modal" class="overlay hidden">
     <div class="modal">
