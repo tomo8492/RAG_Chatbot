@@ -356,12 +356,13 @@ body[data-mode="code"] .code-bar.only-code { display: flex; }
 .cb-toggle.disabled { opacity: .45; cursor: not-allowed; }
 
 /* エージェントのステップ表示 */
-.agent-log { display: flex; flex-direction: column; gap: 8px; }
+.agent-log { display: flex; flex-direction: column; gap: 6px; }
 /* Claude 風の折りたたみツールステップ(▸ ツール名 引数 … 状態) */
-.step { border: 1px solid var(--line); border-radius: 8px; background: var(--code-bg); overflow: hidden; }
-.step[open] { background: var(--panel); }
+.step { border: 1px solid var(--line); border-radius: 8px; background: transparent; overflow: hidden;
+  transition: background .12s ease; }
+.step[open] { background: var(--code-bg); }
 summary.step-head { cursor: pointer; list-style: none; display: flex; align-items: center; gap: 8px;
-  padding: 6px 10px; font-family: ui-monospace, "SFMono-Regular", Consolas, monospace; font-size: 12.5px;
+  padding: 5px 10px; font-family: ui-monospace, "SFMono-Regular", Consolas, monospace; font-size: 12px;
   color: var(--ink-soft); user-select: none; }
 summary.step-head::-webkit-details-marker { display: none; }
 summary.step-head::before { content: "▸"; display: inline-block; width: .9em; opacity: .55;
@@ -384,6 +385,11 @@ summary.step-head:hover { background: rgba(127,127,127,.06); }
 /* ステップ本文内の結果は枠を外して軽く見せる(差分・確認カードと馴染ませる) */
 .step-body .step-result { border: none; background: transparent; padding: 6px 0 0; max-height: 220px; }
 .step-body > .confirm-card { margin-top: 8px; }
+/* 実行中スピナー(ステップのヘッダ右端) */
+.spin { display: inline-block; width: .8em; height: .8em; vertical-align: -1px;
+  border: 2px solid var(--ink-soft); border-top-color: transparent; border-radius: 50%;
+  animation: spin .7s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
 
 /* 承認カード(変更・コマンドの確認) */
 .confirm-card { border: 1px solid var(--accent); border-radius: 10px; padding: 12px 14px; background: var(--panel); }

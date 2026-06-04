@@ -788,7 +788,7 @@ def run_stream(model: str, messages: list, workspace: str,
     """
     エージェントを1依頼ぶん実行し、イベントを順次 yield する。
     イベント type:
-      assistant_delta / tool_call / tool_result / confirm / plan / todos / done / max_steps / error
+      thinking / assistant_delta / tool_call / tool_result / confirm / plan / todos / done / max_steps / error
     plan_mode=True のときは「調査→present_plan→承認→実行」。
     各ステップの本文は逐次ストリーミング(assistant_delta)で流す。
     """
@@ -823,6 +823,9 @@ def run_stream(model: str, messages: list, workspace: str,
                 cm = getattr(chunk, "message", None)
                 if cm is None:
                     continue
+                th = getattr(cm, "thinking", None)
+                if th:
+                    yield {"type": "thinking", "text": th}   # 思考は表示用に流す(保存はしない)
                 c = getattr(cm, "content", None)
                 if c:
                     content_parts.append(c)
@@ -847,6 +850,9 @@ def run_stream(model: str, messages: list, workspace: str,
                 yield {"type": "error", "error": emsg}
                 return
             cm = resp.message
+            th = getattr(cm, "thinking", None)
+            if th:
+                yield {"type": "thinking", "text": th}
             c = getattr(cm, "content", None)
             if c:
                 content_parts.append(c)

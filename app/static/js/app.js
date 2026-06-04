@@ -766,6 +766,13 @@ function buildAgentRow() {
     `<div class="msg-body"><div class="msg-name">Code エージェント</div><div class="agent-log"></div></div>`;
   return { row, logBox: row.querySelector(".agent-log") };
 }
+const SMALL_DIFF_LINES = 12;   // この変更行数以下の差分は折りたたまず開いておく
+// 思考(thinking)の折りたたみボックス(チャット側の .thinking と同じ見た目)
+function buildThinkBox() {
+  const det = el("details", "thinking");
+  det.innerHTML = '<summary>💭 考え中…</summary><div class="think-text"></div>';
+  return { el: det, sum: det.querySelector("summary"), text: det.querySelector(".think-text") };
+}
 // unified diff から +追加 / −削除 の行数を数える
 function diffStat(d) {
   let a = 0, r = 0;
@@ -783,7 +790,7 @@ function buildToolStep(name, args) {
   sum.className = "step-head";
   sum.appendChild(el("span", "step-name", escapeHtml(name)));
   sum.appendChild(el("span", "step-arg", escapeHtml(agentArgsSummary(name, args || {}))));
-  const stat = el("span", "step-stat running", "…");
+  const stat = el("span", "step-stat running", '<span class="spin"></span>');  // 実行中スピナー
   sum.appendChild(stat);
   det.appendChild(sum);
   const body = el("div", "step-body");
@@ -802,10 +809,13 @@ function buildToolStep(name, args) {
       rl.textContent = trimResult(result);
       body.appendChild(rl);
     }
+    let open = (s === "error" || s === "blocked" || s === "rejected");  // 問題は開いて見せる
     if (diff && !opts.skipDiffRender) {
+      const { a, r } = diffStat(diff);
+      if (a + r <= SMALL_DIFF_LINES) open = true;   // 小さな差分は畳まず開いておく
       const d = renderDiff(diff); d.classList.add("applied"); body.appendChild(d);
     }
-    det.open = (s === "error" || s === "blocked" || s === "rejected");  // 問題は開いて見せる
+    det.open = open;
   }
   return { el: det, body, fill };
 }
@@ -873,16 +883,27 @@ async function streamAgent(payload) {
   let curText = null;   // 連続する assistant テキストの描画先
   let todoEl = null;    // TODOパネル(更新時は同じ要素を書き換え)
   let curFill = null, curBody = null, hasConfirm = false;  // 結果待ちのツールステップ
+  let curThink = null;  // 思考の折りたたみボックス(本文/ツールが始まったら畳む)
 
+  const collapseThink = () => {
+    if (curThink) { curThink.el.open = false; curThink.sum.textContent = "💭 思考"; curThink = null; }
+  };
+  const addThink = (t) => {
+    if (!curThink) {
+      curThink = buildThinkBox(); curThink._raw = "";
+      logBox.appendChild(curThink.el); curThink.el.open = true;
+    }
+    curThink._raw += t; curThink.text.textContent = curThink._raw; scrollToBottom();
+  };
   const addStepCall = (name, args) => {
-    curText = null;
+    curText = null; collapseThink();
     const s = buildToolStep(name, args);
     logBox.appendChild(s.el);
     curFill = s.fill; curBody = s.body; hasConfirm = false;
     scrollToBottom();
   };
   const addStepResult = (status, result, diff) => {
-    curText = null;
+    curText = null; collapseThink();
     if (curFill) {
       // 確認カードが本文にある場合、差分はカード側に表示済みなので二重表示しない
       curFill(status, result, diff, { skipDiffRender: hasConfirm });
@@ -893,6 +914,7 @@ async function streamAgent(payload) {
     scrollToBottom();
   };
   const addText = (t) => {
+    collapseThink();
     if (!curText) { curText = el("div", "md agent-text"); curText._raw = ""; logBox.appendChild(curText); }
     curText._raw += t;
     renderMarkdown(curText, curText._raw, true);
@@ -921,6 +943,7 @@ async function streamAgent(payload) {
         if (!line) continue;
         let ev; try { ev = JSON.parse(line); } catch (_) { continue; }
         switch (ev.type) {
+          case "thinking": if (ev.text) addThink(ev.text); break;
           case "assistant_delta": if (ev.text) addText(ev.text); break;
           case "assistant": if (ev.text) addText(ev.text); break;
           case "tool_call": addStepCall(ev.name, ev.args || {}); break;
@@ -932,9 +955,9 @@ async function streamAgent(payload) {
             else logBox.appendChild(card);
             scrollToBottom(); break;
           }
-          case "plan": curText = null; curFill = null; curBody = null; logBox.appendChild(buildPlanCard(ev)); scrollToBottom(); break;
-          case "todos": curText = null; todoEl = renderTodos(logBox, ev.todos || [], todoEl); scrollToBottom(); break;
-          case "ask": curText = null; curFill = null; curBody = null; logBox.appendChild(buildAskCard(ev)); scrollToBottom(); break;
+          case "plan": curText = null; curFill = null; curBody = null; collapseThink(); logBox.appendChild(buildPlanCard(ev)); scrollToBottom(); break;
+          case "todos": curText = null; collapseThink(); todoEl = renderTodos(logBox, ev.todos || [], todoEl); scrollToBottom(); break;
+          case "ask": curText = null; curFill = null; curBody = null; collapseThink(); logBox.appendChild(buildAskCard(ev)); scrollToBottom(); break;
           case "error": addStepResult("rejected", "⚠ " + (ev.error || "エラー")); toast("エラー: " + (ev.error || "")); break;
           case "max_steps": addStepResult("blocked", "最大ステップ数に達しました。続けるには再度指示してください。"); break;
           case "done": case "user_saved": break;

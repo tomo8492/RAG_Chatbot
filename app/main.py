@@ -592,6 +592,9 @@ def api_agent(cid: str, body: AgentBody) -> Response:
                         buf.append(ev["text"])
                     yield sse(ev)
                     continue
+                if t == "thinking":
+                    yield sse(ev)   # 思考は表示のみ(本文に混ぜず・ステップにも保存しない)
+                    continue
                 flush_text()   # 区切り → それまでの本文を1ステップとして確定
                 if t == "tool_call":
                     steps.append({"type": "tool_call", "name": ev.get("name"), "args": ev.get("args", {})})
