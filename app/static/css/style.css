@@ -458,10 +458,25 @@ summary.step-head:hover { background: rgba(127,127,127,.06); }
 .ask-opt-desc { margin-top: 3px; font-size: 12.5px; color: var(--ink-soft); line-height: 1.5; }
 .ask-free { display: flex; gap: 8px; }
 .ask-input { flex: 1; padding: 8px 11px; border: 1px solid var(--line); border-radius: 9px;
-  background: var(--panel); color: var(--ink); font-family: inherit; font-size: 13.5px; }
+  background: var(--panel); color: var(--ink); font-family: inherit; font-size: 13.5px; box-sizing: border-box; }
 .ask-input:focus { outline: none; border-color: var(--accent); }
 .ask-status:empty { display: none; }
 .ask-status { margin-top: 8px; }
+/* 複数質問 / 複数選択(チェックボックス・ラジオ) */
+.ask-q { margin-bottom: 12px; }
+.ask-q + .ask-q { border-top: 1px solid var(--line); padding-top: 12px; }
+.ask-q-head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
+.ask-q-chip { font-size: 11.5px; font-weight: 700; color: var(--accent-dk);
+  background: rgba(92,124,250,.15); border-radius: 6px; padding: 2px 8px; }
+.ask-q-text { font-weight: 700; font-size: 13.5px; color: var(--ink); }
+.ask-q-multi { font-size: 11px; color: var(--ink-soft); border: 1px solid var(--line);
+  border-radius: 999px; padding: 1px 8px; }
+.ask-opt.ask-check { display: flex; align-items: flex-start; gap: 10px; }
+.ask-cb { margin: 3px 0 0; width: 16px; height: 16px; flex: 0 0 auto; accent-color: var(--accent); cursor: pointer; }
+.ask-opt-body { flex: 1 1 auto; min-width: 0; }
+.ask-opt.ask-check:has(.ask-cb:checked) { border-color: var(--accent); background: rgba(92,124,250,.12); }
+.ask-free-q { width: 100%; margin-top: 8px; }
+.ask-send-all { width: 100%; margin-top: 4px; }
 
 /* 実行計画カード(承認で実行フェーズへ) */
 .plan-card { border-color: var(--green); }

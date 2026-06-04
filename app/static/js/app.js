@@ -868,7 +868,7 @@ function renderCodeSteps(container, steps) {
         break;
       case "plan": container.appendChild(planStaticEl(ev.plan)); pend = null; break;
       case "todos": todoEl = renderTodos(container, ev.todos, todoEl); break;
-      case "ask": container.appendChild(askStaticEl(ev.question, ev.options, ev.context)); pend = null; break;
+      case "ask": container.appendChild(askStaticEl(ev)); pend = null; break;
     }
   });
 }
@@ -1010,59 +1010,133 @@ function askOptEl(o, onPick) {
   if (onPick) node.onclick = () => onPick(o.label);
   return node;
 }
+// ask イベント / 保存ステップを質問配列に正規化(新形式 questions・旧形式 question/options 両対応)
+function normalizeQuestions(ev) {
+  let qs = ev.questions;
+  if (!Array.isArray(qs) || !qs.length) {
+    qs = [{ header: ev.header, question: ev.question, multiSelect: ev.multiSelect, options: ev.options }];
+  }
+  return qs.map((q) => ({
+    header: String((q && q.header) || "").trim(),
+    question: String((q && (q.question || q.text)) || "").trim(),
+    multiSelect: !!(q && (q.multiSelect || q.multi)),
+    options: ((q && q.options) || []).map(optOf).filter((o) => o.label),
+  })).filter((q) => q.question || q.options.length);
+}
+// 1問ぶんのブロック(複数質問・複数選択用)。getSelected() で選択ラベル配列を返す。
+function buildQuestionBlock(q, qi) {
+  const wrap = el("div", "ask-q");
+  const head = el("div", "ask-q-head");
+  if (q.header) head.appendChild(el("span", "ask-q-chip", escapeHtml(q.header)));
+  head.appendChild(el("span", "ask-q-text", escapeHtml(q.question)));
+  if (q.multiSelect) head.appendChild(el("span", "ask-q-multi", "複数選択可"));
+  wrap.appendChild(head);
+  const opts = el("div", "ask-options");
+  const inputs = [];
+  q.options.forEach((o) => {
+    const lab = el("label", "ask-opt ask-check" + (o.recommended ? " rec" : ""));
+    const inp = document.createElement("input");
+    inp.className = "ask-cb";
+    inp.type = q.multiSelect ? "checkbox" : "radio";
+    inp.name = "askq-" + qi;
+    inp.value = o.label;
+    lab.appendChild(inp);
+    const body = el("div", "ask-opt-body");
+    const main = el("div", "ask-opt-main");
+    main.appendChild(el("span", "ask-opt-label", escapeHtml(o.label)));
+    if (o.recommended) main.appendChild(el("span", "ask-opt-rec", "推奨"));
+    body.appendChild(main);
+    if (o.description) body.appendChild(el("div", "ask-opt-desc", escapeHtml(o.description)));
+    lab.appendChild(body);
+    opts.appendChild(lab);
+    inputs.push(inp);
+  });
+  wrap.appendChild(opts);
+  const free = el("input", "ask-input ask-free-q"); free.type = "text"; free.placeholder = "その他(自由に入力)…";
+  wrap.appendChild(free);
+  const getSelected = () => {
+    const sel = inputs.filter((i) => i.checked).map((i) => i.value);
+    const f = free.value.trim();
+    if (f) sel.push(f);
+    return sel;
+  };
+  return { el: wrap, getSelected };
+}
 function buildAskCard(ev) {
   const card = el("div", "confirm-card ask-card");
   card.dataset.actionId = ev.action_id;
   card.dataset.kind = "ask";
-  card.appendChild(el("div", "confirm-title", "❓ " + escapeHtml(ev.question || "どう進めますか?")));
   if (ev.context) card.appendChild(el("div", "ask-context", escapeHtml(ev.context)));
-  const list = (ev.options || []).map(optOf).filter((o) => o.label);
-  if (list.length) {
-    const opts = el("div", "ask-options");
-    list.forEach((o) => opts.appendChild(askOptEl(o, (label) => submitAnswer(card, ev.action_id, label))));
-    card.appendChild(opts);
+  const questions = normalizeQuestions(ev);
+  // 1問・単一選択は「クリックで即送信」の軽快なパスを維持
+  if (questions.length === 1 && !questions[0].multiSelect) {
+    const q = questions[0];
+    card.appendChild(el("div", "confirm-title", "❓ " + escapeHtml(q.header ? q.header + ": " + q.question : q.question)));
+    if (q.options.length) {
+      const opts = el("div", "ask-options");
+      q.options.forEach((o) => opts.appendChild(askOptEl(o, (label) => submitAnswers(card, ev.action_id, [[label]], label))));
+      card.appendChild(opts);
+    }
+    const row = el("div", "ask-free");
+    const input = el("input", "ask-input"); input.type = "text"; input.placeholder = "その他(自由に入力)…";
+    const send = el("button", "btn ask-send", "送信"); send.type = "button";
+    const submitFree = () => { const v = input.value.trim(); if (v) submitAnswers(card, ev.action_id, [[v]], v); };
+    send.onclick = submitFree;
+    input.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter" || e.isComposing || e.keyCode === 229) return;  // 日本語IME変換中は送信しない
+      e.preventDefault(); submitFree();
+    });
+    row.appendChild(input); row.appendChild(send);
+    card.appendChild(row);
+  } else {
+    // 複数質問 or 複数選択 → 各質問を選んで一括送信
+    card.appendChild(el("div", "confirm-title", "❓ いくつか確認させてください"));
+    const blocks = questions.map((q, qi) => buildQuestionBlock(q, qi));
+    blocks.forEach((b) => card.appendChild(b.el));
+    const send = el("button", "btn primary ask-send-all", "回答を送信"); send.type = "button";
+    send.onclick = () => {
+      const answers = blocks.map((b) => b.getSelected());
+      const display = questions.map((q, i) =>
+        (q.header || `Q${i + 1}`) + ": " + (answers[i].length ? answers[i].join(", ") : "(なし)")).join(" / ");
+      submitAnswers(card, ev.action_id, answers, display);
+    };
+    card.appendChild(send);
   }
-  const row = el("div", "ask-free");
-  const input = el("input", "ask-input"); input.type = "text"; input.placeholder = "その他(自由に入力)…";
-  const send = el("button", "btn ask-send", "送信"); send.type = "button";
-  const submitFree = () => { const v = input.value.trim(); if (v) submitAnswer(card, ev.action_id, v); };
-  send.onclick = submitFree;
-  input.addEventListener("keydown", (e) => {
-    if (e.key !== "Enter" || e.isComposing || e.keyCode === 229) return;  // 日本語IME変換中は送信しない
-    e.preventDefault(); submitFree();
-  });
-  row.appendChild(input); row.appendChild(send);
-  card.appendChild(row);
   card.appendChild(el("div", "confirm-status ask-status"));
   return card;
 }
 
-async function submitAnswer(card, actionId, answer) {
-  card.querySelectorAll("button").forEach((b) => (b.disabled = true));
-  const input = card.querySelector(".ask-input"); if (input) input.disabled = true;
+async function submitAnswers(card, actionId, answers, displayText) {
+  card.querySelectorAll("button, input").forEach((b) => (b.disabled = true));
   const status = card.querySelector(".ask-status");
   try {
-    await api("/api/code/answer", { method: "POST", body: JSON.stringify({ action_id: actionId, answer }) });
-    if (status) { status.textContent = "回答: " + answer; status.className = "confirm-status ask-status ok"; }
+    await api("/api/code/answer", { method: "POST", body: JSON.stringify({ action_id: actionId, answers }) });
+    if (status) { status.textContent = "回答: " + (displayText || answers.flat().join(" / ") || "(なし)"); status.className = "confirm-status ask-status ok"; }
     card.dataset.resolved = "1";
   } catch (e) {
     if (status) { status.textContent = "送信失敗: " + e.message; status.className = "confirm-status ask-status no"; }
-    card.querySelectorAll("button").forEach((b) => (b.disabled = false));
-    if (input) input.disabled = false;
+    card.querySelectorAll("button, input").forEach((b) => (b.disabled = false));
   }
 }
 
-// 保存済みステップ再表示用:質問(静的)
-function askStaticEl(question, options, context) {
+// 保存済みステップ再表示用:質問(静的・複数質問対応)
+function askStaticEl(ev) {
   const card = el("div", "confirm-card ask-card");
-  card.appendChild(el("div", "confirm-title", "❓ " + escapeHtml(question || "")));
-  if (context) card.appendChild(el("div", "ask-context", escapeHtml(context)));
-  const list = (options || []).map(optOf).filter((o) => o.label);
-  if (list.length) {
-    const opts = el("div", "ask-options");
-    list.forEach((o) => opts.appendChild(askOptEl(o, null)));
-    card.appendChild(opts);
-  }
+  if (ev.context) card.appendChild(el("div", "ask-context", escapeHtml(ev.context)));
+  normalizeQuestions(ev).forEach((q) => {
+    const wrap = el("div", "ask-q");
+    const head = el("div", "ask-q-head");
+    if (q.header) head.appendChild(el("span", "ask-q-chip", escapeHtml(q.header)));
+    head.appendChild(el("span", "ask-q-text", escapeHtml(q.question)));
+    if (q.multiSelect) head.appendChild(el("span", "ask-q-multi", "複数選択可"));
+    wrap.appendChild(head);
+    if (q.options.length) {
+      const opts = el("div", "ask-options");
+      q.options.forEach((o) => opts.appendChild(askOptEl(o, null)));
+      wrap.appendChild(opts);
+    }
+    card.appendChild(wrap);
+  });
   return card;
 }
 

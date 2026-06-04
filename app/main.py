@@ -483,7 +483,8 @@ class ApproveBody(BaseModel):
 
 class AnswerBody(BaseModel):
     action_id: str
-    answer: str = ""
+    answer: str = ""                       # 旧形式(単一回答)
+    answers: Optional[list] = None         # 新形式(質問ごとの選択ラベル配列)
 
 
 def _init_code_ctx(cid: str, ws: Path) -> list:
@@ -609,9 +610,8 @@ def api_agent(cid: str, body: AgentBody) -> Response:
                 elif t == "todos":
                     steps.append({"type": "todos", "todos": ev.get("todos", [])})
                 elif t == "ask":
-                    steps.append({"type": "ask", "question": ev.get("question", ""),
-                                  "context": ev.get("context", ""),
-                                  "options": ev.get("options", [])})
+                    steps.append({"type": "ask", "context": ev.get("context", ""),
+                                  "questions": ev.get("questions", [])})
                 yield sse(ev)
         except GeneratorExit:
             log.info("エージェント停止(クライアント切断)[conv=%s]", cid)
@@ -637,7 +637,8 @@ def api_code_approve(body: ApproveBody) -> dict:
 
 @app.post("/api/code/answer", dependencies=[Depends(auth.require_auth)])
 def api_code_answer(body: AnswerBody) -> dict:
-    ok = agent.resolve_answer(body.action_id, body.answer)
+    ans = body.answers if body.answers is not None else body.answer
+    ok = agent.resolve_answer(body.action_id, ans)
     return {"ok": ok}
 
 
