@@ -812,12 +812,16 @@ def run_stream(model: str, messages: list, workspace: str,
                 try:
                     base = _safe_path(ws, rel)
                     from . import summarize as _summ, rag as _rag
+                    from .defaults import get_defaults as _gd
                     sfiles = _rag.scan_files([str(base)])
                     if not sfiles:
                         result = "[対象ファイルがありません]"
                     else:
-                        result = _summ.run_summarize(
-                            sfiles, instr, _summ.model_summarize_fn(model, instr)) or "(要約できませんでした)"
+                        mm = (_gd().get("summarize_map_model") or "").strip() or None
+                        if mm == model:
+                            mm = None
+                        fn = _summ.model_summarize_fn(model, instr, map_model=mm)
+                        result = _summ.run_summarize(sfiles, instr, fn) or "(要約できませんでした)"
                 except Exception as e:
                     result = f"[エラー] {e}"
                 yield {"type": "tool_result", "name": name, "status": "ok", "result": result}

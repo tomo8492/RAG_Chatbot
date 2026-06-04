@@ -384,6 +384,11 @@ body[data-mode="code"] .code-bar.only-code { display: flex; }
 .todo-item.in_progress { color: var(--accent-dk); font-weight: 600; }
 
 /* 一括要約モーダル */
+.summary-presets { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip-btn { padding: 4px 10px; border: 1px solid var(--line); border-radius: 999px;
+  background: var(--panel); color: var(--text); cursor: pointer; font-size: 13px; }
+.chip-btn:hover { border-color: var(--accent); }
+.chip-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
 .summary-controls { display: flex; align-items: center; gap: 10px; margin: 6px 0 10px; }
 .summary-result { border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px;
   margin-top: 8px; max-height: 46vh; overflow-y: auto; background: var(--panel); min-height: 40px; }

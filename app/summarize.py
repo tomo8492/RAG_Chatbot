@@ -39,24 +39,38 @@ _SYS = {
 }
 
 
-def model_summarize_fn(model: str, instruction: str = "") -> SummFn:
-    """Ollama を使う summarize_fn を返す。"""
+def model_summarize_fn(model: str, instruction: str = "",
+                       map_model: str | None = None,
+                       categories: list[str] | None = None) -> SummFn:
+    """Ollama を使う summarize_fn を返す。
+    map_model  : file/merge(下書き=大量呼び出し)を担うモデル。空/None ならメイン model を使用。
+    categories : ガイド付き要約の観点。指定すると抽出・最終整形を見出し構造化する。
+    """
     client = ollama.Client(host=settings.ollama_host)
     focus = f"\n特に「{instruction}」に関係する点を重視してください。" if instruction else ""
+    cats = [c.strip() for c in (categories or []) if c and c.strip()]
+    cat_extract = ("\n次の観点に該当する情報を重点的に抽出してください: " + " / ".join(cats)) if cats else ""
 
     def fn(text: str, role: str) -> str:
-        sys = _SYS.get(role, _SYS["file"]) + (focus if role != "final" else "")
-        user = text
+        # 下書き(file/merge)は高速モデル、最終整形(final)は品質モデル
+        use_model = map_model if (role in ("file", "merge") and map_model) else model
         if role == "final":
+            sys = _SYS["final"]
+            if cats:
+                sys += ("\n次の見出しで構造化してまとめてください(該当情報が無い見出しは「記載なし」と明記):\n"
+                        + "\n".join(f"{i}. {c}" for i, c in enumerate(cats, 1)))
             user = f"【依頼】{instruction or '全体の概要をまとめる'}\n\n【要約群】\n{text}"
+        else:
+            sys = _SYS.get(role, _SYS["file"]) + focus + (cat_extract if role == "file" else "")
+            user = text
         try:
-            r = client.chat(model=model, messages=[
+            r = client.chat(model=use_model, messages=[
                 {"role": "system", "content": sys},
                 {"role": "user", "content": user},
             ], options={"num_predict": SUMMARY_TOKENS})
             return (getattr(r.message, "content", "") or "").strip()
         except Exception as e:
-            log.warning("要約呼び出し失敗: %s", e)
+            log.warning("要約呼び出し失敗(model=%s): %s", use_model, e)
             return ""
 
     return fn

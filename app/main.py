@@ -691,6 +691,8 @@ def api_rebuild_index(iid: str) -> dict:
 class SummarizeBody(BaseModel):
     instruction: str = ""
     model: Optional[str] = None
+    map_model: Optional[str] = None
+    categories: list[str] = []
 
 
 @app.post("/api/indexes/{iid}/summarize", dependencies=[Depends(auth.require_auth)])
@@ -700,8 +702,13 @@ def api_index_summarize(iid: str, body: SummarizeBody) -> Response:
     if not idx:
         raise HTTPException(404, "資料が見つかりません")
     files = rag.scan_files(idx.get("paths") or [])
-    model = body.model or get_defaults()["model"]
+    defs = get_defaults()
+    model = body.model or defs["model"]
+    map_model = (body.map_model or defs.get("summarize_map_model") or "").strip() or None
+    if map_model == model:
+        map_model = None
     instruction = (body.instruction or "").strip()
+    categories = [c.strip() for c in (body.categories or []) if c and c.strip()]
 
     def gen():
         if not files:
@@ -714,10 +721,10 @@ def api_index_summarize(iid: str, body: SummarizeBody) -> Response:
             yield sse({"type": "error",
                        "error": f"Ollama に接続できません({settings.ollama_host})。"})
             return
-        yield sse({"type": "start", "files": len(files)})
-        log.info("一括要約 開始 [idx=%s files=%d model=%s] 観点=%s",
-                 iid, len(files), model, instruction[:40])
-        fn = summarize.model_summarize_fn(model, instruction)
+        yield sse({"type": "start", "files": len(files), "model": model, "map_model": map_model})
+        log.info("一括要約 開始 [idx=%s files=%d model=%s map=%s] 観点=%s cats=%d",
+                 iid, len(files), model, map_model, instruction[:40], len(categories))
+        fn = summarize.model_summarize_fn(model, instruction, map_model=map_model, categories=categories)
         try:
             for ev in summarize.stream_summarize(files, instruction, fn):
                 yield sse(ev)
