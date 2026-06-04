@@ -448,7 +448,12 @@ def api_generate(cid: str, body: GenerateBody) -> Response:
             raise
         except Exception as e:
             log.exception("生成エラー")
-            yield sse({"type": "error", "error": str(e)})
+            emsg = str(e)
+            low = emsg.lower()
+            if "context" in low and ("exceed" in low or "ctx" in low or "context size" in low):
+                emsg = ("コンテキスト長を超えました。チャット欄の『参照』件数を減らす(∞→5など)、"
+                        "または設定でコンテキスト長(num_ctx)を上げてください。")
+            yield sse({"type": "error", "error": emsg})
         finally:
             if not saved and acc_content.strip():
                 db.add_message(cid, "assistant", acc_content, sources=sources)
