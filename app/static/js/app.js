@@ -766,21 +766,57 @@ function buildAgentRow() {
     `<div class="msg-body"><div class="msg-name">Code エージェント</div><div class="agent-log"></div></div>`;
   return { row, logBox: row.querySelector(".agent-log") };
 }
-function stepCallEl(name, args) {
-  return el("div", "step-call",
-    `▸ <span class="tool-name">${escapeHtml(name)}</span> ${escapeHtml(agentArgsSummary(name, args || {}))}`);
+// unified diff から +追加 / −削除 の行数を数える
+function diffStat(d) {
+  let a = 0, r = 0;
+  (d || "").split("\n").forEach((l) => {
+    if (l.startsWith("+") && !l.startsWith("+++")) a++;
+    else if (l.startsWith("-") && !l.startsWith("---")) r++;
+  });
+  return { a, r };
 }
-function stepResultEls(status, result, diff) {
-  const out = [];
+// Claude 風の折りたたみツールステップ。ヘッダ(ツール名・引数・状態)+ 折りたたみ本文。
+// 返り値の fill(status,result,diff,opts) を tool_result 受信時に呼ぶ。
+function buildToolStep(name, args) {
+  const det = el("details", "step");
+  const sum = document.createElement("summary");
+  sum.className = "step-head";
+  sum.appendChild(el("span", "step-name", escapeHtml(name)));
+  sum.appendChild(el("span", "step-arg", escapeHtml(agentArgsSummary(name, args || {}))));
+  const stat = el("span", "step-stat running", "…");
+  sum.appendChild(stat);
+  det.appendChild(sum);
+  const body = el("div", "step-body");
+  det.appendChild(body);
+  const ICON = { ok: "✓", error: "⚠", blocked: "⛔", rejected: "⊘", redirected: "↩" };
+  function fill(status, result, diff, opts) {
+    opts = opts || {};
+    det._filled = true;
+    const s = status || "ok";
+    stat.className = "step-stat " + s;
+    let label = ICON[s] || "✓";
+    if (diff) { const { a, r } = diffStat(diff); if (a || r) label += `  +${a} −${r}`; }
+    stat.textContent = label;
+    if (result) {
+      const rl = el("div", "step-result" + (s !== "ok" ? " " + s : ""));
+      rl.textContent = trimResult(result);
+      body.appendChild(rl);
+    }
+    if (diff && !opts.skipDiffRender) {
+      const d = renderDiff(diff); d.classList.add("applied"); body.appendChild(d);
+    }
+    det.open = (s === "error" || s === "blocked" || s === "rejected");  // 問題は開いて見せる
+  }
+  return { el: det, body, fill };
+}
+// tool_call を伴わない結果(エラー/最大ステップ/停止など)の素朴な通知ボックス
+function plainNoticeEl(status, result, diff) {
+  const wrap = el("div", "step-notice");
   const div = el("div", "step-result" + (status && status !== "ok" ? " " + status : ""));
   div.textContent = trimResult(result || "");
-  out.push(div);
-  if (diff) {
-    const d = renderDiff(diff);
-    d.classList.add("applied");
-    out.push(d);
-  }
-  return out;
+  wrap.appendChild(div);
+  if (diff) { const d = renderDiff(diff); d.classList.add("applied"); wrap.appendChild(d); }
+  return wrap;
 }
 function agentTextEl(text) {
   const d = el("div", "md agent-text");
@@ -808,17 +844,21 @@ function renderTodos(container, todos, existing) {
   if (!existing) container.appendChild(box);
   return box;
 }
-// 保存済みステップ(message.sources)を静的に再描画
+// 保存済みステップ(message.sources)を静的に再描画。tool_call と直後の
+// tool_result を1つの折りたたみステップにまとめる(ライブ表示と同じ見た目)。
 function renderCodeSteps(container, steps) {
-  let todoEl = null;
+  let todoEl = null, pend = null;   // pend: 結果待ちステップの fill 関数
   (steps || []).forEach((ev) => {
     switch (ev.type) {
-      case "assistant": if (ev.text) container.appendChild(agentTextEl(ev.text)); break;
-      case "tool_call": container.appendChild(stepCallEl(ev.name, ev.args)); break;
-      case "tool_result": stepResultEls(ev.status, ev.result, ev.diff).forEach((e) => container.appendChild(e)); break;
-      case "plan": container.appendChild(planStaticEl(ev.plan)); break;
+      case "assistant": if (ev.text) container.appendChild(agentTextEl(ev.text)); pend = null; break;
+      case "tool_call": { const s = buildToolStep(ev.name, ev.args); container.appendChild(s.el); pend = s.fill; break; }
+      case "tool_result":
+        if (pend) { pend(ev.status, ev.result, ev.diff); pend = null; }
+        else container.appendChild(plainNoticeEl(ev.status, ev.result, ev.diff));
+        break;
+      case "plan": container.appendChild(planStaticEl(ev.plan)); pend = null; break;
       case "todos": todoEl = renderTodos(container, ev.todos, todoEl); break;
-      case "ask": container.appendChild(askStaticEl(ev.question, ev.options)); break;
+      case "ask": container.appendChild(askStaticEl(ev.question, ev.options)); pend = null; break;
     }
   });
 }
@@ -832,11 +872,24 @@ async function streamAgent(payload) {
   State.controller = new AbortController();
   let curText = null;   // 連続する assistant テキストの描画先
   let todoEl = null;    // TODOパネル(更新時は同じ要素を書き換え)
+  let curFill = null, curBody = null, hasConfirm = false;  // 結果待ちのツールステップ
 
-  const addStepCall = (name, args) => { curText = null; logBox.appendChild(stepCallEl(name, args)); scrollToBottom(); };
+  const addStepCall = (name, args) => {
+    curText = null;
+    const s = buildToolStep(name, args);
+    logBox.appendChild(s.el);
+    curFill = s.fill; curBody = s.body; hasConfirm = false;
+    scrollToBottom();
+  };
   const addStepResult = (status, result, diff) => {
     curText = null;
-    stepResultEls(status, result, diff).forEach((e) => logBox.appendChild(e));
+    if (curFill) {
+      // 確認カードが本文にある場合、差分はカード側に表示済みなので二重表示しない
+      curFill(status, result, diff, { skipDiffRender: hasConfirm });
+      curFill = null; curBody = null; hasConfirm = false;
+    } else {
+      logBox.appendChild(plainNoticeEl(status, result, diff));
+    }
     scrollToBottom();
   };
   const addText = (t) => {
@@ -872,10 +925,16 @@ async function streamAgent(payload) {
           case "assistant": if (ev.text) addText(ev.text); break;
           case "tool_call": addStepCall(ev.name, ev.args || {}); break;
           case "tool_result": addStepResult(ev.status, ev.result || "", ev.diff); break;
-          case "confirm": curText = null; logBox.appendChild(buildConfirmCard(ev)); scrollToBottom(); break;
-          case "plan": curText = null; logBox.appendChild(buildPlanCard(ev)); scrollToBottom(); break;
+          case "confirm": {
+            curText = null;
+            const card = buildConfirmCard(ev);
+            if (curBody) { curBody.appendChild(card); curBody.parentElement.open = true; hasConfirm = true; }
+            else logBox.appendChild(card);
+            scrollToBottom(); break;
+          }
+          case "plan": curText = null; curFill = null; curBody = null; logBox.appendChild(buildPlanCard(ev)); scrollToBottom(); break;
           case "todos": curText = null; todoEl = renderTodos(logBox, ev.todos || [], todoEl); scrollToBottom(); break;
-          case "ask": curText = null; logBox.appendChild(buildAskCard(ev)); scrollToBottom(); break;
+          case "ask": curText = null; curFill = null; curBody = null; logBox.appendChild(buildAskCard(ev)); scrollToBottom(); break;
           case "error": addStepResult("rejected", "⚠ " + (ev.error || "エラー")); toast("エラー: " + (ev.error || "")); break;
           case "max_steps": addStepResult("blocked", "最大ステップ数に達しました。続けるには再度指示してください。"); break;
           case "done": case "user_saved": break;
