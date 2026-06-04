@@ -776,8 +776,8 @@ function stepResultEls(status, result, diff) {
   div.textContent = trimResult(result || "");
   out.push(div);
   if (diff) {
-    const d = el("div", "confirm-diff applied-diff");
-    d.innerHTML = colorizeDiff(diff);
+    const d = renderDiff(diff);
+    d.classList.add("applied");
     out.push(d);
   }
   return out;
@@ -1003,10 +1003,8 @@ function buildConfirmCard(ev) {
     card.appendChild(el("div", "confirm-cmd", "$ " + escapeHtml(ev.command || "")));
   } else {
     card.appendChild(el("div", "confirm-meta",
-      `${escapeHtml(ev.path || "")} ・ ${ev.exists ? "上書き" : "新規作成"} ・ ${ev.length || 0}字`));
-    const diff = el("div", "confirm-diff");
-    diff.innerHTML = colorizeDiff(ev.diff || "(差分なし)");
-    card.appendChild(diff);
+      `${escapeHtml(ev.path || "")} ・ ${ev.exists ? "上書き" : "新規作成"}`));
+    card.appendChild(renderDiff(ev.diff || ""));
   }
   const actions = el("div", "confirm-actions");
   const ok = el("button", "btn primary", isCmd ? "実行する" : "適用する");
@@ -1019,13 +1017,41 @@ function buildConfirmCard(ev) {
   return card;
 }
 
-function colorizeDiff(diff) {
-  return diff.split("\n").map((ln) => {
-    const safe = escapeHtml(ln);
-    if (ln.startsWith("+") && !ln.startsWith("+++")) return `<span class="add">${safe}</span>`;
-    if (ln.startsWith("-") && !ln.startsWith("---")) return `<span class="del">${safe}</span>`;
-    return safe;
-  }).join("\n");
+// Claude Code 風の差分表示。unified diff を行番号つき・行ごと色分けで描画する。
+function renderDiff(diffText) {
+  const wrap = el("div", "cc-diff");
+  const body = el("div", "cc-diff-body");
+  let oldLn = 0, newLn = 0, adds = 0, dels = 0, firstHunk = true, rows = 0;
+  (diffText || "").split("\n").forEach((ln) => {
+    if (ln.startsWith("+++") || ln.startsWith("---")) return;     // ファイルヘッダ行は隠す
+    const m = ln.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/); // ハンクヘッダ → 行番号を復元
+    if (m) {
+      oldLn = parseInt(m[1], 10); newLn = parseInt(m[2], 10);
+      if (!firstHunk) body.appendChild(el("div", "cc-diff-gap", "⋯"));
+      firstHunk = false;
+      return;
+    }
+    if (ln === "" ) return;
+    let cls, gutter, mark, text;
+    if (ln.startsWith("+")) { cls = "add"; gutter = newLn++; mark = "+"; text = ln.slice(1); adds++; }
+    else if (ln.startsWith("-")) { cls = "del"; gutter = oldLn++; mark = "-"; text = ln.slice(1); dels++; }
+    else { cls = "ctx"; gutter = newLn++; oldLn++; mark = " "; text = ln.startsWith(" ") ? ln.slice(1) : ln; }
+    const row = el("div", "cc-diff-row " + cls);
+    row.appendChild(el("span", "cc-ln", String(gutter)));
+    row.appendChild(el("span", "cc-mark", mark === " " ? "&nbsp;" : mark));
+    const code = el("span", "cc-code");
+    code.textContent = text;                                       // textContent で自動エスケープ
+    row.appendChild(code);
+    body.appendChild(row);
+    rows++;
+  });
+  const head = el("div", "cc-diff-head");
+  head.appendChild(el("span", "cc-add-cnt", "+" + adds));
+  head.appendChild(el("span", "cc-del-cnt", "−" + dels));
+  wrap.appendChild(head);
+  if (rows) wrap.appendChild(body);
+  else wrap.appendChild(el("div", "cc-diff-empty", "(差分なし)"));
+  return wrap;
 }
 
 async function respondConfirm(card, actionId, approved, statusEl, btns) {
