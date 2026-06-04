@@ -290,8 +290,13 @@ def retrieve(query: str, index_ids: list[str], conversation_id: Optional[str] = 
                     "score": 1.0 - float(dist),  # cosine距離 -> 類似度
                     "distance": float(dist),
                 })
-        except Exception:
-            log.exception("コレクション検索失敗: %s", name)
+        except Exception as e:
+            es = str(e).lower()
+            if any(k in es for k in ("hnsw", "compactor", "backfill", "segment")):
+                log.warning("インデックスが壊れている可能性があります。参照資料を削除→再作成してください "
+                            "(同期フォルダOneDrive配下だと破損しやすい): %s / %s", name, str(e)[:160])
+            else:
+                log.warning("コレクション検索失敗(%s): %s", name, str(e)[:200])
 
     hits.sort(key=lambda h: h["distance"])
     return hits if unlimited else hits[:top_k]
