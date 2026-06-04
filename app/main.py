@@ -652,7 +652,17 @@ def _build_async(iid: str, paths: list[str]) -> None:
 
 @app.get("/api/indexes", dependencies=[Depends(auth.require_auth)])
 def api_list_indexes() -> list:
-    return db.list_indexes()
+    items = db.list_indexes()
+    for it in items:
+        st = db.get_kv(f"summary:{it['id']}") or {}
+        it["summary"] = {
+            "status": st.get("status", "none"),
+            "msg": st.get("msg", ""),
+            "has_result": bool(st.get("result")),
+            "finished_at": st.get("finished_at"),
+        }
+        it["bg_threshold"] = SUMMARY_BG_THRESHOLD
+    return items
 
 
 @app.post("/api/indexes", dependencies=[Depends(auth.require_auth)])
@@ -684,6 +694,7 @@ def api_rebuild_index(iid: str) -> dict:
     if not idx:
         raise HTTPException(404, "インデックスが見つかりません")
     db.update_index(iid, status="building", error=None)
+    db.set_kv(f"summary:{iid}", {"status": "none"})   # 内容が変わるため古い要約は破棄
     _build_async(iid, idx["paths"])
     return db.get_index(iid)
 
@@ -737,6 +748,96 @@ def api_index_summarize(iid: str, body: SummarizeBody) -> Response:
 
     headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"}
     return StreamingResponse(gen(), media_type="text/event-stream", headers=headers)
+
+
+# --- バックグラウンド一括要約(参照ファイルが多いとき。ウィンドウを出さず裏で実行) ---
+SUMMARY_BG_THRESHOLD = 100   # この件数以上はフロントが裏(バックグラウンド)実行を選ぶ
+_summary_cancel: set[str] = set()
+_summary_lock = threading.Lock()
+
+
+def _summary_set(iid: str, **fields) -> dict:
+    st = db.get_kv(f"summary:{iid}", {}) or {}
+    st.update(fields)
+    db.set_kv(f"summary:{iid}", st)
+    return st
+
+
+def _summarize_worker(iid: str, files, instruction: str, categories: list,
+                      model: str, map_model) -> None:
+    db.set_kv(f"summary:{iid}", {
+        "status": "running", "files": len(files), "msg": "準備中…",
+        "instruction": instruction, "categories": categories, "map_model": map_model,
+        "result": None, "error": None, "started_at": time.time(), "finished_at": None})
+    log.info("一括要約(裏) 開始 [idx=%s files=%d model=%s map=%s]", iid, len(files), model, map_model)
+    fn = summarize.model_summarize_fn(model, instruction, map_model=map_model, categories=categories)
+    gen = summarize.stream_summarize(files, instruction, fn)
+    try:
+        for ev in gen:
+            with _summary_lock:
+                canceled = iid in _summary_cancel
+            if canceled:
+                gen.close()
+                _summary_set(iid, status="canceled", msg="中止しました", finished_at=time.time())
+                log.info("一括要約(裏) 中止 [idx=%s]", iid)
+                break
+            t = ev.get("type")
+            if t == "progress":
+                _summary_set(iid, msg=ev.get("msg", ""))
+            elif t == "result":
+                _summary_set(iid, status="done", result=ev.get("text", ""),
+                             msg="完了", finished_at=time.time())
+                log.info("一括要約(裏) 完了 [idx=%s]", iid)
+            elif t == "error":
+                _summary_set(iid, status="error", error=ev.get("error", ""),
+                             msg="エラー", finished_at=time.time())
+    except Exception as e:
+        log.exception("一括要約(裏) 失敗 [idx=%s]", iid)
+        _summary_set(iid, status="error", error=str(e), msg="エラー", finished_at=time.time())
+    finally:
+        with _summary_lock:
+            _summary_cancel.discard(iid)
+
+
+@app.post("/api/indexes/{iid}/summarize/start", dependencies=[Depends(auth.require_auth)])
+def api_summarize_start(iid: str, body: SummarizeBody) -> dict:
+    """裏(バックグラウンド)で一括要約を開始する。進捗は GET /summary でポーリング。"""
+    idx = db.get_index(iid)
+    if not idx:
+        raise HTTPException(404, "資料が見つかりません")
+    cur = db.get_kv(f"summary:{iid}")
+    if cur and cur.get("status") == "running":
+        return {"status": "running", "files": cur.get("files")}
+    files = rag.scan_files(idx.get("paths") or [])
+    if not files:
+        raise HTTPException(400, "対象ファイルがありません")
+    if not llm.is_ollama_available():
+        raise HTTPException(503, f"Ollama に接続できません({settings.ollama_host})。")
+    defs = get_defaults()
+    model = body.model or defs["model"]
+    map_model = (body.map_model or defs.get("summarize_map_model") or "").strip() or None
+    if map_model == model:
+        map_model = None
+    instruction = (body.instruction or "").strip()
+    categories = [c.strip() for c in (body.categories or []) if c and c.strip()]
+    with _summary_lock:
+        _summary_cancel.discard(iid)
+    threading.Thread(target=_summarize_worker,
+                     args=(iid, files, instruction, categories, model, map_model),
+                     daemon=True).start()
+    return {"status": "running", "files": len(files)}
+
+
+@app.get("/api/indexes/{iid}/summary", dependencies=[Depends(auth.require_auth)])
+def api_summary_status(iid: str) -> dict:
+    return db.get_kv(f"summary:{iid}", {"status": "none"}) or {"status": "none"}
+
+
+@app.post("/api/indexes/{iid}/summary/cancel", dependencies=[Depends(auth.require_auth)])
+def api_summary_cancel(iid: str) -> dict:
+    with _summary_lock:
+        _summary_cancel.add(iid)
+    return {"ok": True}
 
 
 @app.delete("/api/indexes/{iid}", dependencies=[Depends(auth.require_auth)])

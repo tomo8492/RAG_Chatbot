@@ -150,6 +150,7 @@ async function boot() {
   $("app").classList.remove("hidden");
   if (State.config.auth_enabled) $("logout-btn").classList.remove("hidden");
   await Promise.all([loadModels(), loadDefaults(), loadIndexes()]);
+  maybeStartPolling();   // ページ読み込み時に裏要約が進行中なら通知ポーリング再開
   await loadConversations();
   const mine = convsOfMode();
   if (mine.length) {
@@ -1223,9 +1224,25 @@ function renderKbList() {
     const actions = el("div", "kb-actions");
     actions.style.marginTop = "8px";
     if (idx.status === "ready") {
-      const sum = el("button", "btn", "📝 要約");
-      sum.onclick = () => summarizeIndex(idx.id, idx.name);
-      actions.appendChild(sum);
+      const sm = idx.summary || {};
+      const bg = (idx.file_count || 0) >= (idx.bg_threshold || 100);
+      if (sm.status === "running") {
+        card.appendChild(el("div", "kb-status building", "⏳ 要約中… " + escapeHtml(sm.msg || "")));
+        const stop = el("button", "btn stop", "■ 中止");
+        stop.onclick = () => cancelSummary(idx.id);
+        actions.appendChild(stop);
+      } else {
+        const sum = el("button", "btn", "📝 要約" + (bg ? "(裏で実行)" : ""));
+        sum.onclick = () => summarizeIndex(idx.id, idx.name, idx.file_count, idx.bg_threshold);
+        actions.appendChild(sum);
+        if (sm.status === "done" && sm.has_result) {
+          const view = el("button", "btn", "📄 要約を表示");
+          view.onclick = () => viewSummary(idx.id, idx.name);
+          actions.appendChild(view);
+        } else if (sm.status === "error") {
+          card.appendChild(el("div", "kb-status error", "要約エラー: " + escapeHtml(sm.msg || "")));
+        }
+      }
     }
     const rebuild = el("button", "btn", "↻ 再構築");
     rebuild.onclick = () => rebuildIndex(idx.id);
@@ -1236,10 +1253,7 @@ function renderKbList() {
     list.appendChild(card);
   });
 
-  // 作成中があれば自動更新
-  if (State.indexes.some((i) => i.status === "building")) {
-    setTimeout(async () => { await loadIndexes(); if (!$("kb-modal").classList.contains("hidden")) renderKbList(); }, 1500);
-  }
+  maybeStartPolling();
 }
 
 async function toggleActiveIndex(iid, on) {
@@ -1295,18 +1309,96 @@ function fillSummaryMapModel() {
   sel.value = sorted.length > 1 ? sorted[0].name : "";
 }
 
-function summarizeIndex(iid, name) {
+function summarizeIndex(iid, name, fileCount, threshold) {
   SummaryState.iid = iid;
   SummaryState.text = "";
   SummaryState.categories = [];
-  $("summary-progress").textContent = "";
+  SummaryState.fileCount = fileCount || 0;
+  SummaryState.threshold = threshold || 100;
+  const bg = SummaryState.fileCount >= SummaryState.threshold;
+  $("summary-progress").textContent = bg
+    ? `${SummaryState.fileCount} 件と多いため、実行すると裏(バックグラウンド)で処理します。`
+    : "";
   $("summary-result").innerHTML = "";
   $("summary-save-wrap").innerHTML = "";
   $("summary-instruction").value = "";
+  $("summary-run").textContent = bg ? "裏で要約を開始" : "要約を実行";
   renderSummaryPresets();
   fillSummaryMapModel();
   $("summary-modal").querySelector("h2").textContent = "📝 一括要約: " + name;
   $("summary-modal").classList.remove("hidden");
+}
+
+async function viewSummary(iid, name) {
+  let data;
+  try { data = await api(`/api/indexes/${iid}/summary`); } catch (e) { toast(e.message); return; }
+  SummaryState.iid = iid;
+  SummaryState.text = data.result || "";
+  SummaryState.categories = data.categories || [];
+  SummaryState.fileCount = data.files || 0;
+  $("summary-modal").querySelector("h2").textContent = "📄 要約結果: " + name;
+  $("summary-run").textContent = "再実行";
+  renderSummaryPresets();
+  fillSummaryMapModel();
+  $("summary-instruction").value = data.instruction || "";
+  $("summary-progress").textContent = "前回の結果" + (data.files ? `(${data.files}件)` : "");
+  $("summary-result").innerHTML = "";
+  renderMarkdown($("summary-result"), SummaryState.text, true);
+  $("summary-save-wrap").innerHTML = "";
+  $("summary-save-wrap").appendChild(makeSaveMenu(() => SummaryState.text));
+  $("summary-modal").classList.remove("hidden");
+}
+
+async function cancelSummary(iid) {
+  try { await api(`/api/indexes/${iid}/summary/cancel`, { method: "POST" }); } catch (_) {}
+  await loadIndexes();
+  if (!$("kb-modal").classList.contains("hidden")) renderKbList();
+}
+
+async function startBackgroundSummary() {
+  const instruction = $("summary-instruction").value.trim();
+  const mapModel = $("summary-map-model").value || null;
+  try {
+    await api(`/api/indexes/${SummaryState.iid}/summarize/start`, {
+      method: "POST",
+      body: JSON.stringify({ instruction, map_model: mapModel, categories: SummaryState.categories }),
+    });
+    toast("裏で要約を開始しました。完了後に通知します。");
+    $("summary-modal").classList.add("hidden");
+    await loadIndexes();
+    if (!$("kb-modal").classList.contains("hidden")) renderKbList();
+    maybeStartPolling();
+  } catch (e) { toast("要約の開始に失敗: " + e.message); }
+}
+
+/* バックグラウンド要約/索引作成の進捗をポーリングし、完了時に通知 */
+let _summaryPolling = false;
+const _summaryPrev = {};
+function maybeStartPolling() {
+  const active = (State.indexes || []).some(
+    (i) => i.status === "building" || (i.summary && i.summary.status === "running"));
+  if (active) pollSummaries();
+}
+async function pollSummaries() {
+  if (_summaryPolling) return;
+  _summaryPolling = true;
+  try {
+    while (true) {
+      await new Promise((r) => setTimeout(r, 2000));
+      await loadIndexes();
+      (State.indexes || []).forEach((idx) => {
+        const now = (idx.summary && idx.summary.status) || "none";
+        const prev = _summaryPrev[idx.id];
+        if (prev === "running" && now === "done") toast("📄 要約が完了しました: " + idx.name);
+        else if (prev === "running" && now === "error") toast("要約でエラー: " + idx.name);
+        _summaryPrev[idx.id] = now;
+      });
+      if (!$("kb-modal").classList.contains("hidden")) renderKbList();
+      const stillActive = (State.indexes || []).some(
+        (i) => i.status === "building" || (i.summary && i.summary.status === "running"));
+      if (!stillActive) break;
+    }
+  } finally { _summaryPolling = false; }
 }
 
 function closeSummary() {
@@ -1316,6 +1408,10 @@ function closeSummary() {
 
 async function runSummary() {
   if (SummaryState.running || !SummaryState.iid) return;
+  // 参照ファイルが多いときはウィンドウを出さず裏で実行
+  if ((SummaryState.fileCount || 0) >= (SummaryState.threshold || 100)) {
+    return startBackgroundSummary();
+  }
   SummaryState.running = true;
   SummaryState.text = "";
   SummaryState.controller = new AbortController();
