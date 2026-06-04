@@ -642,6 +642,49 @@ def api_code_answer(body: AnswerBody) -> dict:
     return {"ok": ok}
 
 
+@app.get("/api/conversations/{cid}/file", dependencies=[Depends(auth.require_auth)])
+def api_code_file(cid: str, path: str, max_bytes: int = 2_000_000) -> dict:
+    """Code 会話の作業フォルダ内のファイルを安全に読み出して返す(本文の path:line リンク閲覧用)。"""
+    conv = db.get_conversation(cid)
+    if not conv:
+        raise HTTPException(404, "会話が見つかりません")
+    if conv.get("kind") != "code":
+        raise HTTPException(400, "コード用の会話ではありません")
+    s = conv.get("settings") or {}
+    workspace = (s.get("workspace") or "").strip()
+    if not workspace:
+        raise HTTPException(400, "作業フォルダが設定されていません")
+    ws = Path(workspace).expanduser()
+    if not ws.is_dir():
+        raise HTTPException(400, f"作業フォルダが存在しません: {workspace}")
+    rel = re.sub(r":\d+$", "", (path or "").strip().replace("\\", "/"))  # 末尾の :行番号 は除去
+    if not rel:
+        raise HTTPException(400, "パスが空です")
+    try:
+        fp = agent._safe_path(ws.resolve(), rel)   # 作業フォルダ外・保護領域は ValueError
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    if not fp.is_file():
+        raise HTTPException(404, f"ファイルが見つかりません: {rel}")
+    try:
+        size = fp.stat().st_size
+    except OSError:
+        raise HTTPException(404, "ファイルにアクセスできません")
+    bin_ext = {".xlsx", ".xlsm", ".xls", ".docx", ".pptx", ".pdf", ".png", ".jpg",
+               ".jpeg", ".gif", ".webp", ".zip", ".exe", ".dll", ".bin", ".so"}
+    if fp.suffix.lower() in bin_ext:
+        return {"path": rel, "binary": True, "size": size, "note": "バイナリ形式のため表示できません。"}
+    if size > max_bytes:
+        return {"path": rel, "too_large": True, "size": size,
+                "note": f"ファイルが大きすぎます({size:,} バイト)。"}
+    data = fp.read_bytes()
+    if b"\x00" in data[:4096]:
+        return {"path": rel, "binary": True, "size": size, "note": "バイナリ形式のため表示できません。"}
+    text = data.decode("utf-8", errors="replace")
+    return {"path": rel, "content": text, "size": size,
+            "lines": text.count("\n") + 1, "lang": fp.suffix.lstrip(".").lower()}
+
+
 # ============================================================
 #  インデックス(ナレッジベース)
 # ============================================================

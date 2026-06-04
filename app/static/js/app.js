@@ -579,7 +579,71 @@ function enhanceCode(container) {
     head.appendChild(right);
     pre.insertBefore(head, code);
   });
+  linkifyFileRefs(container);
 }
+
+/* 本文中の `相対パス:行番号` をクリック可能なリンクにする(Codeモードのみ) */
+const FILE_REF_EXTS = new Set(
+  ("bas cls frm vb vba py js mjs cjs ts tsx jsx java kt c cc cpp cxx h hpp cs go rs rb php " +
+   "swift scala lua r pl sql sh bash zsh bat cmd ps1 html htm css scss sass less json yaml yml " +
+   "toml ini cfg conf xml md markdown txt text csv tsv log gradle properties dockerfile makefile " +
+   "xlsx xlsm docx pptx pdf").split(" ")
+);
+function linkifyFileRefs(container) {
+  if (State.mode !== "code" || !State.current) return;
+  const re = /^([\w./-]+?\.([A-Za-z0-9]{1,6}))(?::(\d+))?$/;
+  container.querySelectorAll("code:not(pre code)").forEach((code) => {
+    if (code.dataset.fileref) return;
+    const tok = (code.textContent || "").trim();
+    const m = re.exec(tok);
+    if (!m) return;
+    if (tok.includes(" ") || tok.startsWith("/") || /^[A-Za-z]:[\\/]/.test(tok)) return; // 相対パスのみ
+    if (!FILE_REF_EXTS.has(m[2].toLowerCase())) return;
+    const a = el("a", "file-ref");
+    a.textContent = tok;
+    a.href = "#";
+    a.title = "クリックして開く";
+    a.dataset.fileref = "1";
+    const path = m[1], line = m[3] ? parseInt(m[3], 10) : 0;
+    a.onclick = (e) => { e.preventDefault(); openFileViewer(path, line); };
+    code.replaceWith(a);
+  });
+}
+
+async function openFileViewer(path, line) {
+  if (!State.current) return;
+  $("fv-title").textContent = path + (line ? ":" + line : "");
+  const body = $("fv-body");
+  body.innerHTML = '<div class="fv-note">読み込み中…</div>';
+  $("file-modal").classList.remove("hidden");
+  let data;
+  try {
+    data = await api(`/api/conversations/${State.current.id}/file?path=${encodeURIComponent(path)}`);
+  } catch (e) {
+    body.innerHTML = ""; body.appendChild(el("div", "fv-note", "開けませんでした: " + e.message));
+    return;
+  }
+  if (data.binary || data.too_large || data.content == null) {
+    body.innerHTML = ""; body.appendChild(el("div", "fv-note", data.note || "表示できません。"));
+    return;
+  }
+  body.innerHTML = "";
+  const wrap = el("div", "fv-wrap");
+  data.content.replace(/\n$/, "").split("\n").forEach((ln, i) => {
+    const n = i + 1;
+    const row = el("div", "fv-row" + (n === line ? " target" : ""));
+    row.appendChild(el("span", "fv-ln", String(n)));
+    const c = el("span", "fv-lc"); c.textContent = ln.length ? ln : " ";
+    row.appendChild(c);
+    wrap.appendChild(row);
+  });
+  body.appendChild(wrap);
+  if (line) {
+    const t = wrap.querySelector(".fv-row.target");
+    if (t) setTimeout(() => t.scrollIntoView({ block: "center" }), 30);
+  }
+}
+function closeFileViewer() { $("file-modal").classList.add("hidden"); }
 
 function scrollToBottom() {
   const box = $("messages");
@@ -1978,6 +2042,11 @@ function bindGlobalEvents() {
   $("summary-stop").onclick = () => { if (SummaryState.controller) SummaryState.controller.abort(); };
   $("summary-close").onclick = closeSummary;
   $("summary-close2").onclick = closeSummary;
+  // ファイル閲覧
+  $("fv-close").onclick = closeFileViewer;
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !$("file-modal").classList.contains("hidden")) closeFileViewer();
+  });
   // フォルダ
   $("fb-pick").onclick = pickFolder;
   $("fb-go").onclick = () => fbNavigate($("fb-path-input").value.trim());
