@@ -103,11 +103,13 @@
       <div class="composer-wrap">
         <div id="attach-chips" class="attach-chips"></div>
         <div class="composer">
+          <div class="composer-input">
+            <textarea id="input" rows="1" placeholder="メッセージを入力…(Shift+Enterで改行)"></textarea>
+          </div>
           <div class="composer-toolbar">
             <button id="attach-btn" class="tool only-chat" title="ファイルを添付">📎</button>
             <input type="file" id="file-input" multiple class="hidden"
                    accept=".pdf,.docx,.xlsx,.pptx,.txt,.md,.markdown,.csv,.tsv,.log,.json" />
-
             <div class="quick">
               <label>モデル</label>
               <select id="q-model" class="mini-select" title="モデル"></select>
@@ -142,9 +144,7 @@
                 <button type="button" class="qseg-btn" data-v="9999" title="上限なし(全件参照・コンテキスト超過に注意)">∞</button>
               </div>
             </div>
-          </div>
-          <div class="composer-input">
-            <textarea id="input" rows="1" placeholder="メッセージを入力…(Shift+Enterで改行)"></textarea>
+            <span class="composer-spacer"></span>
             <button id="send-btn" class="btn primary send" title="送信">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="20" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>
             </button>
@@ -152,8 +152,8 @@
               <svg viewBox="0 0 24 24" fill="currentColor"><rect x="6.5" y="6.5" width="11" height="11" rx="2.5"/></svg>
             </button>
           </div>
-          <div class="composer-foot muted">ローカルLLM ・ 社外送信なし</div>
         </div>
+        <div class="composer-foot muted">ローカルLLM ・ 社外送信なし</div>
       </div>
     </main>
   </div>

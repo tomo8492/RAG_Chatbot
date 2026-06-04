@@ -215,14 +215,17 @@ body {
 .cursor-blink::after { content: "▍"; color: var(--accent); animation: blink 1s steps(2) infinite; }
 @keyframes blink { 0%,50% { opacity: 1; } 50.01%,100% { opacity: 0; } }
 
-/* ============ 入力欄 ============ */
-.composer-wrap { padding: 8px 24px 16px; }
+/* ============ 入力欄(Claude風:入力が上・設定と送信は下の1列) ============ */
+.composer-wrap { padding: 8px 24px 14px; }
 .composer {
   max-width: 800px; margin: 0 auto; background: var(--card); border: 1px solid var(--line);
-  border-radius: var(--radius); box-shadow: var(--shadow); overflow: hidden;
+  border-radius: 22px; box-shadow: var(--shadow); overflow: hidden;
+  transition: border-color .15s, box-shadow .15s;
 }
-.composer-toolbar { display: flex; align-items: center; gap: 10px; padding: 8px 12px;
-  border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.composer:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(76,110,245,.12), var(--shadow); }
+.composer-toolbar { display: flex; align-items: center; gap: 10px; padding: 4px 10px 8px;
+  flex-wrap: wrap; }
+.composer-spacer { flex: 1 1 auto; }
 .tool { background: transparent; border: none; cursor: pointer; font-size: 17px; padding: 4px; border-radius: 8px; }
 .tool:hover { background: var(--line); }
 .quick { display: flex; align-items: center; gap: 5px; font-size: 12px; color: var(--ink-soft); }
@@ -237,13 +240,15 @@ body {
   font-weight: 600; min-width: 26px; padding: 2px 8px; border-radius: 6px; cursor: pointer; line-height: 1.6; }
 .qseg-btn:hover { color: var(--ink); }
 .qseg-btn.active { background: var(--card); color: var(--ink); box-shadow: 0 1px 2px rgba(0,0,0,.08); }
-.composer-input { display: flex; align-items: flex-end; gap: 8px; padding: 10px 12px; }
-#input { flex: 1; resize: none; border: none; background: transparent; color: var(--ink);
-  font-family: inherit; font-size: 15px; line-height: 1.6; max-height: 220px; outline: none; }
-.send { width: 40px; height: 40px; padding: 0; border-radius: 10px; flex-shrink: 0;
+.composer-input { padding: 14px 18px 4px; }
+#input { width: 100%; display: block; resize: none; border: none; background: transparent; color: var(--ink);
+  font-family: inherit; font-size: 15px; line-height: 1.6; max-height: 240px; min-height: 24px; outline: none; }
+#input::placeholder { color: var(--ink-soft); opacity: .8; }
+.send { width: 36px; height: 36px; padding: 0; border-radius: 12px; flex-shrink: 0;
   display: inline-flex; align-items: center; justify-content: center; }
-.send svg { width: 19px; height: 19px; }
-.composer-foot { text-align: center; font-size: 11px; padding: 0 0 8px; }
+.send svg { width: 18px; height: 18px; }
+.composer-foot { text-align: center; font-size: 11px; color: var(--ink-soft);
+  max-width: 800px; margin: 7px auto 0; }
 
 .attach-chips { max-width: 800px; margin: 0 auto 6px; display: flex; flex-wrap: wrap; gap: 6px; }
 .chip { background: var(--card); border: 1px solid var(--line); border-radius: 16px;
