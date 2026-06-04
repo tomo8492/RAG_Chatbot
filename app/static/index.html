@@ -257,8 +257,17 @@
         <p class="muted small">フォルダ内の全ファイルを1件ずつ要約し、まとめます(map-reduce)。
           数百ファイルは時間がかかります。停止できます。</p>
         <div class="field">
-          <label>観点・依頼(任意)</label>
+          <label>観点プリセット(任意)</label>
+          <div id="summary-presets" class="summary-presets"></div>
+        </div>
+        <div class="field">
+          <label>観点・依頼(自由記述・任意)</label>
           <input type="text" id="summary-instruction" placeholder="例: 各規定の目的と対象を一覧で" />
+        </div>
+        <div class="field">
+          <label>下書きモデル(高速・大量処理用)</label>
+          <select id="summary-map-model"></select>
+          <span class="muted small">各ファイルの下書き要約に使用。最終まとめはメインモデルで行います。</span>
         </div>
         <div class="summary-controls">
           <button class="btn primary" id="summary-run">要約を実行</button>

@@ -1250,15 +1250,57 @@ async function toggleActiveIndex(iid, on) {
 }
 
 /* ---------- 資料の一括要約(map-reduce) ---------- */
-const SummaryState = { iid: null, controller: null, running: false, text: "" };
+const SummaryState = { iid: null, controller: null, running: false, text: "", categories: [] };
+
+const SUMMARY_PRESETS = {
+  "規程・規定": ["目的", "適用範囲・対象者", "定義", "主な規定内容・手続き", "責任者・体制", "罰則・例外", "改廃・施行日"],
+  "契約書": ["当事者", "目的・対象", "期間", "金額・支払条件", "義務・責任", "解除・違約", "特記事項"],
+  "議事録": ["会議名・日時・出席者", "議題", "決定事項", "対応・TODO(担当/期限)", "保留・課題"],
+  "マニュアル/手順": ["目的", "対象・前提", "手順の流れ", "注意点・禁止事項", "トラブル時の対応"],
+};
+
+function renderSummaryPresets() {
+  const wrap = $("summary-presets");
+  wrap.innerHTML = "";
+  Object.keys(SUMMARY_PRESETS).forEach((name) => {
+    const cats = SUMMARY_PRESETS[name];
+    const active = JSON.stringify(SummaryState.categories) === JSON.stringify(cats);
+    const b = el("button", "chip-btn" + (active ? " active" : ""), name);
+    b.onclick = () => {
+      SummaryState.categories = active ? [] : cats.slice();
+      renderSummaryPresets();
+    };
+    wrap.appendChild(b);
+  });
+}
+
+function fillSummaryMapModel() {
+  const sel = $("summary-map-model");
+  sel.innerHTML = "";
+  const none = el("option", null, "(メインモデルと同じ=二段なし)");
+  none.value = "";
+  sel.appendChild(none);
+  const sorted = [...(State.models || [])].sort((a, b) => (a.size || 0) - (b.size || 0));
+  sorted.forEach((m) => {
+    const gb = m.size ? ` (${(m.size / 1e9).toFixed(1)}GB)` : "";
+    const o = el("option", null, m.name + gb);
+    o.value = m.name;
+    sel.appendChild(o);
+  });
+  // 既定: 2つ以上あれば最小モデルを下書き用に(=二段ON)
+  sel.value = sorted.length > 1 ? sorted[0].name : "";
+}
 
 function summarizeIndex(iid, name) {
   SummaryState.iid = iid;
   SummaryState.text = "";
+  SummaryState.categories = [];
   $("summary-progress").textContent = "";
   $("summary-result").innerHTML = "";
   $("summary-save-wrap").innerHTML = "";
   $("summary-instruction").value = "";
+  renderSummaryPresets();
+  fillSummaryMapModel();
   $("summary-modal").querySelector("h2").textContent = "📝 一括要約: " + name;
   $("summary-modal").classList.remove("hidden");
 }
@@ -1279,10 +1321,12 @@ async function runSummary() {
   $("summary-save-wrap").innerHTML = "";
   $("summary-progress").textContent = "準備中…";
   const instruction = $("summary-instruction").value.trim();
+  const mapModel = $("summary-map-model").value || null;
   try {
     const res = await fetch(`/api/indexes/${SummaryState.iid}/summarize`, {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ instruction }), signal: SummaryState.controller.signal,
+      body: JSON.stringify({ instruction, map_model: mapModel, categories: SummaryState.categories }),
+      signal: SummaryState.controller.signal,
     });
     if (res.status === 401) { showLogin(); throw new Error("認証が必要です"); }
     if (!res.ok) { let d = res.statusText; try { d = (await res.json()).detail || d; } catch (_) {} throw new Error(d); }
@@ -1298,7 +1342,8 @@ async function runSummary() {
         const line = buf.slice(0, idx).replace(/^data: /, ""); buf = buf.slice(idx + 2);
         if (!line) continue;
         let ev; try { ev = JSON.parse(line); } catch (_) { continue; }
-        if (ev.type === "start") $("summary-progress").textContent = `${ev.files} 件を要約します…`;
+        if (ev.type === "start") $("summary-progress").textContent =
+          `${ev.files} 件を要約します…` + (ev.map_model ? `(下書き: ${ev.map_model})` : "");
         else if (ev.type === "progress") $("summary-progress").textContent = ev.msg || "";
         else if (ev.type === "result") {
           SummaryState.text = ev.text || "";

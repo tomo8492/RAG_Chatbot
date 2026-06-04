@@ -26,6 +26,7 @@ def base_defaults() -> dict:
         "system_prompt": DEFAULT_SYSTEM_PROMPT,
         "chunk_size": settings.chunk_size,
         "chunk_overlap": settings.chunk_overlap,
+        "summarize_map_model": "",   # 一括要約の「下書き(map)」用モデル。空=メインと同じ(二段なし)
         "theme": "auto",
     }
 
