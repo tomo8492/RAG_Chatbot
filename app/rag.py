@@ -82,6 +82,25 @@ def scan_files(paths: list[str]) -> list[Path]:
     return found
 
 
+def _embed_error_hint(e: Exception) -> str:
+    """埋め込みモデルの読込失敗を、原因別の分かりやすい対処メッセージに変換。"""
+    s = str(e)
+    low = s.lower()
+    if "certificate" in low or "ssl" in low or "self-signed" in low or "self signed" in low:
+        return ("埋め込みモデルのダウンロードがSSL証明書エラーで失敗しました"
+                "(社内プロキシのTLS検査が原因)。対処のいずれか: "
+                "①【推奨】.env で EMBED_BACKEND=ollama にして `ollama pull nomic-embed-text` を実行 / "
+                "② 環境変数 SSL_CERT_FILE に社内ルートCA証明書(.pem)を指定 / "
+                "③ モデルを別PCで事前DLし、そのフォルダのパスを EMBED_MODEL に設定(オフライン)。")
+    if ("client has been closed" in low or "offline" in low or "max retries" in low
+            or "connection" in low or "timed out" in low or "failed to resolve" in low
+            or "getaddrinfo" in low):
+        return ("埋め込みモデルの取得に失敗しました(ネットワーク不通/オフライン)。対処: "
+                "①【推奨】.env で EMBED_BACKEND=ollama にして `ollama pull nomic-embed-text` / "
+                "② モデルを事前DLしてローカルパスを EMBED_MODEL に指定。")
+    return f"埋め込みモデルの読み込みに失敗しました: {s}"
+
+
 def build_index(iid: str, paths: list[str],
                 progress: Optional[Callable[[str], None]] = None) -> dict:
     """フォルダ群を読み込み、コレクションを構築する。同期処理(ワーカースレッドから呼ぶ)。"""
@@ -112,6 +131,17 @@ def build_index(iid: str, paths: list[str],
         if not files:
             db.update_index(iid, status="error", error="対応ファイルが見つかりません",
                             file_count=0, chunk_count=0)
+            return db.get_index(iid)
+
+        # 埋め込みモデルを先に1回ロード(失敗ならN件スキップせず、明確なエラーで中断する)
+        try:
+            emit("埋め込みモデルを準備中...(初回はDLに時間がかかります)")
+            embedder.embed_query("ウォームアップ")
+        except Exception as e:
+            hint = _embed_error_hint(e)
+            log.error("埋め込みモデルの準備に失敗: %s", e)
+            db.update_index(iid, status="error", error=hint, file_count=0, chunk_count=0)
+            emit("エラー: " + hint)
             return db.get_index(iid)
 
         total_chunks = 0
