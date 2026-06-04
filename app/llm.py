@@ -34,6 +34,30 @@ STYLE_GUIDE = """【回答のスタイル】
 - 推測と事実を区別する。不確かなことは断定せず「確証はないが」等と添える。
   わからないことは正直に「わからない」と述べ、事実を作らない。"""
 
+# 出力フォーマットの強制(Markdown 記法の全列挙 + Mermaid 図種の全列挙 + 厳密フォーマット)。
+# STYLE_GUIDE と同様に常時付与する。図が有効なときに必ず図にさせ、Mermaid の構文崩れを防ぐ。
+MARKDOWN_MERMAID_GUIDE = """【出力フォーマット(Markdown / 図)】
+読みやすさのため、適切な場合は必ず Markdown で構造化する。使用できる記法:
+- 見出し(#, ##, ###) / 箇条書き・番号付きリスト / 太字(**) / 斜体(*) / リンク([text](URL))
+- 表(| 列 | 列 |) / コードブロック(```言語) / 引用(>) / 数式(LaTeX: インライン $...$、ブロック $$...$$)
+
+図で示すと分かりやすい内容(処理の流れ・手順・分岐、登場人物のやり取り、クラスやデータ構造、
+状態遷移、エンティティ関係、工程表、構成・関係など)は、必ず Mermaid 図で表す。
+使用できる Mermaid 図種(用途):
+- flowchart(フロー・分岐) / sequenceDiagram(やり取り) / classDiagram(クラス)
+- stateDiagram-v2(状態遷移) / erDiagram(ER) / gantt(工程) / journey(体験)
+- gitGraph(ブランチ) / pie(構成比)
+
+Mermaid を出力するときの厳密ルール(必ず守る):
+1. ```mermaid で開始する。
+2. 次の行を図種の宣言から始める(例: flowchart TD / sequenceDiagram / classDiagram)。
+3. 図のコード行を書き、最後のコード行の直後に閉じ ``` を置いて終える。
+4. ``` の中には図のコードだけを書く。前置き・後置き・説明文・余分な整形を混ぜない
+   (説明は ``` の外に書く)。
+5. ノードのラベルに記号を含むときは "..." で囲む(日本語ラベル可)。
+
+ここに挙げた記法・図種・ルールは省略・要約しない。"""
+
 # RAG 用の指示(参考資料がある場合に付与)
 RAG_INSTRUCTION = """以下の【参考資料】を最優先の根拠として回答してください。
 
@@ -160,7 +184,8 @@ def build_messages(system_prompt: str, history: list[dict], hits: list[dict],
     参考資料・履歴はコンテキスト超過を防ぐため上限でトリムする。
     """
     sys_text = (system_prompt or DEFAULT_SYSTEM_PROMPT).strip()
-    sys_text = sys_text + "\n\n" + STYLE_GUIDE   # ペルソナを上書きされてもスタイル補正は常に効かせる
+    # ペルソナを上書きされてもスタイル補正・出力フォーマット強制は常に効かせる
+    sys_text = sys_text + "\n\n" + STYLE_GUIDE + "\n\n" + MARKDOWN_MERMAID_GUIDE
     if strict:
         context = (build_context_block(hits, max_context_chars) if hits
                    else "(参照フォルダ内に該当する資料が見つかりませんでした)")

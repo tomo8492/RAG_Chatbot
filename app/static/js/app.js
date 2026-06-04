@@ -86,6 +86,7 @@ function applyTheme(pref) {
     btn.textContent = meta[0];
     btn.title = meta[1] + " ・ クリックで切替";
   }
+  rerenderMermaidTheme();   // 既存の Mermaid 図を新テーマで再描画(未初期化なら no-op)
 }
 function toggleTheme() {
   const next = { system: "light", light: "dark", dark: "system" }[themePref()];
@@ -554,13 +555,27 @@ function renderSources(container, sources) {
 
 /* ---------- Markdown ---------- */
 marked.setOptions({ breaks: true, gfm: true });
+
+/* Qwen3 等が content に混入させる <think> をレンダリング前に除去(ストリーミング対応)。
+   毎回バッファ全体へ適用するため、開きのみ/閉じのみの不完全タグにも自然対応する。 */
+function stripThink(text) {
+  if (!text) return text || "";
+  let s = text.replace(/<think\b[^>]*>[\s\S]*?<\/think\s*>/gi, "");   // 完全な <think>...</think>
+  if (/<\/think\s*>/i.test(s) && !/<think\b/i.test(s))               // 閉じのみ → 先頭〜閉じを除去
+    s = s.replace(/^[\s\S]*?<\/think\s*>/i, "");
+  if (/<think\b/i.test(s))                                           // 開きのみ → 開き〜末尾を除去
+    s = s.replace(/<think\b[^>]*>[\s\S]*$/i, "");
+  return s;
+}
+
 function renderMarkdown(target, text, final) {
-  const html = DOMPurify.sanitize(marked.parse(text || ""));
+  const html = DOMPurify.sanitize(marked.parse(stripThink(text || "")));
   target.innerHTML = html;
   if (final) enhanceCode(target);
 }
 function enhanceCode(container) {
   container.querySelectorAll("pre code").forEach((code) => {
+    if (code.classList.contains("language-mermaid")) return;   // Mermaid は描画側で処理
     try { hljs.highlightElement(code); } catch (_) {}
     const pre = code.parentElement;
     if (pre.querySelector(".code-head")) return;
@@ -580,6 +595,67 @@ function enhanceCode(container) {
     pre.insertBefore(head, code);
   });
   linkifyFileRefs(container);
+  renderMermaidBlocks(container);
+}
+
+/* ---- Mermaid 図のレンダリング(sandbox iframe・失敗時は生コードへフォールバック) ---- */
+let _mermaidReady = false;
+function initMermaid() {
+  if (!window.mermaid) return false;
+  const dark = document.documentElement.getAttribute("data-theme") === "dark";
+  try {
+    window.mermaid.initialize({
+      startOnLoad: false,
+      securityLevel: "sandbox",          // 図内の JS 実行を iframe で遮断
+      theme: dark ? "dark" : "default",
+      fontFamily: "inherit",
+    });
+    _mermaidReady = true;
+    return true;
+  } catch (_) { return false; }
+}
+async function renderMermaidBlocks(container) {
+  if (!window.mermaid) return;
+  if (!_mermaidReady && !initMermaid()) return;
+  const blocks = container.querySelectorAll("pre > code.language-mermaid");
+  for (const code of blocks) {
+    const pre = code.parentElement;
+    if (pre.dataset.mmHandled) continue;
+    pre.dataset.mmHandled = "1";
+    const src = (code.textContent || "").trim();
+    const id = "mmd-" + Math.random().toString(36).slice(2, 9);
+    // 一時コンテナで描画(失敗時に mermaid が残すエラー図ごと破棄できる)
+    const tmp = el("div"); tmp.style.cssText = "position:absolute;left:-99999px;top:0";
+    document.body.appendChild(tmp);
+    try {
+      const { svg } = await window.mermaid.render(id, src, tmp);
+      const fig = el("div", "mermaid-fig");
+      fig.dataset.src = src;
+      fig.innerHTML = svg;
+      pre.replaceWith(fig);                       // 成功 → 図に置換
+    } catch (err) {
+      // フォールバック: 生コードのコードブロックを残し、注記を添える
+      pre.dataset.mmHandled = "";
+      if (!(pre.previousElementSibling && pre.previousElementSibling.classList.contains("mermaid-error")))
+        pre.parentElement.insertBefore(el("div", "mermaid-error", "⚠ 図の描画に失敗しました(コードを表示)"), pre);
+    } finally {
+      tmp.remove();
+      [id, "d" + id].forEach((x) => { const n = document.getElementById(x); if (n) n.remove(); });
+    }
+  }
+}
+/* テーマ切替時に既存の図を新テーマで再描画 */
+async function rerenderMermaidTheme() {
+  if (!window.mermaid || !_mermaidReady) return;
+  _mermaidReady = false; initMermaid();
+  const figs = document.querySelectorAll(".mermaid-fig[data-src]");
+  for (const fig of figs) {
+    const src = fig.dataset.src; if (!src) continue;
+    try {
+      const { svg } = await window.mermaid.render("mmd-" + Math.random().toString(36).slice(2, 9), src);
+      fig.innerHTML = svg;
+    } catch (_) {}
+  }
 }
 
 /* 本文中の `相対パス:行番号` をクリック可能なリンクにする(Codeモードのみ) */
@@ -766,7 +842,7 @@ async function streamAssistant(payload) {
   } finally {
     finished = true;
     refs.md.classList.remove("cursor-blink");
-    refs.row.dataset.raw = acc;
+    refs.row.dataset.raw = stripThink(acc);
     buildAssistantActions(refs, true);
     setStreaming(false);
     State.controller = null;

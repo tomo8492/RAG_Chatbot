@@ -304,6 +304,13 @@ body {
 .fb-note { margin-top: 8px; font-size: 12.5px; color: var(--stop); font-weight: 600;
   background: rgba(181,72,58,.1); border: 1px solid var(--stop); border-radius: 8px; padding: 7px 10px; }
 
+/* Mermaid 図(sandbox iframe で描画) */
+.mermaid-fig { margin: 12px 0; padding: 10px 12px; background: var(--card);
+  border: 1px solid var(--line); border-radius: 10px; overflow: auto; text-align: center; }
+.mermaid-fig iframe { width: 100%; border: 0; }
+.mermaid-fig svg { max-width: 100%; height: auto; }
+.mermaid-error { font-size: 12.5px; color: var(--stop); margin: 10px 0 2px; }
+
 /* 本文中のファイル参照リンク(`相対パス:行番号`) */
 .file-ref { background: var(--code-bg); border: 1px solid var(--line); padding: 1px 6px;
   border-radius: 5px; font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;

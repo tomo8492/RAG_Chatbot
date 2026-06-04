@@ -21,7 +21,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import agent, auth, db, export, llm, rag, safety, summarize
+from . import agent, auth, db, export, llm, postprocess, rag, safety, summarize
 from .config import settings
 from .defaults import effective_for, get_defaults, set_defaults
 from .fsbrowse import count_supported_recursive, get_roots, list_dir
@@ -438,7 +438,7 @@ def api_generate(cid: str, body: GenerateBody) -> Response:
                 else:
                     acc_content += ev["text"]
                     yield sse({"type": "content", "delta": ev["text"]})
-            asst = db.add_message(cid, "assistant", acc_content, sources=sources)
+            asst = db.add_message(cid, "assistant", postprocess.clean(acc_content), sources=sources)
             saved = True
             log.info("生成完了 [conv=%s] %d文字", cid, len(acc_content))
             yield sse({"type": "done", "message": asst})
@@ -456,7 +456,7 @@ def api_generate(cid: str, body: GenerateBody) -> Response:
             yield sse({"type": "error", "error": emsg})
         finally:
             if not saved and acc_content.strip():
-                db.add_message(cid, "assistant", acc_content, sources=sources)
+                db.add_message(cid, "assistant", postprocess.clean(acc_content), sources=sources)
 
     headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"}
     return StreamingResponse(gen(), media_type="text/event-stream", headers=headers)
