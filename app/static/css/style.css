@@ -363,7 +363,7 @@ body[data-mode="code"] .code-bar.only-code { display: flex; }
 .step-result { background: var(--code-bg); border: 1px solid var(--line); border-radius: 8px;
   padding: 8px 10px; font-family: ui-monospace, "SFMono-Regular", Consolas, monospace; font-size: 12px;
   white-space: pre-wrap; max-height: 260px; overflow: auto; color: var(--ink-soft); }
-.step-result.blocked, .step-result.rejected { color: var(--stop); border-color: var(--stop); }
+.step-result.blocked, .step-result.rejected, .step-result.error { color: var(--stop); border-color: var(--stop); }
 
 /* 承認カード(変更・コマンドの確認) */
 .confirm-card { border: 1px solid var(--accent); border-radius: 10px; padding: 12px 14px; background: var(--panel); }
