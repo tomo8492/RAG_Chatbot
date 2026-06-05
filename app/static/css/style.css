@@ -473,6 +473,11 @@ summary.step-head:hover { background: rgba(127,127,127,.06); }
 .cc-diff-row.ctx .cc-code { color: var(--ink-soft); }
 .cc-diff-gap { padding: 1px 10px; color: var(--ink-soft); opacity: .45; user-select: none; }
 .cc-diff-empty { padding: 8px 10px; color: var(--ink-soft); }
+/* 拒否理由の入力(承認カード) */
+.reject-form { display: flex; gap: 6px; align-items: center; width: 100%; margin-top: 6px; }
+.reject-reason { flex: 1 1 auto; min-width: 0; padding: 6px 9px; border: 1px solid var(--line);
+  border-radius: 6px; background: var(--bg); color: var(--ink); font-size: 13px; }
+.reject-reason:focus { outline: none; border-color: var(--accent); }
 /* TODO 進捗パネル */
 .todo-panel { border: 1px solid var(--line); border-radius: 10px; background: var(--panel);
   padding: 10px 12px; font-size: 13px; }

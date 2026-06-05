@@ -1497,7 +1497,7 @@ function buildConfirmCard(ev) {
     btns.push(always);
   }
   ok.onclick = () => respondConfirm(card, ev.action_id, true, status, btns, "once");
-  no.onclick = () => respondConfirm(card, ev.action_id, false, status, btns);
+  no.onclick = () => showRejectForm(card, ev.action_id, status, btns);   // 理由を書いて拒否
   if (always) always.onclick = () => respondConfirm(card, ev.action_id, true, status, btns, "always");
   actions.appendChild(ok);
   if (always) actions.appendChild(always);
@@ -1544,14 +1544,16 @@ function renderDiff(diffText) {
   return wrap;
 }
 
-async function respondConfirm(card, actionId, approved, statusEl, btns, scope) {
+async function respondConfirm(card, actionId, approved, statusEl, btns, scope, reason) {
   btns.forEach((b) => (b.disabled = true));
   try {
     await api("/api/code/approve", {
-      method: "POST", body: JSON.stringify({ action_id: actionId, approved, scope: scope || null }),
+      method: "POST",
+      body: JSON.stringify({ action_id: actionId, approved, scope: scope || null, reason: reason || null }),
     });
     statusEl.textContent = scope === "always" ? "承認しました(以後この会話の編集は自動適用)"
-      : approved ? "承認しました" : "拒否しました";
+      : approved ? "承認しました"
+      : (reason ? "拒否しました(理由を伝えました)" : "拒否しました");
     statusEl.className = "confirm-status " + (approved ? "ok" : "no");
     card.dataset.resolved = "1";
     if (scope === "always") setCodeAutoAccept(true);   // 設定に保存し、コードバーのトグルも更新
@@ -1560,6 +1562,29 @@ async function respondConfirm(card, actionId, approved, statusEl, btns, scope) {
     statusEl.className = "confirm-status no";
     btns.forEach((b) => (b.disabled = false));
   }
+}
+
+// 拒否時に「理由・どう直すか」を任意で添えて送る(Claude Code の "No, tell Claude what to do" 相当)
+function showRejectForm(card, actionId, statusEl, mainBtns) {
+  const actions = card.querySelector(".confirm-actions");
+  if (!actions || card.querySelector(".reject-form")) return;
+  mainBtns.forEach((b) => (b.style.display = "none"));
+  const form = el("div", "reject-form");
+  const input = el("input", "reject-reason");
+  input.type = "text";
+  input.placeholder = "拒否の理由・どう直してほしいか(任意)";
+  const send = el("button", "btn primary", "拒否を送信");
+  const back = el("button", "btn", "戻る");
+  const submit = () =>
+    respondConfirm(card, actionId, false, statusEl, [send, back, input], null, input.value.trim());
+  send.onclick = submit;
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); submit(); }  // IME変換中は送信しない
+  });
+  back.onclick = () => { form.remove(); mainBtns.forEach((b) => (b.style.display = "")); };
+  form.appendChild(input); form.appendChild(send); form.appendChild(back);
+  actions.appendChild(form);
+  input.focus();
 }
 
 function finishConfirmCards(box) {

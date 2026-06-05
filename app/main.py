@@ -578,6 +578,7 @@ class ApproveBody(BaseModel):
     action_id: str
     approved: bool = False
     scope: Optional[str] = None   # "always" で以後このセッションの編集を自動適用
+    reason: Optional[str] = None  # 拒否理由(任意。モデルにどう直すか伝える)
 
 
 class AnswerBody(BaseModel):
@@ -732,7 +733,7 @@ def api_agent(cid: str, body: AgentBody) -> Response:
 
 @app.post("/api/code/approve", dependencies=[Depends(auth.require_auth)])
 def api_code_approve(body: ApproveBody) -> dict:
-    ok = agent.resolve(body.action_id, body.approved, body.scope)
+    ok = agent.resolve(body.action_id, body.approved, body.scope, body.reason)
     return {"ok": ok}
 
 

@@ -704,18 +704,21 @@ def new_pending() -> str:
     aid = uuid.uuid4().hex
     with _pending_lock:
         _pending[aid] = {"event": threading.Event(), "approved": False,
-                         "answer": None, "scope": None}
+                         "answer": None, "scope": None, "reason": None}
     return aid
 
 
-def resolve(action_id: str, approved: bool, scope: Optional[str] = None) -> bool:
-    """承認/拒否を記録。scope='always' なら以後このセッションの編集を自動適用する。"""
+def resolve(action_id: str, approved: bool, scope: Optional[str] = None,
+            reason: Optional[str] = None) -> bool:
+    """承認/拒否を記録。scope='always' なら以後このセッションの編集を自動適用する。
+    reason は拒否理由(任意)で、モデルに「どう直すか」を伝えるために使う。"""
     with _pending_lock:
         p = _pending.get(action_id)
     if not p:
         return False
     p["approved"] = bool(approved)
     p["scope"] = scope
+    p["reason"] = reason
     p["event"].set()
     return True
 
@@ -760,17 +763,18 @@ def wait(action_id: str, timeout: float = CONFIRM_TIMEOUT) -> Optional[bool]:
 
 
 def wait_decision(action_id: str, timeout: float = CONFIRM_TIMEOUT):
-    """承認待ち(scope付き)。(approved, scope) を返す。approved: True/False/None。"""
+    """承認待ち。(approved, scope, reason) を返す。approved: True/False/None、
+    scope: 'always' なら以後自動適用、reason: 拒否理由(任意)。"""
     with _pending_lock:
         p = _pending.get(action_id)
     if not p:
-        return (None, None)
+        return (None, None, None)
     ok = p["event"].wait(timeout)
     with _pending_lock:
         p = _pending.pop(action_id, None)
     if not ok or p is None:
-        return (None, None)
-    return (p["approved"], p.get("scope"))
+        return (None, None, None)
+    return (p["approved"], p.get("scope"), p.get("reason"))
 
 
 # ============================================================
@@ -1167,7 +1171,7 @@ def run_stream(model: str, messages: list, workspace: str,
                     detail = _action_detail(ws, name, args)
                     aid = new_pending()
                     yield {"type": "confirm", "action_id": aid, "name": name, **detail}
-                    decision, scope = wait_decision(aid)
+                    decision, scope, reason = wait_decision(aid)
                     # 「以後自動適用」が選ばれたら、このセッションのファイル編集は確認を省く
                     if decision is True and scope == "always":
                         auto_accept_edits = True
@@ -1184,7 +1188,8 @@ def run_stream(model: str, messages: list, workspace: str,
                         result = "[承認がタイムアウトしたため実行しませんでした]"
                         yield {"type": "tool_result", "name": name, "status": "rejected", "result": result}
                     else:
-                        result = "[ユーザーが操作を拒否しました]"
+                        rtxt = (reason or "").strip()
+                        result = ("[ユーザーが操作を拒否しました" + (f"。理由: {rtxt}" if rtxt else "") + "]")
                         yield {"type": "tool_result", "name": name, "status": "rejected", "result": result}
                 else:
                     # 計画承認済みのファイル編集 → 自動適用(差分を併記して透明性を確保)
