@@ -42,6 +42,15 @@ body {
   font-size: 15px;
   line-height: 1.7;
 }
+/* 細いスクロールバー(Claude風) */
+* { scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: var(--line); border-radius: 8px;
+  border: 2px solid transparent; background-clip: padding-box; }
+::-webkit-scrollbar-thumb:hover { background: var(--ink-soft); background-clip: padding-box; }
+::-webkit-scrollbar-track { background: transparent; }
+::selection { background: rgba(76,110,245,.20); }
+
 .hidden { display: none !important; }
 .muted { color: var(--ink-soft); }
 .small { font-size: 12.5px; }
@@ -206,14 +215,17 @@ body {
 .cursor-blink::after { content: "▍"; color: var(--accent); animation: blink 1s steps(2) infinite; }
 @keyframes blink { 0%,50% { opacity: 1; } 50.01%,100% { opacity: 0; } }
 
-/* ============ 入力欄 ============ */
-.composer-wrap { padding: 8px 24px 16px; }
+/* ============ 入力欄(Claude風:入力が上・設定と送信は下の1列) ============ */
+.composer-wrap { padding: 8px 24px 14px; }
 .composer {
   max-width: 800px; margin: 0 auto; background: var(--card); border: 1px solid var(--line);
-  border-radius: var(--radius); box-shadow: var(--shadow); overflow: hidden;
+  border-radius: 22px; box-shadow: var(--shadow); overflow: hidden;
+  transition: border-color .15s, box-shadow .15s;
 }
-.composer-toolbar { display: flex; align-items: center; gap: 10px; padding: 8px 12px;
-  border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.composer:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(76,110,245,.12), var(--shadow); }
+.composer-toolbar { display: flex; align-items: center; gap: 10px; padding: 4px 10px 8px;
+  flex-wrap: wrap; }
+.composer-spacer { flex: 1 1 auto; }
 .tool { background: transparent; border: none; cursor: pointer; font-size: 17px; padding: 4px; border-radius: 8px; }
 .tool:hover { background: var(--line); }
 .quick { display: flex; align-items: center; gap: 5px; font-size: 12px; color: var(--ink-soft); }
@@ -228,11 +240,15 @@ body {
   font-weight: 600; min-width: 26px; padding: 2px 8px; border-radius: 6px; cursor: pointer; line-height: 1.6; }
 .qseg-btn:hover { color: var(--ink); }
 .qseg-btn.active { background: var(--card); color: var(--ink); box-shadow: 0 1px 2px rgba(0,0,0,.08); }
-.composer-input { display: flex; align-items: flex-end; gap: 8px; padding: 10px 12px; }
-#input { flex: 1; resize: none; border: none; background: transparent; color: var(--ink);
-  font-family: inherit; font-size: 15px; line-height: 1.6; max-height: 220px; outline: none; }
-.send { width: 40px; height: 40px; padding: 0; border-radius: 10px; font-size: 16px; flex-shrink: 0; }
-.composer-foot { text-align: center; font-size: 11px; padding: 0 0 8px; }
+.composer-input { padding: 14px 18px 4px; }
+#input { width: 100%; display: block; resize: none; border: none; background: transparent; color: var(--ink);
+  font-family: inherit; font-size: 15px; line-height: 1.6; max-height: 240px; min-height: 24px; outline: none; }
+#input::placeholder { color: var(--ink-soft); opacity: .8; }
+.send { width: 36px; height: 36px; padding: 0; border-radius: 12px; flex-shrink: 0;
+  display: inline-flex; align-items: center; justify-content: center; }
+.send svg { width: 18px; height: 18px; }
+.composer-foot { text-align: center; font-size: 11px; color: var(--ink-soft);
+  max-width: 800px; margin: 7px auto 0; }
 
 .attach-chips { max-width: 800px; margin: 0 auto 6px; display: flex; flex-wrap: wrap; gap: 6px; }
 .chip { background: var(--card); border: 1px solid var(--line); border-radius: 16px;
@@ -287,6 +303,36 @@ body {
 .fb-selected { margin-top: 12px; font-size: 13px; }
 .fb-note { margin-top: 8px; font-size: 12.5px; color: var(--stop); font-weight: 600;
   background: rgba(181,72,58,.1); border: 1px solid var(--stop); border-radius: 8px; padding: 7px 10px; }
+
+/* Mermaid 図(sandbox iframe で描画) */
+.mermaid-fig { margin: 12px 0; padding: 10px 12px; background: var(--card);
+  border: 1px solid var(--line); border-radius: 10px; overflow: auto; text-align: center; }
+.mermaid-fig iframe { width: 100%; border: 0; }
+.mermaid-fig svg { max-width: 100%; height: auto; }
+.mermaid-error { font-size: 12.5px; color: var(--stop); margin: 10px 0 2px; }
+
+/* 本文中のファイル参照リンク(`相対パス:行番号`) */
+.file-ref { background: var(--code-bg); border: 1px solid var(--line); padding: 1px 6px;
+  border-radius: 5px; font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+  font-size: .9em; color: var(--accent-dk); cursor: pointer; text-decoration: none; white-space: nowrap; }
+.file-ref:hover { border-color: var(--accent); text-decoration: underline; }
+
+/* ファイル閲覧モーダル */
+.fv-modal { width: 920px; max-width: 96vw; height: 80vh; max-height: 90vh; }
+.fv-title { font-family: ui-monospace, "SFMono-Regular", Consolas, monospace; font-size: 14px;
+  font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#fv-body { flex: 1; padding: 0; overflow: auto; }
+.fv-wrap { font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+  font-size: 12.5px; line-height: 1.6; padding: 6px 0; min-width: max-content; }
+.fv-row { display: flex; padding-left: 6px; }
+.fv-row:hover { background: rgba(127,127,127,.06); }
+.fv-ln { flex: 0 0 auto; width: 56px; text-align: right; padding-right: 14px; color: var(--ink-soft);
+  user-select: none; opacity: .65; }
+.fv-lc { flex: 1; white-space: pre; padding-right: 18px; }
+.fv-row.target { background: rgba(76,110,245,.14); }
+.fv-row.target .fv-ln { color: var(--accent-dk); opacity: 1; font-weight: 700; }
+.fv-note { margin: 16px; padding: 10px 12px; background: var(--panel); border: 1px solid var(--line);
+  border-radius: 8px; color: var(--ink-soft); font-size: 13px; }
 
 /* トースト */
 .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
@@ -356,25 +402,70 @@ body[data-mode="code"] .code-bar.only-code { display: flex; }
 .cb-toggle.disabled { opacity: .45; cursor: not-allowed; }
 
 /* エージェントのステップ表示 */
-.agent-log { display: flex; flex-direction: column; gap: 8px; }
-.step-call { display: flex; align-items: center; gap: 8px; color: var(--ink-soft);
-  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace; font-size: 12.5px; }
-.step-call .tool-name { color: var(--accent-dk); font-weight: 700; }
+.agent-log { display: flex; flex-direction: column; gap: 6px; }
+/* Claude 風の折りたたみツールステップ(▸ ツール名 引数 … 状態) */
+.step { border: 1px solid var(--line); border-radius: 8px; background: transparent; overflow: hidden;
+  transition: background .12s ease; }
+.step[open] { background: var(--code-bg); }
+summary.step-head { cursor: pointer; list-style: none; display: flex; align-items: center; gap: 8px;
+  padding: 5px 10px; font-family: ui-monospace, "SFMono-Regular", Consolas, monospace; font-size: 12px;
+  color: var(--ink-soft); user-select: none; }
+summary.step-head::-webkit-details-marker { display: none; }
+summary.step-head::before { content: "▸"; display: inline-block; width: .9em; opacity: .55;
+  transition: transform .12s ease; }
+.step[open] summary.step-head::before { transform: rotate(90deg); }
+summary.step-head:hover { background: rgba(127,127,127,.06); }
+.step-name { color: var(--accent-dk); font-weight: 700; flex: 0 0 auto; }
+.step-arg { flex: 1 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; opacity: .9; }
+.step-stat { flex: 0 0 auto; font-weight: 700; }
+.step-stat.ok { color: var(--green); }
+.step-stat.error, .step-stat.blocked, .step-stat.rejected { color: var(--stop); }
+.step-stat.redirected { color: var(--accent); }
+.step-stat.running { color: var(--ink-soft); font-weight: 400; }
+.step-body { padding: 0 10px 8px; }
+.step-notice { display: flex; flex-direction: column; gap: 8px; }
 .step-result { background: var(--code-bg); border: 1px solid var(--line); border-radius: 8px;
   padding: 8px 10px; font-family: ui-monospace, "SFMono-Regular", Consolas, monospace; font-size: 12px;
   white-space: pre-wrap; max-height: 260px; overflow: auto; color: var(--ink-soft); }
 .step-result.blocked, .step-result.rejected, .step-result.error { color: var(--stop); border-color: var(--stop); }
+/* ステップ本文内の結果は枠を外して軽く見せる(差分・確認カードと馴染ませる) */
+.step-body .step-result { border: none; background: transparent; padding: 6px 0 0; max-height: 220px; }
+.step-body > .confirm-card { margin-top: 8px; }
+/* 実行中スピナー(ステップのヘッダ右端) */
+.spin { display: inline-block; width: .8em; height: .8em; vertical-align: -1px;
+  border: 2px solid var(--ink-soft); border-top-color: transparent; border-radius: 50%;
+  animation: spin .7s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
 
 /* 承認カード(変更・コマンドの確認) */
 .confirm-card { border: 1px solid var(--accent); border-radius: 10px; padding: 12px 14px; background: var(--panel); }
 .confirm-title { font-weight: 700; margin-bottom: 8px; }
 .confirm-meta { font-size: 12.5px; color: var(--ink-soft); margin-bottom: 8px;
   font-family: ui-monospace, "SFMono-Regular", Consolas, monospace; word-break: break-all; }
-.confirm-diff, .confirm-cmd { background: var(--code-bg); border: 1px solid var(--line); border-radius: 8px;
+.confirm-cmd { background: var(--code-bg); border: 1px solid var(--line); border-radius: 8px;
   padding: 10px; font-family: ui-monospace, "SFMono-Regular", Consolas, monospace; font-size: 12px;
   white-space: pre-wrap; max-height: 320px; overflow: auto; margin-bottom: 10px; }
-.confirm-diff .add { color: var(--green); }
-.confirm-diff .del { color: var(--stop); }
+/* Claude Code 風の差分(行番号つき・行ごと色分け) */
+.cc-diff { background: var(--code-bg); border: 1px solid var(--line); border-radius: 8px;
+  overflow: auto; max-height: 360px; margin-bottom: 10px;
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace; font-size: 12px; line-height: 1.55; }
+.cc-diff-head { display: flex; gap: 12px; padding: 5px 10px; border-bottom: 1px solid var(--line);
+  background: rgba(127,127,127,.06); font-size: 11.5px; position: sticky; top: 0; }
+.cc-add-cnt { color: var(--green); font-weight: 700; }
+.cc-del-cnt { color: var(--stop); font-weight: 700; }
+.cc-diff-body { padding: 4px 0; }
+.cc-diff-row { display: flex; align-items: flex-start; padding: 0 8px; }
+.cc-ln { flex: 0 0 auto; min-width: 2.6em; text-align: right; padding-right: 12px;
+  color: var(--ink-soft); opacity: .5; user-select: none; }
+.cc-mark { flex: 0 0 auto; width: 1.1em; text-align: center; user-select: none; }
+.cc-code { flex: 1 1 auto; white-space: pre-wrap; word-break: break-word; color: var(--ink); }
+.cc-diff-row.add { background: rgba(46,160,67,.15); }
+.cc-diff-row.add .cc-mark, .cc-diff-row.add .cc-code { color: var(--green); }
+.cc-diff-row.del { background: rgba(181,72,58,.15); }
+.cc-diff-row.del .cc-mark, .cc-diff-row.del .cc-code { color: var(--stop); }
+.cc-diff-row.ctx .cc-code { color: var(--ink-soft); }
+.cc-diff-gap { padding: 1px 10px; color: var(--ink-soft); opacity: .45; user-select: none; }
+.cc-diff-empty { padding: 8px 10px; color: var(--ink-soft); }
 /* TODO 進捗パネル */
 .todo-panel { border: 1px solid var(--line); border-radius: 10px; background: var(--panel);
   padding: 10px 12px; font-size: 13px; }
@@ -395,25 +486,56 @@ body[data-mode="code"] .code-bar.only-code { display: flex; }
 .summary-result:empty { display: none; }
 #summary-save-wrap { margin-right: auto; }
 
-/* ユーザーへの質問カード(選択式) */
+/* ユーザーへの質問カード(選択式・各選択肢に説明つき) */
 .ask-card { border-color: var(--accent); }
 .ask-card .confirm-title { color: var(--accent-dk); }
-.ask-options { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
-.ask-opt { padding: 7px 14px; }
-.ask-opt-static { border: 1px solid var(--line); border-radius: 8px; padding: 4px 10px;
-  font-size: 12.5px; color: var(--ink-soft); }
+.ask-context { font-size: 12.5px; color: var(--ink-soft); line-height: 1.6; margin-bottom: 10px; }
+.ask-options { display: flex; flex-direction: column; gap: 8px; margin-bottom: 10px; }
+.ask-opt { display: block; width: 100%; text-align: left; border: 1px solid var(--line);
+  border-radius: 10px; padding: 9px 12px; background: var(--panel); color: var(--ink); cursor: pointer;
+  font-family: inherit; transition: border-color .12s ease, background .12s ease; }
+.ask-opt:hover:not(.static) { border-color: var(--accent); background: rgba(92,124,250,.10); }
+.ask-opt.rec { border-color: var(--accent); }
+.ask-opt.static { cursor: default; }
+.ask-opt-main { display: flex; align-items: center; gap: 8px; }
+.ask-opt-label { font-weight: 700; font-size: 13.5px; }
+.ask-opt-rec { flex: 0 0 auto; font-size: 11px; font-weight: 700; color: #fff;
+  background: var(--accent); border-radius: 999px; padding: 1px 8px; }
+.ask-opt-desc { margin-top: 3px; font-size: 12.5px; color: var(--ink-soft); line-height: 1.5; }
 .ask-free { display: flex; gap: 8px; }
 .ask-input { flex: 1; padding: 8px 11px; border: 1px solid var(--line); border-radius: 9px;
-  background: var(--panel); color: var(--ink); font-family: inherit; font-size: 13.5px; }
+  background: var(--panel); color: var(--ink); font-family: inherit; font-size: 13.5px; box-sizing: border-box; }
 .ask-input:focus { outline: none; border-color: var(--accent); }
 .ask-status:empty { display: none; }
 .ask-status { margin-top: 8px; }
+/* 複数質問 / 複数選択(チェックボックス・ラジオ) */
+.ask-q { margin-bottom: 12px; }
+.ask-q + .ask-q { border-top: 1px solid var(--line); padding-top: 12px; }
+.ask-q-head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
+.ask-q-chip { font-size: 11.5px; font-weight: 700; color: var(--accent-dk);
+  background: rgba(92,124,250,.15); border-radius: 6px; padding: 2px 8px; }
+.ask-q-text { font-weight: 700; font-size: 13.5px; color: var(--ink); }
+.ask-q-multi { font-size: 11px; color: var(--ink-soft); border: 1px solid var(--line);
+  border-radius: 999px; padding: 1px 8px; }
+.ask-opt.ask-check { display: flex; align-items: flex-start; gap: 10px; }
+.ask-cb { margin: 3px 0 0; width: 16px; height: 16px; flex: 0 0 auto; accent-color: var(--accent); cursor: pointer; }
+.ask-opt-body { flex: 1 1 auto; min-width: 0; }
+.ask-opt.ask-check:has(.ask-cb:checked) { border-color: var(--accent); background: rgba(92,124,250,.12); }
+.ask-free-q { width: 100%; margin-top: 8px; }
+.ask-send-all { width: 100%; margin-top: 4px; }
+/* 複数質問のステッパー(1問ずつ) */
+.ask-step-prog { font-size: 11.5px; font-weight: 700; color: var(--ink-soft); margin-bottom: 8px; }
+.ask-step-nav { display: flex; gap: 8px; margin-top: 12px; }
+.ask-back { flex: 0 0 auto; }
+.ask-next { flex: 1 1 auto; }
+.ask-back:disabled { opacity: .4; cursor: default; }
+.ask-opt.picked { border-color: var(--accent); background: rgba(92,124,250,.12); }
 
 /* 実行計画カード(承認で実行フェーズへ) */
 .plan-card { border-color: var(--green); }
 .plan-card .confirm-title { color: var(--green); }
 .plan-body { margin: 4px 0 10px; font-size: 13.5px; }
-.applied-diff { margin-top: 4px; }
+.cc-diff.applied { margin-top: 4px; margin-bottom: 0; }
 .confirm-actions { display: flex; gap: 8px; align-items: center; }
 .confirm-status { font-weight: 700; font-size: 13px; }
 .confirm-status.ok { color: var(--green); }

@@ -103,11 +103,13 @@
       <div class="composer-wrap">
         <div id="attach-chips" class="attach-chips"></div>
         <div class="composer">
+          <div class="composer-input">
+            <textarea id="input" rows="1" placeholder="メッセージを入力…(Shift+Enterで改行)"></textarea>
+          </div>
           <div class="composer-toolbar">
             <button id="attach-btn" class="tool only-chat" title="ファイルを添付">📎</button>
             <input type="file" id="file-input" multiple class="hidden"
                    accept=".pdf,.docx,.xlsx,.pptx,.txt,.md,.markdown,.csv,.tsv,.log,.json" />
-
             <div class="quick">
               <label>モデル</label>
               <select id="q-model" class="mini-select" title="モデル"></select>
@@ -142,14 +144,16 @@
                 <button type="button" class="qseg-btn" data-v="9999" title="上限なし(全件参照・コンテキスト超過に注意)">∞</button>
               </div>
             </div>
+            <span class="composer-spacer"></span>
+            <button id="send-btn" class="btn primary send" title="送信">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="20" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>
+            </button>
+            <button id="stop-btn" class="btn stop send hidden" title="停止">
+              <svg viewBox="0 0 24 24" fill="currentColor"><rect x="6.5" y="6.5" width="11" height="11" rx="2.5"/></svg>
+            </button>
           </div>
-          <div class="composer-input">
-            <textarea id="input" rows="1" placeholder="メッセージを入力…(Shift+Enterで改行)"></textarea>
-            <button id="send-btn" class="btn primary send" title="送信">➤</button>
-            <button id="stop-btn" class="btn stop send hidden" title="停止">■</button>
-          </div>
-          <div class="composer-foot muted">ローカルLLM ・ 社外送信なし</div>
         </div>
+        <div class="composer-foot muted">ローカルLLM ・ 社外送信なし</div>
       </div>
     </main>
   </div>
@@ -314,11 +318,23 @@
     </div>
   </div>
 
+  <!-- ============ ファイル閲覧(本文の path:line リンク) ============ -->
+  <div id="file-modal" class="overlay hidden">
+    <div class="modal fv-modal">
+      <div class="modal-head">
+        <h2 id="fv-title" class="fv-title">ファイル</h2>
+        <button class="icon-btn" id="fv-close" title="閉じる">✕</button>
+      </div>
+      <div class="modal-body" id="fv-body"></div>
+    </div>
+  </div>
+
   <div id="toast" class="toast hidden"></div>
 
   <script src="/static/vendor/marked.min.js"></script>
   <script src="/static/vendor/purify.min.js"></script>
   <script src="/static/vendor/highlight.min.js"></script>
+  <script src="/static/vendor/mermaid.min.js"></script>
   <script src="/static/js/app.js"></script>
 </body>
 </html>

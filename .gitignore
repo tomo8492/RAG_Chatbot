@@ -19,3 +19,6 @@ Thumbs.db
 .idea/
 .vscode/*
 !.vscode/launch.json
+
+# RAG評価の出力
+evalkit/results/

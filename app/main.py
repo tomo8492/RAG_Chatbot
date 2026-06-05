@@ -21,7 +21,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import agent, auth, db, export, llm, rag, safety, summarize
+from . import agent, auth, db, export, llm, postprocess, rag, safety, summarize
 from .config import settings
 from .defaults import effective_for, get_defaults, set_defaults
 from .fsbrowse import count_supported_recursive, get_roots, list_dir
@@ -440,7 +440,7 @@ def api_generate(cid: str, body: GenerateBody) -> Response:
                 else:
                     acc_content += ev["text"]
                     yield sse({"type": "content", "delta": ev["text"]})
-            asst = db.add_message(cid, "assistant", acc_content, sources=sources)
+            asst = db.add_message(cid, "assistant", postprocess.clean(acc_content), sources=sources)
             saved = True
             log.info("生成完了 [conv=%s] %d文字", cid, len(acc_content))
             yield sse({"type": "done", "message": asst})
@@ -458,7 +458,7 @@ def api_generate(cid: str, body: GenerateBody) -> Response:
             yield sse({"type": "error", "error": emsg})
         finally:
             if not saved and acc_content.strip():
-                db.add_message(cid, "assistant", acc_content, sources=sources)
+                db.add_message(cid, "assistant", postprocess.clean(acc_content), sources=sources)
 
     headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"}
     return StreamingResponse(gen(), media_type="text/event-stream", headers=headers)
@@ -485,7 +485,8 @@ class ApproveBody(BaseModel):
 
 class AnswerBody(BaseModel):
     action_id: str
-    answer: str = ""
+    answer: str = ""                       # 旧形式(単一回答)
+    answers: Optional[list] = None         # 新形式(質問ごとの選択ラベル配列)
 
 
 def _init_code_ctx(cid: str, ws: Path) -> list:
@@ -594,6 +595,9 @@ def api_agent(cid: str, body: AgentBody) -> Response:
                         buf.append(ev["text"])
                     yield sse(ev)
                     continue
+                if t == "thinking":
+                    yield sse(ev)   # 思考は表示のみ(本文に混ぜず・ステップにも保存しない)
+                    continue
                 flush_text()   # 区切り → それまでの本文を1ステップとして確定
                 if t == "tool_call":
                     steps.append({"type": "tool_call", "name": ev.get("name"), "args": ev.get("args", {})})
@@ -608,8 +612,8 @@ def api_agent(cid: str, body: AgentBody) -> Response:
                 elif t == "todos":
                     steps.append({"type": "todos", "todos": ev.get("todos", [])})
                 elif t == "ask":
-                    steps.append({"type": "ask", "question": ev.get("question", ""),
-                                  "options": ev.get("options", [])})
+                    steps.append({"type": "ask", "context": ev.get("context", ""),
+                                  "questions": ev.get("questions", [])})
                 yield sse(ev)
         except GeneratorExit:
             log.info("エージェント停止(クライアント切断)[conv=%s]", cid)
@@ -635,8 +639,53 @@ def api_code_approve(body: ApproveBody) -> dict:
 
 @app.post("/api/code/answer", dependencies=[Depends(auth.require_auth)])
 def api_code_answer(body: AnswerBody) -> dict:
-    ok = agent.resolve_answer(body.action_id, body.answer)
+    ans = body.answers if body.answers is not None else body.answer
+    ok = agent.resolve_answer(body.action_id, ans)
     return {"ok": ok}
+
+
+@app.get("/api/conversations/{cid}/file", dependencies=[Depends(auth.require_auth)])
+def api_code_file(cid: str, path: str) -> dict:
+    """Code 会話の作業フォルダ内のファイルを安全に読み出して返す(本文の path:line リンク閲覧用)。"""
+    max_bytes = 2_000_000   # 閲覧上限(クライアントからは変更不可)
+    conv = db.get_conversation(cid)
+    if not conv:
+        raise HTTPException(404, "会話が見つかりません")
+    if conv.get("kind") != "code":
+        raise HTTPException(400, "コード用の会話ではありません")
+    s = conv.get("settings") or {}
+    workspace = (s.get("workspace") or "").strip()
+    if not workspace:
+        raise HTTPException(400, "作業フォルダが設定されていません")
+    ws = Path(workspace).expanduser()
+    if not ws.is_dir():
+        raise HTTPException(400, f"作業フォルダが存在しません: {workspace}")
+    rel = re.sub(r":\d+$", "", (path or "").strip().replace("\\", "/"))  # 末尾の :行番号 は除去
+    if not rel:
+        raise HTTPException(400, "パスが空です")
+    try:
+        fp = agent._safe_path(ws.resolve(), rel)   # 作業フォルダ外・保護領域は ValueError
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    if not fp.is_file():
+        raise HTTPException(404, f"ファイルが見つかりません: {rel}")
+    try:
+        size = fp.stat().st_size
+    except OSError:
+        raise HTTPException(404, "ファイルにアクセスできません")
+    bin_ext = {".xlsx", ".xlsm", ".xls", ".docx", ".pptx", ".pdf", ".png", ".jpg",
+               ".jpeg", ".gif", ".webp", ".zip", ".exe", ".dll", ".bin", ".so"}
+    if fp.suffix.lower() in bin_ext:
+        return {"path": rel, "binary": True, "size": size, "note": "バイナリ形式のため表示できません。"}
+    if size > max_bytes:
+        return {"path": rel, "too_large": True, "size": size,
+                "note": f"ファイルが大きすぎます({size:,} バイト)。"}
+    data = fp.read_bytes()
+    if b"\x00" in data[:4096]:
+        return {"path": rel, "binary": True, "size": size, "note": "バイナリ形式のため表示できません。"}
+    text = data.decode("utf-8", errors="replace")
+    return {"path": rel, "content": text, "size": size,
+            "lines": text.count("\n") + 1, "lang": fp.suffix.lstrip(".").lower()}
 
 
 # ============================================================

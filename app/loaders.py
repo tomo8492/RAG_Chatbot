@@ -8,17 +8,40 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from . import ocr
+from .config import settings
 from .logging_setup import get_logger
 
 log = get_logger("loaders")
 
 
+def _page_text_with_ocr(page, source_name: str, page_no: int) -> str:
+    """1ページのテキストを返す。テキスト層が無い(=スキャン)頁だけ OCR にルーティングする。
+
+    page は PyMuPDF の Page を想定するが、get_text()/get_pixmap() を持つ任意のオブジェクトで
+    よい(テスト用に fitz 非依存で差し替え可能)。
+    """
+    text = page.get_text().strip()
+    if ocr.needs_ocr(text):   # OCR無効時は常に False=従来動作
+        try:
+            png = page.get_pixmap(dpi=settings.ocr_dpi).tobytes("png")
+            ocr_text = ocr.ocr_image_png(png)
+        except Exception as e:   # 画像化失敗等は従来どおり skip 相当
+            log.warning("ページ画像化に失敗 %s p.%d: %s", source_name, page_no, e)
+            ocr_text = ""
+        if ocr_text:
+            text = ocr_text
+    return text
+
+
 def load_pdf(path: Path) -> list[dict]:
     import fitz  # PyMuPDF
+
     docs = []
     with fitz.open(path) as pdf:
         for i, page in enumerate(pdf):
-            text = page.get_text().strip()
+            # テキスト層がある頁はそのまま、無い頁のみ OCR(OCR無効時は常に従来動作)
+            text = _page_text_with_ocr(page, path.name, i + 1)
             if text:
                 docs.append({"text": text, "source": path.name, "loc": f"p.{i + 1}"})
     return docs
