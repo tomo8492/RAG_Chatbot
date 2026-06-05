@@ -107,11 +107,54 @@ def fix_spelling(s: str) -> str:
     return _SPELL_RE.sub(lambda m: MERMAID_SPELL[m.group(1)], s or "")
 
 
+# flowchart/graph のノード括弧の不一致・閉じ忘れを補修する(LLM が [..} や途中切れを出しても描画可能に)
+_BR_PAIRS = {"[": "]", "(": ")", "{": "}"}
+_BR_CLOSERS = set(_BR_PAIRS.values())
+
+
+def _balance_brackets(line: str) -> str:
+    """1行内の () [] {} を均衡させる。
+
+    - 不一致の閉じ括弧は、対応する開きに合わせて矯正する(例: `F[問題発覚?}` → `F[問題発覚?]`)。
+    - 行末で閉じ忘れ(途中で切れた図など)があれば補う(例: `M[手順書承` → `M[手順書承]`)。
+    - 引用符 "..." の内側は対象外。**括弧が正しく閉じている行は一切変更しない**(冪等)。
+    """
+    if line.lstrip().startswith("%%"):       # mermaid コメント行は触らない
+        return line
+    out, stack, in_q = [], [], False
+    for ch in line:
+        if ch == '"':
+            in_q = not in_q
+            out.append(ch)
+        elif in_q:
+            out.append(ch)
+        elif ch in _BR_PAIRS:
+            stack.append(_BR_PAIRS[ch])
+            out.append(ch)
+        elif ch in _BR_CLOSERS:
+            out.append(stack.pop() if stack else ch)   # 期待される閉じに矯正(余分な閉じはそのまま)
+        else:
+            out.append(ch)
+    while stack:                              # 閉じ忘れを補完
+        out.append(stack.pop())
+    return "".join(out)
+
+
+def _repair_flowchart(body: str) -> str:
+    """ブロック先頭が flowchart/graph のときだけ、各行のノード括弧を均衡化する。"""
+    first = next((ln.strip() for ln in body.splitlines() if ln.strip()), "")
+    if not first.startswith(("flowchart", "graph")):
+        return body
+    return "\n".join(_balance_brackets(ln) for ln in body.split("\n"))
+
+
 def normalize_mermaid(text: str) -> str:
-    """```mermaid ブロックの内側だけスペル補正する(本文・他言語コードは変更しない)。"""
+    """```mermaid ブロックの内側だけ補正する(本文・他言語コードは変更しない)。
+    スペル補正 → flowchart のノード括弧の補修。"""
     if not text or "```" not in text:
         return text or ""
-    return _MERMAID_FENCE_RE.sub(lambda m: m.group(1) + fix_spelling(m.group(2)) + m.group(3), text)
+    return _MERMAID_FENCE_RE.sub(
+        lambda m: m.group(1) + _repair_flowchart(fix_spelling(m.group(2))) + m.group(3), text)
 
 
 def clean(text: str) -> str:

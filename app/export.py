@@ -204,6 +204,9 @@ hr{border:none;border-top:1px solid var(--line);margin:2em 0;}
 pre{background:var(--soft);border:1px solid var(--line);border-radius:10px;
   padding:14px 16px;overflow-x:auto;margin:1.1em 0;}
 pre code{font-family:var(--mono);font-size:13.5px;line-height:1.6;color:#1f2328;}
+pre.mermaid{background:none;border:none;padding:0;overflow:visible;text-align:center;
+  margin:1.4em 0;line-height:normal;}
+.mermaid svg{max-width:100%;height:auto;}
 .table-wrap{overflow-x:auto;margin:1.2em 0;}
 table{width:100%;border-collapse:separate;border-spacing:0;font-size:14.5px;
   border:1px solid var(--line);border-radius:8px;overflow:hidden;}
@@ -232,6 +235,7 @@ def to_html(md: str, title: str = "回答") -> bytes:
         blocks = blocks[1:]
 
     body: list[str] = []
+    has_mermaid = False
     for b in blocks:
         t = b["type"]
         if t == "heading":
@@ -244,7 +248,12 @@ def to_html(md: str, title: str = "回答") -> bytes:
             items = "".join(f"<li>{_inline_html(it)}</li>" for it in b["items"])
             body.append(f"<{tag}>{items}</{tag}>")
         elif t == "code":
-            body.append(f"<pre><code>{_html.escape(b['text'])}</code></pre>")
+            if b.get("lang", "").lower() == "mermaid":
+                # Mermaid 図はコードではなく図として描画する(後段でライブラリを同梱)
+                has_mermaid = True
+                body.append(f'<pre class="mermaid">{_html.escape(b["text"])}</pre>')
+            else:
+                body.append(f"<pre><code>{_html.escape(b['text'])}</code></pre>")
         elif t == "quote":
             body.append(f"<blockquote>{_inline_html(b['text']).replace(chr(10), '<br>')}</blockquote>")
         elif t == "table":
@@ -254,12 +263,37 @@ def to_html(md: str, title: str = "回答") -> bytes:
             body.append(f'<div class="table-wrap"><table><thead><tr>{head}</tr></thead>'
                         f"<tbody>{rows}</tbody></table></div>")
 
-    return _html_page(title, "\n".join(body)).encode("utf-8")
+    return _html_page(title, "\n".join(body), with_mermaid=has_mermaid).encode("utf-8")
 
 
-def _html_page(title: str, body_html: str) -> str:
+# Mermaid 同梱(vendored を1度だけ読み込みキャッシュ)。図を含む HTML のみに埋め込む。
+_MERMAID_JS_CACHE: str | None = None
+
+
+def _mermaid_scripts() -> str:
+    """エクスポートHTMLに同梱する Mermaid ライブラリ＋初期化(オフラインでも図が描画される)。"""
+    global _MERMAID_JS_CACHE
+    if _MERMAID_JS_CACHE is None:
+        from pathlib import Path
+        p = Path(__file__).resolve().parent / "static" / "vendor" / "mermaid.min.js"
+        try:
+            js = p.read_text(encoding="utf-8")
+            js = re.sub(r"</(script)", r"<\\/\1", js, flags=re.IGNORECASE)  # </script> での早期終了を防ぐ
+            _MERMAID_JS_CACHE = js
+        except Exception as e:  # 読めなければ図は <pre> のまま(コード表示)になる
+            log.warning("mermaid.min.js を同梱できません: %s", e)
+            _MERMAID_JS_CACHE = ""
+    if not _MERMAID_JS_CACHE:
+        return ""
+    init = ("mermaid.initialize({startOnLoad:true,securityLevel:'loose',theme:'default',"
+            "flowchart:{htmlLabels:true,useMaxWidth:true}});")
+    return f"<script>{_MERMAID_JS_CACHE}</script>\n<script>{init}</script>"
+
+
+def _html_page(title: str, body_html: str, with_mermaid: bool = False) -> str:
     """整ったドキュメントの外枠(CSS・タイトル・日付・フッター)に本文HTMLを差し込む。"""
     date = datetime.now().strftime("%Y年%m月%d日")
+    scripts = _mermaid_scripts() if with_mermaid else ""
     return f"""<!DOCTYPE html>
 <html lang="ja">
 <head>
@@ -279,6 +313,7 @@ def _html_page(title: str, body_html: str) -> str:
 </div>
 <footer class="doc-footer">社内文書アシスタントで作成</footer>
 </main>
+{scripts}
 </body>
 </html>"""
 
