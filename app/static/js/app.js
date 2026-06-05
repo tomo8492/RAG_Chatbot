@@ -559,8 +559,40 @@ function renderSources(container, sources) {
   container.appendChild(title);
   sources.forEach((s) => {
     const label = `${s.source}${s.loc ? " " + s.loc : ""}${s.attachment ? " (添付)" : ""}`;
-    container.appendChild(el("span", "src-item", escapeHtml(label)));
+    const item = el("span", "src-item", escapeHtml(label));
+    if (s.text && s.text.trim()) {           // 原文(該当チャンク)があればクリックで表示
+      item.classList.add("src-clickable");
+      item.title = "クリックで該当箇所(原文)を表示";
+      item.onclick = (e) => { e.stopPropagation(); showSourcePopover(item, s); };
+    }
+    container.appendChild(item);
   });
+}
+
+function showSourcePopover(anchor, s) {
+  const existing = document.querySelector(".src-popover");
+  const sameAnchor = existing && existing._anchor === anchor;
+  if (existing) existing.remove();
+  if (sameAnchor) return;                    // 同じ出典の再クリックは閉じる(トグル)
+  const pop = el("div", "src-popover");
+  pop._anchor = anchor;
+  const head = el("div", "src-pop-head");
+  head.appendChild(el("span", "src-pop-title", escapeHtml(`${s.source}${s.loc ? " · " + s.loc : ""}`)));
+  const x = el("button", "src-pop-x", "✕"); x.onclick = () => pop.remove();
+  head.appendChild(x);
+  pop.appendChild(head);
+  const body = el("div", "src-pop-body"); body.textContent = s.text || "(本文なし)";
+  pop.appendChild(body);
+  document.body.appendChild(pop);
+  const r = anchor.getBoundingClientRect();
+  pop.style.left = Math.max(8, Math.min(r.left, window.innerWidth - pop.offsetWidth - 12)) + "px";
+  pop.style.top = (r.bottom + 6 + window.scrollY) + "px";
+  setTimeout(() => {
+    const close = (ev) => {
+      if (!pop.contains(ev.target) && ev.target !== anchor) { pop.remove(); document.removeEventListener("click", close); }
+    };
+    document.addEventListener("click", close);
+  }, 0);
 }
 
 /* ---------- Markdown ---------- */
@@ -1071,6 +1103,12 @@ function handleStreamEvent(ev, refs, cb) {
       if (cb.onDone) cb.onDone(ev.message);
       if (ev.message && ev.message.sources && ev.message.sources.length)
         renderSources(refs.src, ev.message.sources);
+      break;
+    case "title":   // 初回のLLM自動タイトルを即時反映(サイドバーは送信完了時の loadConversations が更新)
+      if (ev.title) {
+        if (State.current) State.current.title = ev.title;
+        if ($("chat-title")) $("chat-title").value = ev.title;
+      }
       break;
     case "error": throw new Error(ev.error || "生成エラー");
     case "user_saved": break;
