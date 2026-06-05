@@ -77,6 +77,47 @@ def validate_mermaid(text: str) -> list[str]:
     return issues
 
 
+# 図ラベルに混入しやすい英単語の頻出スペルミス → 正しい綴り(1か所に集約・拡張可)
+MERMAID_SPELL = {
+    "Srart": "Start", "srart": "start", "Strat": "Start", "strat": "start",
+    "undefine": "undefined",
+    "Defualt": "Default", "defualt": "default", "Defalt": "Default", "defalt": "default",
+    "Reciept": "Receipt", "Recieve": "Receive", "recieve": "receive", "recieved": "received",
+    "Lenght": "Length", "lenght": "length",
+    "Vaule": "Value", "vaule": "value",
+    "Retrun": "Return", "retrun": "return",
+    "Funtion": "Function", "funtion": "function",
+    "Paramter": "Parameter", "paramter": "parameter",
+    "Sucess": "Success", "sucess": "success", "Succes": "Success",
+    "Initalize": "Initialize", "initalize": "initialize",
+    "Feild": "Field", "feild": "field",
+    "seperate": "separate", "occured": "occurred", "vaild": "valid",
+}
+_SPELL_RE = re.compile(
+    r"\b(" + "|".join(re.escape(k) for k in sorted(MERMAID_SPELL, key=len, reverse=True)) + r")\b"
+)
+# ```mermaid 〜 ```(未閉じなら末尾まで)を本文の他部分と区別して取り出す
+_MERMAID_FENCE_RE = re.compile(
+    r"(```[ \t]*mermaid[ \t]*\r?\n)(.*?)(\r?\n[ \t]*```|\Z)", re.DOTALL | re.IGNORECASE
+)
+
+
+def fix_spelling(s: str) -> str:
+    """既知の頻出スペルミスを補正する(単語境界一致)。"""
+    return _SPELL_RE.sub(lambda m: MERMAID_SPELL[m.group(1)], s or "")
+
+
+def normalize_mermaid(text: str) -> str:
+    """```mermaid ブロックの内側だけスペル補正する(本文・他言語コードは変更しない)。"""
+    if not text or "```" not in text:
+        return text or ""
+    return _MERMAID_FENCE_RE.sub(lambda m: m.group(1) + fix_spelling(m.group(2)) + m.group(3), text)
+
+
 def clean(text: str) -> str:
-    """保存・表示前の総合後処理: <think> 除去 → 未閉じフェンス補完 → 前後空白整理。"""
-    return close_unclosed_fence(strip_think(text or "")).strip()
+    """保存・表示前の総合後処理:
+    <think> 除去 → mermaid内スペル補正 → 未閉じフェンス補完 → 前後空白整理。"""
+    s = strip_think(text or "")
+    s = normalize_mermaid(s)
+    s = close_unclosed_fence(s)
+    return s.strip()

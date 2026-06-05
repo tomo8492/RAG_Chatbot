@@ -10,6 +10,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from app.postprocess import (  # noqa: E402
     clean,
     close_unclosed_fence,
+    fix_spelling,
+    normalize_mermaid,
     strip_think,
     validate_mermaid,
 )
@@ -107,6 +109,37 @@ def test_clean_strips_think_and_closes_fence():
 def test_clean_strict_strict_not_found_message_untouched():
     s = "参考資料内には、その内容に関する記載が見つかりませんでした。"
     assert clean(s) == s
+
+
+# ---------------- spelling / normalize_mermaid ----------------
+def test_fix_spelling_basic():
+    assert fix_spelling("Srart") == "Start"
+    assert fix_spelling("undefine?") == "undefined?"
+    assert fix_spelling("Set Defualt Vaule") == "Set Default Value"
+
+
+def test_fix_spelling_keeps_correct_words():
+    assert fix_spelling("undefined") == "undefined"   # 正しい語は変えない
+    assert fix_spelling("startup") == "startup"        # 部分一致で壊さない
+
+
+def test_normalize_only_inside_mermaid():
+    text = "本文に Srart と書いても直さない。\n\n```mermaid\nflowchart TD\n  A[Srart]:::startend --> B[undefine?]\n```"
+    out = normalize_mermaid(text)
+    assert "本文に Srart" in out                       # 本文は不変
+    assert "A[Start]:::startend" in out                # 図内は補正
+    assert "B[undefined?]" in out
+
+
+def test_normalize_handles_unclosed_block():
+    out = normalize_mermaid("```mermaid\nflowchart TD\n  A[Srart]")
+    assert "A[Start]" in out
+
+
+def test_clean_fixes_spelling_in_mermaid():
+    out = clean("<think>x</think>図:\n```mermaid\nflowchart TD\n  A[Srart]:::startend --> B[Defualt]")
+    assert "A[Start]" in out and "B[Default]" in out
+    assert out.rstrip().endswith("```")               # 未閉じも閉じる
 
 
 if __name__ == "__main__":

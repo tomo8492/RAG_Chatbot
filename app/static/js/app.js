@@ -599,16 +599,81 @@ function enhanceCode(container) {
 }
 
 /* ---- Mermaid 図のレンダリング(sandbox iframe・失敗時は生コードへフォールバック) ---- */
+
+/* デザイントークン(色・角丸・フォント・余白を1か所集約。色変更はここだけ) */
+const MERMAID_TOKENS = {
+  radius: 8,
+  font: '"Yu Gothic UI","Hiragino Kaku Gothic ProN","Noto Sans JP","Meiryo",system-ui,sans-serif',
+  // ノード種別: process=通常(既定/青), startend=開始終了(白+濃枠), decision=判定(ピンク),
+  //            accent1=特殊A(橙), accent2=特殊B(緑)
+  light: {
+    process:  { bg: "#E7EEFF", border: "#4C6EF5", text: "#1E3A8A" },
+    startend: { bg: "#FFFFFF", border: "#3A3833", text: "#2B2A27" },
+    decision: { bg: "#FCE3EC", border: "#D6336C", text: "#7A1F3D" },
+    accent1:  { bg: "#FFEFDD", border: "#E8590C", text: "#8A3B0B" },
+    accent2:  { bg: "#E4F3E8", border: "#2F9E44", text: "#1B5E2A" },
+    line: "#7C776B", edge: "#3A3833", edgeBg: "#F0EEE6",
+    cluster: "#F0EEE6", clusterBorder: "#D9D4C7",
+  },
+  dark: {
+    process:  { bg: "#27314F", border: "#5C7CFA", text: "#CDD9FF" },
+    startend: { bg: "#3A3833", border: "#CDC8BC", text: "#F5F2EA" },
+    decision: { bg: "#422836", border: "#E64980", text: "#FAD1E0" },
+    accent1:  { bg: "#3B2A1C", border: "#FD7E14", text: "#FFD8A8" },
+    accent2:  { bg: "#22341F", border: "#51CF66", text: "#C3F0CA" },
+    line: "#7A7568", edge: "#CFCABD", edgeBg: "#1E1D1A",
+    cluster: "#262521", clusterBorder: "#3A3833",
+  },
+};
+
+function mermaidConfig() {
+  const dark = document.documentElement.getAttribute("data-theme") === "dark";
+  const t = dark ? MERMAID_TOKENS.dark : MERMAID_TOKENS.light;
+  const R = MERMAID_TOKENS.radius, F = MERMAID_TOKENS.font;
+  const themeVariables = {
+    fontFamily: F, fontSize: "14px",
+    primaryColor: t.process.bg, primaryBorderColor: t.process.border, primaryTextColor: t.process.text,
+    mainBkg: t.process.bg, nodeBorder: t.process.border, nodeTextColor: t.process.text,
+    lineColor: t.line, textColor: t.edge,
+    clusterBkg: t.cluster, clusterBorder: t.clusterBorder,
+    edgeLabelBackground: t.edgeBg,
+  };
+  const C = (n) => t[n];
+  const themeCSS = `
+    .node rect, .node .basic, .node polygon { rx:${R}px; ry:${R}px; stroke-width:1.6px; stroke-linejoin:round; }
+    .nodeLabel, .edgeLabel, .label, .cluster .nodeLabel { font-family:${F}; }
+    .nodeLabel { font-weight:500; }
+    .label foreignObject, .nodeLabel { padding:0 2px; }
+    .edgeLabel, .edgeLabel p { background:transparent !important; color:${t.edge} !important; font-weight:600; }
+    .edgeLabel rect, .edgeLabel foreignObject { fill:${t.edgeBg}; opacity:.9; }
+    .flowchart-link, .edgePath .path { stroke:${t.line}; stroke-width:1.5px; }
+    .cluster rect { rx:10px; ry:10px; fill:${t.cluster}; stroke:${t.clusterBorder}; }
+    .node polygon { fill:${C("decision").bg} !important; stroke:${C("decision").border} !important; }   /* 安全網: ひし形=判定色 */
+    .node.decision polygon { fill:${C("decision").bg} !important; stroke:${C("decision").border} !important; }
+    .node.decision .nodeLabel { color:${C("decision").text} !important; }
+    .node.startend rect, .node.startend .basic, .node.startend path { fill:${C("startend").bg} !important; stroke:${C("startend").border} !important; stroke-width:2px !important; }
+    .node.startend .nodeLabel { color:${C("startend").text} !important; font-weight:700; }
+    .node.accent1 rect, .node.accent1 .basic { fill:${C("accent1").bg} !important; stroke:${C("accent1").border} !important; }
+    .node.accent1 .nodeLabel { color:${C("accent1").text} !important; }
+    .node.accent2 rect, .node.accent2 .basic { fill:${C("accent2").bg} !important; stroke:${C("accent2").border} !important; }
+    .node.accent2 .nodeLabel { color:${C("accent2").text} !important; }
+  `;
+  return { themeVariables, themeCSS };
+}
+
 let _mermaidReady = false;
 function initMermaid() {
   if (!window.mermaid) return false;
-  const dark = document.documentElement.getAttribute("data-theme") === "dark";
+  const { themeVariables, themeCSS } = mermaidConfig();
   try {
     window.mermaid.initialize({
       startOnLoad: false,
       securityLevel: "sandbox",          // 図内の JS 実行を iframe で遮断
-      theme: dark ? "dark" : "default",
-      fontFamily: "inherit",
+      theme: "base",                     // base + themeVariables/themeCSS で完全カスタム
+      themeVariables,
+      themeCSS,
+      fontFamily: MERMAID_TOKENS.font,
+      flowchart: { htmlLabels: true, padding: 14, nodeSpacing: 50, rankSpacing: 55, useMaxWidth: true },
     });
     _mermaidReady = true;
     return true;
