@@ -461,6 +461,7 @@ function createAssistantRow() {
     </div>`;
   const refs = {
     row,
+    avatar: row.querySelector(".avatar"),
     think: row.querySelector(".thinking"),
     thinkText: row.querySelector(".think-text"),
     md: row.querySelector(".md"),
@@ -843,6 +844,7 @@ async function streamAssistant(payload) {
   const { row, refs } = createAssistantRow();
   $("messages").appendChild(row);
   refs.md.classList.add("cursor-blink");
+  refs.avatar.classList.add("thinking");   // 考え中:回答アイコンをアニメーション
   scrollToBottom();
 
   setStreaming(true);
@@ -889,9 +891,13 @@ async function streamAssistant(payload) {
         let ev; try { ev = JSON.parse(line); } catch (_) { continue; }
         handleStreamEvent(ev, refs, {
           onThink: (d) => { think += d; refs.think.classList.remove("hidden");
-            refs.think.open = true; refs.thinkText.textContent = think; scrollToBottom(); },
+            refs.think.open = false;   // 思考タブは既定で折りたたみ(クリックで展開)
+            refs.thinkText.textContent = think; scrollToBottom(); },
           onContent: (d) => {
-            if (!gotContent) { gotContent = true; refs.think.open = false; }
+            if (!gotContent) {
+              gotContent = true; refs.think.open = false;
+              refs.avatar.classList.remove("thinking");   // 回答開始でアニメ停止
+            }
             acc += d; scheduleRender();
           },
           onDone: (msg) => { if (msg && typeof msg.content === "string") finalContent = msg.content; },
@@ -912,6 +918,7 @@ async function streamAssistant(payload) {
   } finally {
     finished = true;
     refs.md.classList.remove("cursor-blink");
+    refs.avatar.classList.remove("thinking");   // 完了/停止/エラーでアニメ停止
     refs.row.dataset.raw = stripThink(acc);
     buildAssistantActions(refs, true);
     setStreaming(false);
