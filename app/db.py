@@ -141,6 +141,22 @@ def list_conversations(kind: Optional[str] = None) -> list[dict]:
     return [_conv_to_dict(r) for r in rows]
 
 
+def search_conversations(query: str, kind: Optional[str] = None) -> list[dict]:
+    """タイトル または メッセージ本文 に query を含む会話を新しい順で返す。"""
+    like = f"%{query}%"
+    with _connect() as conn:
+        sql = ("SELECT DISTINCT c.* FROM conversations c "
+               "LEFT JOIN messages m ON m.conversation_id = c.id "
+               "WHERE (c.title LIKE ? OR m.content LIKE ?)")
+        params: list = [like, like]
+        if kind:
+            sql += " AND c.kind = ?"
+            params.append(kind)
+        sql += " ORDER BY c.updated_at DESC"
+        rows = conn.execute(sql, params).fetchall()
+    return [_conv_to_dict(r) for r in rows]
+
+
 def update_conversation(cid: str, **fields: Any) -> Optional[dict]:
     allowed = {"title", "model", "system_prompt", "active_indexes", "settings"}
     sets, vals = [], []

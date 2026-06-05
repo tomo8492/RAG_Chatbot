@@ -117,6 +117,10 @@ body {
   width: 26px; height: 26px; border-radius: 50%; background: var(--accent); color: #fff; font-size: 14px;
 }
 .new-chat { margin: 8px 12px; background: var(--card); text-align: left; }
+.conv-search { margin: 0 12px 8px; padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--bg); color: var(--ink); font-size: 13px; }
+.conv-search:focus { outline: none; border-color: var(--accent); }
+.conv-empty { padding: 14px 12px; color: var(--ink-soft); font-size: 12.5px; text-align: center; }
 .conv-list { flex: 1; overflow-y: auto; padding: 6px 8px; }
 .conv-item {
   display: flex; align-items: center; gap: 6px; padding: 9px 10px; border-radius: 9px;
@@ -212,6 +216,11 @@ body {
 
 /* メッセージ操作 */
 .msg-actions { margin-top: 6px; display: flex; gap: 6px; opacity: 0; transition: opacity .15s; }
+.user-actions { justify-content: flex-end; }
+.msg-row.user:hover .user-actions { opacity: 1; }
+.edit-area { width: 100%; min-height: 60px; padding: 10px 12px; border: 1px solid var(--accent);
+  border-radius: 10px; background: var(--bg); color: var(--ink); font-size: 14px; font-family: inherit; resize: vertical; }
+.edit-bar { display: flex; gap: 8px; justify-content: flex-end; margin-top: 6px; }
 .msg-row:hover .msg-actions { opacity: 1; }
 .msg-actions button { background: transparent; border: 1px solid var(--line); color: var(--ink-soft);
   border-radius: 7px; padding: 3px 9px; font-size: 12px; cursor: pointer; }
