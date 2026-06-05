@@ -490,7 +490,8 @@ function buildAssistantActions(refs, isLast) {
 /* ---------- 保存(ファイル出力) ---------- */
 const SAVE_FORMATS = [
   ["Markdown (.md)", "md"], ["テキスト (.txt)", "txt"], ["HTML (.html)", "html"],
-  ["Word (.docx)", "docx"], ["Excel (.xlsx)", "xlsx"], ["PowerPoint (.pptx)", "pptx"],
+  ["PDF (.pdf)", "pdf"], ["Word (.docx)", "docx"],
+  ["Excel (.xlsx)", "xlsx"], ["CSV (.csv)", "csv"], ["PowerPoint (.pptx)", "pptx"],
 ];
 function currentTitle() { return (State.current && State.current.title) || "回答"; }
 
@@ -701,6 +702,7 @@ async function renderMermaidBlocks(container) {
       const fig = el("div", "mermaid-fig");
       fig.dataset.src = src;
       fig.innerHTML = svg;
+      addDiagramTools(fig);                        // SVG/PNG 保存ボタン
       pre.replaceWith(fig);                       // 成功 → 図に置換
     } catch (err) {
       // フォールバック: 生コードのコードブロックを残し、注記を添える
@@ -723,8 +725,79 @@ async function rerenderMermaidTheme() {
     try {
       const { svg } = await window.mermaid.render("mmd-" + Math.random().toString(36).slice(2, 9), src);
       fig.innerHTML = svg;
+      addDiagramTools(fig);
     } catch (_) {}
   }
+}
+
+/* 図(Mermaid)を SVG / PNG で保存するツール(Claude風の図エクスポート) */
+function addDiagramTools(fig) {
+  const tools = el("div", "diagram-tools");
+  for (const kind of ["SVG", "PNG"]) {
+    const btn = el("button", "diagram-tool", kind);
+    btn.title = `図を ${kind} で保存`;
+    btn.onclick = (e) => { e.stopPropagation(); downloadDiagram(fig, kind.toLowerCase()); };
+    tools.appendChild(btn);
+  }
+  fig.appendChild(tools);
+}
+
+function _bg() {
+  return (getComputedStyle(document.documentElement).getPropertyValue("--bg") || "#ffffff").trim() || "#ffffff";
+}
+
+// 図のSVG文字列を取り出す。sandbox描画では svg は iframe(data URL)の中にあるので復元する。
+function _figSvgString(fig) {
+  const direct = fig.querySelector("svg");
+  if (direct) return new XMLSerializer().serializeToString(direct);
+  const ifr = fig.querySelector("iframe");
+  if (ifr && ifr.src && ifr.src.startsWith("data:")) {
+    try {
+      const comma = ifr.src.indexOf(",");
+      const meta = ifr.src.slice(0, comma);
+      let html = ifr.src.slice(comma + 1);
+      html = meta.includes("base64") ? decodeURIComponent(escape(atob(html))) : decodeURIComponent(html);
+      const m = html.match(/<svg[\s\S]*?<\/svg>/i);
+      return m ? m[0] : null;
+    } catch (e) { return null; }
+  }
+  return null;
+}
+
+function downloadDiagram(fig, kind) {
+  const xml = _figSvgString(fig);
+  if (!xml) { toast("図の取得に失敗しました"); return; }
+  const name = "diagram-" + new Date().toISOString().slice(0, 19).replace(/[:T]/g, "");
+  if (kind === "svg") {
+    const blob = new Blob(['<?xml version="1.0" encoding="UTF-8"?>\n' + xml], { type: "image/svg+xml" });
+    triggerDownload(URL.createObjectURL(blob), name + ".svg");
+    return;
+  }
+  // PNG: svg文字列から寸法を得て画像化
+  let w = 800, h = 600;
+  const probe = el("div"); probe.innerHTML = xml;
+  const ps = probe.querySelector("svg");
+  if (ps) {
+    const vb = ps.viewBox && ps.viewBox.baseVal;
+    w = (vb && vb.width) || parseFloat(ps.getAttribute("width")) || 800;
+    h = (vb && vb.height) || parseFloat(ps.getAttribute("height")) || 600;
+  }
+  const scale = 2, img = new Image();
+  img.onload = () => {
+    const canvas = el("canvas"); canvas.width = Math.round(w * scale); canvas.height = Math.round(h * scale);
+    const ctx = canvas.getContext("2d");
+    ctx.fillStyle = _bg(); ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.scale(scale, scale); ctx.drawImage(img, 0, 0, w, h);
+    canvas.toBlob((blob) => { if (blob) triggerDownload(URL.createObjectURL(blob), name + ".png"); else toast("PNG化に失敗しました"); }, "image/png");
+  };
+  img.onerror = () => toast("PNG化に失敗しました");
+  img.src = "data:image/svg+xml;base64," + btoa(unescape(encodeURIComponent(xml)));
+}
+
+function triggerDownload(href, name) {
+  const a = el("a"); a.href = href; a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(href), 4000);
 }
 
 /* 本文中の `相対パス:行番号` をクリック可能なリンクにする(Codeモードのみ) */

@@ -312,10 +312,16 @@ body {
   background: rgba(181,72,58,.1); border: 1px solid var(--stop); border-radius: 8px; padding: 7px 10px; }
 
 /* Mermaid 図(sandbox iframe で描画) */
-.mermaid-fig { margin: 12px 0; padding: 10px 12px; background: var(--card);
+.mermaid-fig { position: relative; margin: 12px 0; padding: 10px 12px; background: var(--card);
   border: 1px solid var(--line); border-radius: 10px; overflow: auto; text-align: center; }
 .mermaid-fig iframe { width: 100%; border: 0; }
 .mermaid-fig svg { max-width: 100%; height: auto; }
+.diagram-tools { position: absolute; top: 6px; right: 6px; display: flex; gap: 4px;
+  opacity: 0; transition: opacity .15s; }
+.mermaid-fig:hover .diagram-tools { opacity: 1; }
+.diagram-tool { font-size: 11px; padding: 2px 8px; border: 1px solid var(--line); border-radius: 6px;
+  background: var(--bg); color: var(--ink-soft); cursor: pointer; }
+.diagram-tool:hover { color: var(--ink); border-color: var(--accent); }
 .mermaid-error { font-size: 12.5px; color: var(--stop); margin: 10px 0 2px; }
 
 /* 本文中のファイル参照リンク(`相対パス:行番号`) */

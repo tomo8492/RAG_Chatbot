@@ -20,6 +20,8 @@ MIME = {
     "txt": "text/plain; charset=utf-8",
     "html": "text/html; charset=utf-8",
     "code": "text/plain; charset=utf-8",
+    "pdf": "application/pdf",
+    "csv": "text/csv; charset=utf-8",
     "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
@@ -569,6 +571,125 @@ def _add_bullet(text_frame, text: str, level: int, mono: bool = False) -> None:
             r.font.size = Pt(12)
 
 
+def _pdf_inline(text: str) -> str:
+    """Markdown のインライン記法を reportlab のミニマークアップに変換(エスケープ込み)。"""
+    s = _LINK.sub(r"\1 (\2)", text or "")
+    s = _html.escape(s, quote=False)
+    s = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", s)
+    s = re.sub(r"(?<!\*)\*(?!\*)([^*]+)\*(?!\*)", r"<i>\1</i>", s)
+    s = re.sub(r"`([^`]+)`", r"\1", s)        # インラインコードは素のテキスト(JPフォント維持)
+    return s
+
+
+def to_pdf(md: str, title: str = "回答") -> bytes:
+    """Markdown を、HTML出力と同じ意匠の整ったPDFにする(日本語=内蔵CIDフォント)。
+    ※サーバ側では Mermaid 図を描画できないため、図はコード枠として表示する(図入りは HTML 推奨)。"""
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import ParagraphStyle
+    from reportlab.lib.units import mm
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.cidfonts import UnicodeCIDFont
+    from reportlab.platypus import (HRFlowable, ListFlowable, ListItem, Paragraph,
+                                    Preformatted, SimpleDocTemplate, Spacer, Table, TableStyle)
+
+    FONT = "HeiseiKakuGo-W5"
+    for f in (FONT, "HeiseiMin-W3"):
+        try:
+            pdfmetrics.registerFont(UnicodeCIDFont(f))
+        except Exception:
+            pass
+
+    ACCENT = colors.HexColor("#3b5bdb"); INK = colors.HexColor("#1f2328")
+    MUTED = colors.HexColor("#5b6570"); LINE = colors.HexColor("#e7e9ee")
+    SOFT = colors.HexColor("#f6f8fb"); ZEBRA = colors.HexColor("#fafbfd")
+
+    body = ParagraphStyle("body", fontName=FONT, fontSize=10.5, leading=17, textColor=INK, spaceAfter=6)
+    heads = {
+        1: ParagraphStyle("h1", fontName=FONT, fontSize=16, leading=22, textColor=INK, spaceBefore=14, spaceAfter=6),
+        2: ParagraphStyle("h2", fontName=FONT, fontSize=14, leading=20, textColor=ACCENT, spaceBefore=12, spaceAfter=5),
+        3: ParagraphStyle("h3", fontName=FONT, fontSize=12, leading=18, textColor=INK, spaceBefore=10, spaceAfter=4),
+        4: ParagraphStyle("h4", fontName=FONT, fontSize=11, leading=16, textColor=MUTED, spaceBefore=8, spaceAfter=3),
+    }
+    code_st = ParagraphStyle("code", fontName=FONT, fontSize=9, leading=13.5, textColor=INK,
+                             backColor=SOFT, borderColor=LINE, borderWidth=0.5, borderPadding=8, spaceAfter=8)
+    quote_st = ParagraphStyle("quote", fontName=FONT, fontSize=10.5, leading=17,
+                              textColor=colors.HexColor("#39414b"), leftIndent=10,
+                              backColor=colors.HexColor("#eef2ff"), borderPadding=8, spaceAfter=8)
+    title_st = ParagraphStyle("title", fontName=FONT, fontSize=20, leading=26, textColor=INK, spaceAfter=2)
+    date_st = ParagraphStyle("date", fontName=FONT, fontSize=9, textColor=MUTED, spaceAfter=10)
+
+    story = [Paragraph(_pdf_inline(title), title_st),
+             Paragraph(datetime.now().strftime("%Y年%m月%d日"), date_st),
+             HRFlowable(width="100%", thickness=1.2, color=ACCENT, spaceAfter=12)]
+
+    blocks = parse_blocks(md)
+    if blocks and blocks[0]["type"] == "heading" and \
+            _strip_inline(blocks[0]["text"]).strip() == (title or "").strip():
+        blocks = blocks[1:]
+
+    for b in blocks:
+        t = b["type"]
+        if t == "heading":
+            story.append(Paragraph(_pdf_inline(b["text"]), heads[min(b["level"], 4)]))
+        elif t == "paragraph":
+            story.append(Paragraph(_pdf_inline(b["text"]).replace("\n", "<br/>"), body))
+        elif t == "list":
+            items = [ListItem(Paragraph(_pdf_inline(it), body)) for it in b["items"]]
+            story.append(ListFlowable(items, bulletType="1" if b["ordered"] else "bullet",
+                                      bulletColor=ACCENT, bulletFontName=FONT, leftIndent=16))
+        elif t == "code":
+            story.append(Preformatted(b["text"], code_st))   # Mermaid もコード枠で表示
+        elif t == "quote":
+            story.append(Paragraph(_pdf_inline(b["text"]).replace("\n", "<br/>"), quote_st))
+        elif t == "table":
+            data = ([[Paragraph(_pdf_inline(c), body) for c in b["header"]]]
+                    + [[Paragraph(_pdf_inline(c), body) for c in r] for r in b["rows"]])
+            tbl = Table(data, repeatRows=1, hAlign="LEFT")
+            tbl.setStyle(TableStyle([
+                ("FONTNAME", (0, 0), (-1, -1), FONT), ("FONTSIZE", (0, 0), (-1, -1), 9.5),
+                ("BACKGROUND", (0, 0), (-1, 0), SOFT), ("TEXTCOLOR", (0, 0), (-1, 0), INK),
+                ("BOX", (0, 0), (-1, -1), 0.5, LINE), ("LINEBELOW", (0, 0), (-1, -1), 0.4, LINE),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 7), ("RIGHTPADDING", (0, 0), (-1, -1), 7),
+                ("TOPPADDING", (0, 0), (-1, -1), 5), ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+                ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, ZEBRA]),
+            ]))
+            story.append(tbl)
+            story.append(Spacer(1, 6))
+
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=A4, title=title,
+                            leftMargin=22 * mm, rightMargin=22 * mm, topMargin=20 * mm, bottomMargin=18 * mm)
+    doc.build(story)
+    return buf.getvalue()
+
+
+def to_csv(md: str, title: str = "回答") -> bytes:
+    """表をCSVに(複数表は空行区切り)。表が無ければ本文を1列で出力。Excelで開ける UTF-8 BOM 付き。"""
+    import csv
+    blocks = parse_blocks(md)
+    tables = [b for b in blocks if b["type"] == "table"]
+    out = io.StringIO()
+    w = csv.writer(out)
+    if tables:
+        for ti, tb in enumerate(tables):
+            if ti > 0:
+                w.writerow([])
+            w.writerow([_strip_inline(c) for c in tb["header"]])
+            for r in tb["rows"]:
+                w.writerow([_strip_inline(c) for c in r])
+    else:
+        for b in blocks:
+            if b["type"] in ("heading", "paragraph", "quote"):
+                for ln in _strip_inline(b["text"]).split("\n"):
+                    w.writerow([ln])
+            elif b["type"] == "list":
+                for it in b["items"]:
+                    w.writerow([_strip_inline(it)])
+    return out.getvalue().encode("utf-8-sig")   # BOM付きで Excel の文字化けを防ぐ
+
+
 # ============================================================
 #  ディスパッチ
 # ============================================================
@@ -595,6 +716,10 @@ def export_content(content: str, fmt: str, ext: str | None = None,
         if doc is not None:
             return doc.encode("utf-8"), MIME["html"], "html"
         return to_html(content, title), MIME["html"], "html"
+    if fmt == "pdf":
+        return to_pdf(content, title), MIME["pdf"], "pdf"
+    if fmt == "csv":
+        return to_csv(content, title), MIME["csv"], "csv"
     if fmt == "docx":
         return to_docx(content, title), MIME["docx"], "docx"
     if fmt == "xlsx":
