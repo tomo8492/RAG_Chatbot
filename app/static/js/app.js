@@ -531,8 +531,8 @@ async function exportContent(content, fmt, ext, title) {
   if (!content || !content.trim()) { toast("内容が空です"); return; }
   try {
     let images = null;
-    if (fmt === "pdf") {
-      try { images = await collectMermaidImages(content); }   // 図をPNG化してPDFに埋め込む
+    if (fmt === "pdf" || fmt === "docx" || fmt === "pptx") {
+      try { images = await collectMermaidImages(content); }   // 図をPNG化して文書に埋め込む
       catch (_) { images = null; }
     }
     const res = await fetch("/api/export", {

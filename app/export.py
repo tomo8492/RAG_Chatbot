@@ -394,10 +394,12 @@ def _extract_html_document(content: str, title: str) -> str | None:
     return _html_page(title, inner.strip(), with_mermaid=uses)
 
 
-def to_docx(md: str, title: str = "回答") -> bytes:
+def to_docx(md: str, title: str = "回答", images: list | None = None) -> bytes:
     from docx import Document
-    from docx.shared import Pt, RGBColor
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx.shared import Inches, Pt, RGBColor
     doc = Document()
+    mm_idx = 0
     for b in parse_blocks(md):
         t = b["type"]
         if t == "heading":
@@ -411,6 +413,19 @@ def to_docx(md: str, title: str = "回答") -> bytes:
                 p = doc.add_paragraph(style=style)
                 _add_runs(p, it)
         elif t == "code":
+            is_mmd = b.get("lang", "").lower() == "mermaid"
+            img = images[mm_idx] if (is_mmd and images and mm_idx < len(images)) else None
+            if is_mmd:
+                mm_idx += 1
+            if img and img.get("data"):
+                try:
+                    iw = float(img.get("w") or 0) or 600.0
+                    doc.add_picture(io.BytesIO(base64.b64decode(img["data"])),
+                                    width=Inches(min(6.3, iw / 96.0)))   # 本文幅~6.3in、96dpi換算
+                    doc.paragraphs[-1].alignment = WD_ALIGN_PARAGRAPH.CENTER
+                    continue
+                except Exception:
+                    pass
             for ln in b["text"].split("\n"):
                 p = doc.add_paragraph()
                 run = p.add_run(ln)
@@ -511,7 +526,7 @@ def _autofit(ws) -> None:
         ws.column_dimensions[get_column_letter(col)].width = w
 
 
-def to_pptx(md: str, title: str = "回答") -> bytes:
+def to_pptx(md: str, title: str = "回答", images: list | None = None) -> bytes:
     from pptx import Presentation
     from pptx.util import Pt
     prs = Presentation()
@@ -530,10 +545,20 @@ def to_pptx(md: str, title: str = "回答") -> bytes:
         return body
 
     body = None
+    mm_idx = 0
     for b in blocks:
         if b["type"] == "heading":
             body = new_content_slide(b["text"])
         else:
+            if b["type"] == "code":
+                is_mmd = b.get("lang", "").lower() == "mermaid"
+                img = images[mm_idx] if (is_mmd and images and mm_idx < len(images)) else None
+                if is_mmd:
+                    mm_idx += 1
+                if img and img.get("data"):
+                    _add_picture_slide(prs, base64.b64decode(img["data"]), img.get("w"), img.get("h"))
+                    body = None       # 図は専用スライド。次の内容は新スライドへ
+                    continue
             if body is None:
                 body = new_content_slide("内容")
             if b["type"] == "paragraph":
@@ -556,6 +581,20 @@ def to_pptx(md: str, title: str = "回答") -> bytes:
     buf = io.BytesIO()
     prs.save(buf)
     return buf.getvalue()
+
+
+def _add_picture_slide(prs, png_bytes: bytes, w, h) -> None:
+    """図(Mermaid)を1枚のスライドに中央配置で貼る。"""
+    layout = prs.slide_layouts[6] if len(prs.slide_layouts) > 6 else prs.slide_layouts[5]
+    s = prs.slides.add_slide(layout)
+    sw, sh = prs.slide_width, prs.slide_height
+    emu = 9525                      # 96dpi: 1px = 9525 EMU
+    nat_w = (float(w or 0) or 600.0) * emu
+    nat_h = (float(h or 0) or 400.0) * emu
+    scale = min(sw * 0.88 / nat_w, sh * 0.82 / nat_h)
+    dw, dh = nat_w * scale, nat_h * scale
+    s.shapes.add_picture(io.BytesIO(png_bytes), int((sw - dw) / 2), int((sh - dh) / 2),
+                         int(dw), int(dh))
 
 
 def _add_bullet(text_frame, text: str, level: int, mono: bool = False) -> None:
@@ -593,7 +632,8 @@ def to_pdf(md: str, title: str = "回答", images: list | None = None) -> bytes:
     from reportlab.pdfbase import pdfmetrics
     from reportlab.pdfbase.cidfonts import UnicodeCIDFont
     from reportlab.platypus import (HRFlowable, Image as RLImage, ListFlowable, ListItem,
-                                    Paragraph, Preformatted, SimpleDocTemplate, Spacer, Table, TableStyle)
+                                    PageBreak, Paragraph, Preformatted, SimpleDocTemplate, Spacer, Table, TableStyle)
+    from reportlab.platypus.tableofcontents import TableOfContents
 
     FONT = "HeiseiKakuGo-W5"
     for f in (FONT, "HeiseiMin-W3"):
@@ -620,6 +660,38 @@ def to_pdf(md: str, title: str = "回答", images: list | None = None) -> bytes:
                               backColor=colors.HexColor("#eef2ff"), borderPadding=8, spaceAfter=8)
     title_st = ParagraphStyle("title", fontName=FONT, fontSize=20, leading=26, textColor=INK, spaceAfter=2)
     date_st = ParagraphStyle("date", fontName=FONT, fontSize=9, textColor=MUTED, spaceAfter=10)
+    toc_head_st = ParagraphStyle("tochead", fontName=FONT, fontSize=14, leading=20,
+                                 textColor=INK, spaceBefore=2, spaceAfter=8)
+
+    _outline_levels: dict = {}   # md見出しレベル → 0始まりの階層(blocks 確定後に設定)
+
+    class _PDFDoc(SimpleDocTemplate):
+        """見出しを目次(TOCEntry)と PDF しおり(アウトライン)に登録する。"""
+        _last_ol = -1
+
+        def beforeDocument(self):       # multiBuild の各パス開始時に階層トラッカをリセット
+            self._last_ol = -1
+
+        def afterFlowable(self, flowable):
+            if not isinstance(flowable, Paragraph):
+                return
+            name = flowable.style.name
+            if not (len(name) == 2 and name[0] == "h" and name[1].isdigit()):
+                return
+            ol = _outline_levels.get(int(name[1]), 0)
+            ol = min(ol, self._last_ol + 1)   # reportlab: 階層の飛び級(例 0→2)を防ぐ
+            self._last_ol = ol
+            text = flowable.getPlainText()
+            key = "sec-%d" % id(flowable)
+            self.canv.bookmarkPage(key)
+            self.canv.addOutlineEntry(text, key, level=ol, closed=(ol > 0))
+            self.notify("TOCEntry", (min(ol, 2), text, self.page, key))
+
+    def _footer(canvas, doc):           # 全ページにページ番号
+        canvas.saveState()
+        canvas.setFont(FONT, 8); canvas.setFillColor(MUTED)
+        canvas.drawCentredString(A4[0] / 2, 12 * mm, str(canvas.getPageNumber()))
+        canvas.restoreState()
 
     story = [Paragraph(_pdf_inline(title), title_st),
              Paragraph(datetime.now().strftime("%Y年%m月%d日"), date_st),
@@ -629,6 +701,21 @@ def to_pdf(md: str, title: str = "回答", images: list | None = None) -> bytes:
     if blocks and blocks[0]["type"] == "heading" and \
             _strip_inline(blocks[0]["text"]).strip() == (title or "").strip():
         blocks = blocks[1:]
+
+    # 実在する見出しレベルを 0始まりへ詰める(しおり/目次の階層を整える)
+    _hlv = sorted({b["level"] for b in blocks if b["type"] == "heading"})
+    _outline_levels.clear()
+    _outline_levels.update({lv: i for i, lv in enumerate(_hlv)})
+
+    # 見出しが3つ以上なら目次(クリックで該当ページへ)を付ける
+    if sum(1 for b in blocks if b["type"] == "heading") >= 3:
+        toc = TableOfContents()
+        toc.levelStyles = [
+            ParagraphStyle("toc0", fontName=FONT, fontSize=11, leading=18, textColor=INK),
+            ParagraphStyle("toc1", fontName=FONT, fontSize=10, leading=16, leftIndent=14, textColor=MUTED),
+            ParagraphStyle("toc2", fontName=FONT, fontSize=9.5, leading=15, leftIndent=28, textColor=MUTED),
+        ]
+        story += [Paragraph("目次", toc_head_st), toc, PageBreak()]
 
     content_width = A4[0] - 44 * mm   # 図の最大表示幅(左右マージン22mm)
     mm_idx = 0                        # Mermaid 図の出現番号(images と対応づけ)
@@ -681,9 +768,10 @@ def to_pdf(md: str, title: str = "回答", images: list | None = None) -> bytes:
             story.append(Spacer(1, 6))
 
     buf = io.BytesIO()
-    doc = SimpleDocTemplate(buf, pagesize=A4, title=title,
-                            leftMargin=22 * mm, rightMargin=22 * mm, topMargin=20 * mm, bottomMargin=18 * mm)
-    doc.build(story)
+    doc = _PDFDoc(buf, pagesize=A4, title=title,
+                  leftMargin=22 * mm, rightMargin=22 * mm, topMargin=20 * mm, bottomMargin=18 * mm)
+    # multiBuild: 目次のページ番号を解決するため複数パスで組版
+    doc.multiBuild(story, onFirstPage=_footer, onLaterPages=_footer)
     return buf.getvalue()
 
 
@@ -743,10 +831,10 @@ def export_content(content: str, fmt: str, ext: str | None = None,
     if fmt == "csv":
         return to_csv(content, title), MIME["csv"], "csv"
     if fmt == "docx":
-        return to_docx(content, title), MIME["docx"], "docx"
+        return to_docx(content, title, images=images), MIME["docx"], "docx"
     if fmt == "xlsx":
         return to_xlsx(content, title), MIME["xlsx"], "xlsx"
     if fmt == "pptx":
-        return to_pptx(content, title), MIME["pptx"], "pptx"
+        return to_pptx(content, title, images=images), MIME["pptx"], "pptx"
 
     raise ValueError(f"未対応の形式: {fmt}")
