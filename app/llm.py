@@ -353,3 +353,22 @@ def vision_complete(image_b64s: list[str], instruction: str, model: str, *,
     resp = _client().chat(model=model, messages=messages, stream=False, options=options)
     content = _extract(resp, "content")
     return content or ""
+
+
+def complete_text(prompt: str, model: str, *, system: str = "",
+                  num_predict: int = 64, temperature: float = 0.2) -> str:
+    """短い非ストリーミング生成(会話タイトル等)。思考は使わない。失敗時は ''。"""
+    msgs = []
+    if system:
+        msgs.append({"role": "system", "content": system})
+    msgs.append({"role": "user", "content": prompt})
+    opts = {"temperature": float(temperature), "num_predict": int(num_predict)}
+    try:
+        try:
+            resp = _client(timeout=60).chat(model=model, messages=msgs, stream=False, think=False, options=opts)
+        except TypeError:                       # 古い ollama-python は think 未対応
+            resp = _client(timeout=60).chat(model=model, messages=msgs, stream=False, options=opts)
+        return (_extract(resp, "content") or "").strip()
+    except Exception as e:
+        log.info("complete_text 失敗: %s", e)
+        return ""

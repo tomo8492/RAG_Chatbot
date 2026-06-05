@@ -101,6 +101,20 @@ def sse(obj: dict) -> str:
     return f"data: {json.dumps(obj, ensure_ascii=False)}\n\n"
 
 
+def _make_title(content: str, model: str) -> str:
+    """最初のユーザーメッセージから、短い日本語タイトルをLLMで生成(失敗時 '')。"""
+    src = (content or "").strip()
+    if not src:
+        return ""
+    prompt = ("次のメッセージに、日本語の短いタイトルを1つだけ付けてください"
+              "(全角18字以内・体言止め・記号や引用符や句点なし・前置きや説明は書かない):\n\n" + src[:500])
+    raw = llm.complete_text(prompt, model, num_predict=32,
+                            system="会話に短いタイトルだけを返すアシスタント。タイトル本文のみを出力する。")
+    raw = postprocess.strip_think(raw or "").strip()
+    line = (raw.splitlines() or [""])[0]
+    return line.strip("\"'「」『』 　。．、\n")[:30]
+
+
 # ============================================================
 #  認証
 # ============================================================
@@ -422,6 +436,8 @@ def api_generate(cid: str, body: GenerateBody) -> Response:
     # --- 対象クエリとユーザーメッセージの確定 ---
     user_msg = None
     image_b64s: list[str] = []
+    content = ""                # 既定(再生成パスでは未代入のため。タイトル生成参照の保険)
+    is_first_msg = False        # 初回送信のときだけ True(タイトル自動生成の対象)
     if mode == "regenerate":
         msgs = db.list_messages(cid)
         # 末尾の assistant 群を削除し、最後の user を対象にする
@@ -457,10 +473,11 @@ def api_generate(cid: str, body: GenerateBody) -> Response:
         attachments = list(body.attachments or []) + image_atts
         user_msg = db.add_message(cid, "user", content or "(画像)", attachments=attachments)
         query = content or "画像について"
-        # 初回メッセージならタイトルを自動設定
-        if (conv.get("title") in (None, "", "新しい会話")):
-            title = (content or "画像").strip().splitlines()[0][:30]
-            db.update_conversation(cid, title=title or "新しい会話")
+        # 初回メッセージなら、まず即時に仮タイトルを設定(LLM要約は生成後に title イベントで反映)
+        is_first_msg = conv.get("title") in (None, "", "新しい会話")
+        if is_first_msg:
+            fb = (content or "画像").strip().splitlines()[0][:30] or "新しい会話"
+            db.update_conversation(cid, title=fb)
 
     # --- RAG 検索 ---
     sources: list[dict] = []
@@ -476,7 +493,8 @@ def api_generate(cid: str, body: GenerateBody) -> Response:
             if key not in seen:
                 seen.add(key)
                 sources.append({"source": h["source"], "loc": h["loc"],
-                                "score": round(h["score"], 3), "attachment": h["attachment"]})
+                                "score": round(h["score"], 3), "attachment": h["attachment"],
+                                "text": (h.get("text") or "")[:1500]})   # クリックで原文(該当チャンク)表示
 
     history = db.list_messages(cid)
     # 参照フォルダ(インデックス)を選択している会話は、その資料だけで回答する厳格モード。
@@ -533,6 +551,14 @@ def api_generate(cid: str, body: GenerateBody) -> Response:
             asst = db.add_message(cid, "assistant", postprocess.clean(acc_content), sources=sources)
             saved = True
             log.info("生成完了 [conv=%s] %d文字", cid, len(acc_content))
+            if is_first_msg:        # 初回はLLMで短いタイトルを生成して反映(回答後・体感遅延なし)
+                try:
+                    t = _make_title(content, eff["model"])
+                    if t:
+                        db.update_conversation(cid, title=t)
+                        yield sse({"type": "title", "title": t})
+                except Exception:
+                    log.exception("自動タイトル生成に失敗(仮タイトルのまま)")
             yield sse({"type": "done", "message": asst})
         except GeneratorExit:
             # クライアント切断(停止ボタン)
@@ -724,7 +750,7 @@ def api_agent(cid: str, body: AgentBody) -> Response:
         finally:
             flush_text()
             text = "\n\n".join(x for x in acc_text if x).strip() or "(操作を実行しました)"
-            db.add_message(cid, "assistant", text, sources=steps)
+            db.add_message(cid, "assistant", postprocess.clean(text), sources=steps)   # チャットと同じ後処理
             _finish()
 
     headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"}
