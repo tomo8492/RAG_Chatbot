@@ -724,7 +724,7 @@ def api_agent(cid: str, body: AgentBody) -> Response:
         finally:
             flush_text()
             text = "\n\n".join(x for x in acc_text if x).strip() or "(操作を実行しました)"
-            db.add_message(cid, "assistant", text, sources=steps)
+            db.add_message(cid, "assistant", postprocess.clean(text), sources=steps)   # チャットと同じ後処理
             _finish()
 
     headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"}

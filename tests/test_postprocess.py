@@ -178,6 +178,33 @@ def test_normalize_leaves_non_flowchart_brackets():
     assert "[note}" in normalize_mermaid(src)
 
 
+# ---------------- 推論/特殊トークン除去の拡張 ----------------
+def test_strip_thinking_tag_variant():
+    assert strip_think("<thinking>推論</thinking>本文") == "本文"
+    assert strip_think("前<thinking>x</thinking>後") == "前後"
+
+
+def test_strip_leaked_special_tokens():
+    assert strip_think("答えです。<|im_end|>") == "答えです。"
+    assert strip_think("回答<|eot_id|>") == "回答"
+
+
+def test_strip_harmony_final_channel():
+    s = ("<|start|>assistant<|channel|>analysis<|message|>考え中<|end|>"
+         "<|start|>assistant<|channel|>final<|message|>これが答え<|return|>")
+    assert strip_think(s).strip() == "これが答え"
+
+
+def test_strip_harmony_analysis_only():
+    s = "<|channel|>analysis<|message|>内部推論<|end|>表示する本文"
+    assert strip_think(s).strip() == "表示する本文"
+
+
+def test_strip_keeps_normal_angle_text():
+    # 思考でも特殊トークンでもない < > は残す(本文を壊さない)
+    assert strip_think("条件 a<b かつ c>d を満たす") == "条件 a<b かつ c>d を満たす"
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     passed = 0

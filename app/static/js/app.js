@@ -570,11 +570,18 @@ marked.setOptions({ breaks: true, gfm: true });
    毎回バッファ全体へ適用するため、開きのみ/閉じのみの不完全タグにも自然対応する。 */
 function stripThink(text) {
   if (!text) return text || "";
-  let s = text.replace(/<think\b[^>]*>[\s\S]*?<\/think\s*>/gi, "");   // 完全な <think>...</think>
-  if (/<\/think\s*>/i.test(s) && !/<think\b/i.test(s))               // 閉じのみ → 先頭〜閉じを除去
-    s = s.replace(/^[\s\S]*?<\/think\s*>/i, "");
-  if (/<think\b/i.test(s))                                           // 開きのみ → 開き〜末尾を除去
-    s = s.replace(/<think\b[^>]*>[\s\S]*$/i, "");
+  let s = text;
+  // gpt-oss(harmony): final 以降を本文に、無ければ analysis/commentary を除去
+  const fm = s.match(/<\|channel\|>\s*final\b[\s\S]*?<\|message\|>/i);
+  if (fm) s = s.slice(s.indexOf(fm[0]) + fm[0].length);
+  else s = s.replace(/<\|channel\|>\s*(?:analysis|commentary)\b[\s\S]*?(?=<\|channel\|>|<\|end\|>|<\|return\|>|$)/gi, "");
+  s = s.replace(/<think(?:ing)?\b[^>]*>[\s\S]*?<\/think(?:ing)?\s*>/gi, "");   // 完全な <think>/<thinking>
+  if (/<\/think(?:ing)?\s*>/i.test(s) && !/<think(?:ing)?\b/i.test(s))         // 閉じのみ → 先頭〜閉じを除去
+    s = s.replace(/^[\s\S]*?<\/think(?:ing)?\s*>/i, "");
+  if (/<think(?:ing)?\b/i.test(s))                                            // 開きのみ → 開き〜末尾を除去
+    s = s.replace(/<think(?:ing)?\b[^>]*>[\s\S]*$/i, "");
+  // 漏れたチャットテンプレ特殊トークンを除去
+  s = s.replace(/<\|\/?(?:im_start|im_end|eot_id|start_header_id|end_header_id|start|end|message|channel|return|constrain|begin_of_text|end_of_text|assistant|user|system|python|tool)\|>/gi, "");
   return s;
 }
 

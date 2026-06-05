@@ -11,14 +11,22 @@ from __future__ import annotations
 
 import re
 
-# 完全な <think>...</think> ブロック(複数行対応)
-_THINK_BLOCK = re.compile(r"<think\b[^>]*>.*?</think\s*>", re.DOTALL | re.IGNORECASE)
-# 開きタグのみ(以降が未完の思考): <think> から末尾まで
-_THINK_OPEN_TAIL = re.compile(r"<think\b[^>]*>.*\Z", re.DOTALL | re.IGNORECASE)
-# 閉じタグのみ(冒頭が思考の続き): 先頭から最初の </think> まで
-_THINK_CLOSE_HEAD = re.compile(r"\A.*?</think\s*>", re.DOTALL | re.IGNORECASE)
-_HAS_OPEN = re.compile(r"<think\b", re.IGNORECASE)
-_HAS_CLOSE = re.compile(r"</think\s*>", re.IGNORECASE)
+# 思考/推論マーカー <think> / <thinking>(完全 / 開きのみ / 閉じのみ)
+_THINK_BLOCK = re.compile(r"<think(?:ing)?\b[^>]*>.*?</think(?:ing)?\s*>", re.DOTALL | re.IGNORECASE)
+_THINK_OPEN_TAIL = re.compile(r"<think(?:ing)?\b[^>]*>.*\Z", re.DOTALL | re.IGNORECASE)
+_THINK_CLOSE_HEAD = re.compile(r"\A.*?</think(?:ing)?\s*>", re.DOTALL | re.IGNORECASE)
+_HAS_OPEN = re.compile(r"<think(?:ing)?\b", re.IGNORECASE)
+_HAS_CLOSE = re.compile(r"</think(?:ing)?\s*>", re.IGNORECASE)
+
+# gpt-oss(harmony)の channel: final 以降を本文に、analysis/commentary は思考として除去
+_HARMONY_FINAL = re.compile(r"<\|channel\|>\s*final\b.*?<\|message\|>", re.DOTALL | re.IGNORECASE)
+_HARMONY_ANALYSIS = re.compile(
+    r"<\|channel\|>\s*(?:analysis|commentary)\b.*?(?=<\|channel\|>|<\|end\|>|<\|return\|>|\Z)",
+    re.DOTALL | re.IGNORECASE)
+# 本文に漏れやすいチャットテンプレの特殊トークン
+_SPECIAL_TOK = re.compile(
+    r"<\|/?(?:im_start|im_end|eot_id|start_header_id|end_header_id|start|end|message|channel|"
+    r"return|constrain|begin_of_text|end_of_text|assistant|user|system|python|tool)\|>", re.IGNORECASE)
 
 # コードフェンス ``` の行(言語指定の有無は問わない)
 _FENCE = re.compile(r"^[ \t]*```", re.MULTILINE)
@@ -33,19 +41,27 @@ MERMAID_DECLS = (
 
 
 def strip_think(text: str) -> str:
-    """content に混入した <think> 系を除去する。
+    """content に混入した推論/思考と特殊トークンを除去し、本文だけを残す。
 
-    1) 完全な <think>...</think> を全て除去
-    2) 残りに </think> だけがある(開きが無い)なら、先頭〜その閉じタグまでを思考として除去
-    3) 残りに <think> だけがある(閉じが無い)なら、その開きタグ〜末尾までを除去
+    対応: <think>/<thinking>(完全/開きのみ/閉じのみ)、gpt-oss(harmony)の analysis/
+    commentary channel(final があればそれ以降を本文に)、漏れたチャットテンプレ特殊トークン。
     """
     if not text:
         return text or ""
-    s = _THINK_BLOCK.sub("", text)
+    s = text
+    # harmony: final チャンネルがあればそれ以降を本文に。無ければ analysis/commentary を除去。
+    fm = _HARMONY_FINAL.search(s)
+    if fm:
+        s = s[fm.end():]
+    else:
+        s = _HARMONY_ANALYSIS.sub("", s)
+    # <think>/<thinking>(完全 → 閉じのみ → 開きのみ)
+    s = _THINK_BLOCK.sub("", s)
     if _HAS_CLOSE.search(s) and not _HAS_OPEN.search(s):
         s = _THINK_CLOSE_HEAD.sub("", s, count=1)
     if _HAS_OPEN.search(s):
         s = _THINK_OPEN_TAIL.sub("", s)
+    s = _SPECIAL_TOK.sub("", s)        # 漏れた特殊トークンを除去
     return s
 
 
