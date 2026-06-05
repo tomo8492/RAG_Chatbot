@@ -74,6 +74,83 @@ def test_ocr_available_disabled():
     assert ok is False and "false" in reason.lower()
 
 
+# ---------------- ルーティング(fitz非依存・全分岐) ----------------
+class _FakePixmap:
+    def tobytes(self, fmt):
+        return b"PNGDATA"
+
+
+class _FakePage:
+    def __init__(self, text="", pixmap_raises=False):
+        self._text, self._raises = text, pixmap_raises
+
+    def get_text(self):
+        return self._text
+
+    def get_pixmap(self, dpi=200):
+        if self._raises:
+            raise RuntimeError("render fail")
+        return _FakePixmap()
+
+
+def _route(page):
+    return loaders._page_text_with_ocr(page, "x.pdf", 1)
+
+
+def test_route_text_page_skips_ocr():
+    called = {"n": 0}
+    orig = ocr.ocr_image_png
+    try:
+        settings.ocr_enabled = True
+        ocr.ocr_image_png = lambda png: (called.__setitem__("n", called["n"] + 1) or "NO")
+        out = _route(_FakePage("十分な長さの本文テキストがあります"))
+        assert out == "十分な長さの本文テキストがあります"
+        assert called["n"] == 0          # テキスト頁はOCRしない
+    finally:
+        ocr.ocr_image_png = orig
+        _restore()
+
+
+def test_route_scanned_uses_ocr():
+    orig = ocr.ocr_image_png
+    try:
+        settings.ocr_enabled = True
+        ocr.ocr_image_png = lambda png: "OCR本文 | A | B |"
+        assert _route(_FakePage("")) == "OCR本文 | A | B |"
+    finally:
+        ocr.ocr_image_png = orig
+        _restore()
+
+
+def test_route_disabled_no_ocr():
+    settings.ocr_enabled = False
+    assert _route(_FakePage("")) == ""        # OCR無効→従来どおり空
+
+
+def test_route_ocr_empty_keeps_short_text():
+    """短いテキスト頁でOCRが空を返したら、元の短いテキストを失わない。"""
+    orig = ocr.ocr_image_png
+    try:
+        settings.ocr_enabled = True
+        ocr.ocr_image_png = lambda png: ""
+        assert _route(_FakePage("短い")) == "短い"
+    finally:
+        ocr.ocr_image_png = orig
+        _restore()
+
+
+def test_route_pixmap_error_degrades():
+    """画像化(get_pixmap)が例外でも落ちず、OCRせず元テキストにフォールバック。"""
+    orig = ocr.ocr_image_png
+    try:
+        settings.ocr_enabled = True
+        ocr.ocr_image_png = lambda png: "SHOULD_NOT_REACH"
+        assert _route(_FakePage("", pixmap_raises=True)) == ""   # 例外→ocr_text=""→空
+    finally:
+        ocr.ocr_image_png = orig
+        _restore()
+
+
 # ---------------- load_pdf ルーティング ----------------
 def test_text_pdf_uses_textlayer_no_ocr():
     """テキストPDFは、OCR有効でもOCRを呼ばずテキスト層を使う。"""
