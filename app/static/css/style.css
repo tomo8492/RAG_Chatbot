@@ -316,6 +316,8 @@ body {
   border: 1px solid var(--line); border-radius: 10px; overflow: auto; text-align: center; }
 .mermaid-fig iframe { width: 100%; border: 0; }
 .mermaid-fig svg { max-width: 100%; height: auto; }
+.mermaid-pending { min-height: 48px; display: flex; align-items: center; justify-content: center;
+  color: var(--ink-soft); font-size: 13px; }
 .diagram-tools { position: absolute; top: 6px; right: 6px; display: flex; gap: 4px;
   opacity: 0; transition: opacity .15s; }
 .mermaid-fig:hover .diagram-tools { opacity: 1; }

@@ -700,6 +700,10 @@ async function renderMermaidBlocks(container) {
     pre.dataset.mmHandled = "1";
     const src = (code.textContent || "").trim();
     const id = "mmd-" + Math.random().toString(36).slice(2, 9);
+    // 生コードのチラ見えを防ぐため、まずプレースホルダへ即置換してから非同期で描画する
+    const slot = el("div", "mermaid-fig mermaid-pending");
+    slot.textContent = "📊 図を描画中…";
+    pre.replaceWith(slot);
     // 一時コンテナで描画(失敗時に mermaid が残すエラー図ごと破棄できる)
     const tmp = el("div"); tmp.style.cssText = "position:absolute;left:-99999px;top:0";
     document.body.appendChild(tmp);
@@ -709,12 +713,14 @@ async function renderMermaidBlocks(container) {
       fig.dataset.src = src;
       fig.innerHTML = svg;
       addDiagramTools(fig);                        // SVG/PNG 保存ボタン
-      pre.replaceWith(fig);                       // 成功 → 図に置換
+      slot.replaceWith(fig);                       // 成功 → 図に置換
     } catch (err) {
-      // フォールバック: 生コードのコードブロックを残し、注記を添える
-      pre.dataset.mmHandled = "";
-      if (!(pre.previousElementSibling && pre.previousElementSibling.classList.contains("mermaid-error")))
-        pre.parentElement.insertBefore(el("div", "mermaid-error", "⚠ 図の描画に失敗しました(コードを表示)"), pre);
+      // 失敗 → 生コード＋注記を表示(従来のフォールバック)
+      const wrap = el("div");
+      wrap.appendChild(el("div", "mermaid-error", "⚠ 図の描画に失敗しました(コードを表示)"));
+      const p2 = el("pre"); const c2 = el("code", "language-mermaid");
+      c2.textContent = src; p2.appendChild(c2); wrap.appendChild(p2);
+      slot.replaceWith(wrap);
     } finally {
       tmp.remove();
       [id, "d" + id].forEach((x) => { const n = document.getElementById(x); if (n) n.remove(); });
