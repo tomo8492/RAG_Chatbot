@@ -175,7 +175,10 @@ _HTML_CSS = """
 *{box-sizing:border-box;}
 html{-webkit-text-size-adjust:100%;}
 body{margin:0;background:#eef0f3;color:var(--ink);font-family:var(--sans);
-  font-size:16px;line-height:1.85;font-feature-settings:"palt";}
+  font-size:16px;line-height:1.85;font-feature-settings:"palt";
+  -webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;text-rendering:optimizeLegibility;}
+img{max-width:100%;height:auto;border-radius:8px;}
+::selection{background:var(--accent-soft);}
 .sheet{max-width:var(--maxw);margin:32px auto;background:var(--paper);
   padding:56px 64px;border:1px solid var(--line);border-radius:var(--radius);
   box-shadow:0 1px 3px rgba(0,0,0,.05),0 14px 32px rgba(20,30,60,.07);}
@@ -318,10 +321,42 @@ def _html_page(title: str, body_html: str, with_mermaid: bool = False) -> str:
 </html>"""
 
 
+# モデル生成HTMLが mermaid を使っているかの判定 / 外部・自前ローダの除去
+_MERMAID_USE_RE = re.compile(
+    r'class\s*=\s*["\']mermaid|<pre[^>]*mermaid|mermaid\.(?:initialize|run|mermaidAPI)'
+    r'|import\s+mermaid|["\'][^"\']*mermaid[^"\']*\.(?:m?js)', re.IGNORECASE)
+
+
+def _uses_mermaid(s: str) -> bool:
+    return bool(_MERMAID_USE_RE.search(s or ""))
+
+
+def _strip_mermaid_loaders(html: str) -> str:
+    """外部CDNの mermaid 読み込みと、インラインの import/初期化スクリプトを取り除く。
+    (オフラインで動かない/重複初期化するため、同梱版に一本化する)"""
+    html = re.sub(r'(?is)<script[^>]+src=["\'][^"\']*mermaid[^"\']*["\'][^>]*>\s*</script>', "", html)
+    html = re.sub(r'(?is)<script\b[^>]*>(?:(?!</script>).)*?\bmermaid\b(?:(?!</script>).)*?</script>', "", html)
+    return html
+
+
+def _ensure_mermaid(html: str) -> str:
+    """完全HTMLにフローチャート(mermaid)があれば、確実に描画されるよう同梱版を注入する。"""
+    if not _uses_mermaid(html):
+        return html
+    html = _strip_mermaid_loaders(html)
+    scripts = _mermaid_scripts()
+    if not scripts:
+        return html
+    m = re.search(r"(?is)</body>", html)   # re.sub は使わない(JS内の \ をテンプレ解釈するため)
+    if m:
+        return html[:m.start()] + scripts + "\n" + html[m.start():]
+    return html + scripts
+
+
 def _extract_html_document(content: str, title: str) -> str | None:
     """回答に実HTMLが含まれていれば、本物のHTMLページ文字列を返す(無ければ None)。
 
-    - 完全なHTML(<style>あり) → モデルのデザインを尊重して丸ごと出力。
+    - 完全なHTML(<style>あり) → モデルのデザインを尊重して丸ごと出力(図は同梱版で描画)。
     - <body> や HTMLフラグメント → 本文だけ抜き出して当アプリの整ったテンプレに差し込む。
     """
     s = (content or "").strip()
@@ -341,7 +376,7 @@ def _extract_html_document(content: str, title: str) -> str | None:
     has_full = bool(re.search(r"(?is)<html\b", code))
     has_style = bool(re.search(r"(?is)<style\b|<link[^>]+stylesheet", code))
     if has_full and has_style:
-        return code  # 自前でデザイン済み → そのまま
+        return _ensure_mermaid(code)  # 自前デザインを尊重しつつ、図は同梱版で確実に描画
     m = re.search(r"(?is)<body[^>]*>(.*?)</body>", code)
     if m:
         inner = m.group(1)
@@ -351,7 +386,9 @@ def _extract_html_document(content: str, title: str) -> str | None:
         inner = re.sub(r"(?is)^.*?<html[^>]*>", "", code)
         inner = re.sub(r"(?is)</html\s*>\s*$", "", inner)
         inner = re.sub(r"(?is)<head\b.*?</head>", "", inner)
-    return _html_page(title, inner.strip())
+    uses = _uses_mermaid(inner)
+    inner = _strip_mermaid_loaders(inner)       # フラグメント内のCDN/初期化も同梱版に一本化
+    return _html_page(title, inner.strip(), with_mermaid=uses)
 
 
 def to_docx(md: str, title: str = "回答") -> bytes:
