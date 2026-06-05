@@ -284,6 +284,7 @@ function updateCodeBar(conv) {
   $("cb-allow").disabled = plan;
   const allowLabel = $("cb-allow").closest(".cb-toggle");
   if (allowLabel) allowLabel.classList.toggle("disabled", plan);
+  if ($("cb-autoaccept")) $("cb-autoaccept").checked = !!s.auto_accept_edits;
 }
 
 async function deleteConversation(cid) {
@@ -1487,9 +1488,21 @@ function buildConfirmCard(ev) {
   const ok = el("button", "btn primary", isCmd ? "実行する" : "適用する");
   const no = el("button", "btn", "拒否");
   const status = el("span", "confirm-status");
-  ok.onclick = () => respondConfirm(card, ev.action_id, true, status, [ok, no]);
-  no.onclick = () => respondConfirm(card, ev.action_id, false, status, [ok, no]);
-  actions.appendChild(ok); actions.appendChild(no); actions.appendChild(status);
+  const btns = [ok, no];
+  // ファイル編集のみ「以後自動適用」(acceptEdits)を提示。コマンドは安全のため毎回確認のまま。
+  let always = null;
+  if (!isCmd) {
+    always = el("button", "btn", "以後自動適用");
+    always.title = "このセッションは以後、ファイル編集を確認なしで適用(Claude Code の acceptEdits 相当)";
+    btns.push(always);
+  }
+  ok.onclick = () => respondConfirm(card, ev.action_id, true, status, btns, "once");
+  no.onclick = () => respondConfirm(card, ev.action_id, false, status, btns);
+  if (always) always.onclick = () => respondConfirm(card, ev.action_id, true, status, btns, "always");
+  actions.appendChild(ok);
+  if (always) actions.appendChild(always);
+  actions.appendChild(no);
+  actions.appendChild(status);
   card.appendChild(actions);
   return card;
 }
@@ -1531,15 +1544,17 @@ function renderDiff(diffText) {
   return wrap;
 }
 
-async function respondConfirm(card, actionId, approved, statusEl, btns) {
+async function respondConfirm(card, actionId, approved, statusEl, btns, scope) {
   btns.forEach((b) => (b.disabled = true));
   try {
     await api("/api/code/approve", {
-      method: "POST", body: JSON.stringify({ action_id: actionId, approved }),
+      method: "POST", body: JSON.stringify({ action_id: actionId, approved, scope: scope || null }),
     });
-    statusEl.textContent = approved ? "承認しました" : "拒否しました";
+    statusEl.textContent = scope === "always" ? "承認しました(以後この会話の編集は自動適用)"
+      : approved ? "承認しました" : "拒否しました";
     statusEl.className = "confirm-status " + (approved ? "ok" : "no");
     card.dataset.resolved = "1";
+    if (scope === "always") setCodeAutoAccept(true);   // 設定に保存し、コードバーのトグルも更新
   } catch (e) {
     statusEl.textContent = "送信失敗: " + e.message;
     statusEl.className = "confirm-status no";
@@ -2114,6 +2129,17 @@ async function setCodePlan(on) {
   } catch (e) { toast("設定失敗: " + e.message); $("cb-plan").checked = !on; }
 }
 
+async function setCodeAutoAccept(on) {
+  if (!State.current) return;
+  try {
+    const conv = await api(`/api/conversations/${State.current.id}`, {
+      method: "PATCH", body: JSON.stringify({ settings: { auto_accept_edits: !!on } }),
+    });
+    State.current = conv;
+    if ($("cb-autoaccept")) $("cb-autoaccept").checked = !!on;
+  } catch (e) { toast("設定失敗: " + e.message); if ($("cb-autoaccept")) $("cb-autoaccept").checked = !on; }
+}
+
 /* ============================================================
    入力欄の挙動
    ============================================================ */
@@ -2144,6 +2170,7 @@ function bindGlobalEvents() {
   $("cb-pick").onclick = () => openFolderBrowser("workspace");
   $("cb-plan").onchange = (e) => setCodePlan(e.target.checked);
   $("cb-allow").onchange = (e) => setCodeAllow(e.target.checked);
+  $("cb-autoaccept").onchange = (e) => setCodeAutoAccept(e.target.checked);
 
   $("chat-title").addEventListener("change", renameConversation);
   $("chat-title").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); $("chat-title").blur(); } });

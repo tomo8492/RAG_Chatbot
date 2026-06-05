@@ -577,6 +577,7 @@ class AgentBody(BaseModel):
 class ApproveBody(BaseModel):
     action_id: str
     approved: bool = False
+    scope: Optional[str] = None   # "always" で以後このセッションの編集を自動適用
 
 
 class AnswerBody(BaseModel):
@@ -614,6 +615,7 @@ def api_agent(cid: str, body: AgentBody) -> Response:
     workspace = (s.get("workspace") or "").strip()
     allow_changes = bool(s.get("allow_changes"))
     plan_mode = bool(s.get("plan_mode", True))
+    auto_accept_edits = bool(s.get("auto_accept_edits"))
     if not workspace:
         raise HTTPException(400, "作業フォルダが設定されていません。先にフォルダを選択してください。")
     ws = Path(workspace).expanduser()
@@ -684,7 +686,8 @@ def api_agent(cid: str, body: AgentBody) -> Response:
                     acc_text.append(tt)
 
         try:
-            for ev in agent.run_stream(model, ctx, str(ws.resolve()), allow_changes, plan_mode, num_ctx):
+            for ev in agent.run_stream(model, ctx, str(ws.resolve()), allow_changes, plan_mode,
+                                       num_ctx, auto_accept_edits=auto_accept_edits):
                 t = ev.get("type")
                 if t in ("assistant_delta", "assistant"):
                     if ev.get("text"):
@@ -729,7 +732,7 @@ def api_agent(cid: str, body: AgentBody) -> Response:
 
 @app.post("/api/code/approve", dependencies=[Depends(auth.require_auth)])
 def api_code_approve(body: ApproveBody) -> dict:
-    ok = agent.resolve(body.action_id, body.approved)
+    ok = agent.resolve(body.action_id, body.approved, body.scope)
     return {"ok": ok}
 
 
