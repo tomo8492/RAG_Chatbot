@@ -86,6 +86,7 @@ function applyTheme(pref) {
     btn.textContent = meta[0];
     btn.title = meta[1] + " ・ クリックで切替";
   }
+  rerenderMermaidTheme();   // 既存の Mermaid 図を新テーマで再描画(未初期化なら no-op)
 }
 function toggleTheme() {
   const next = { system: "light", light: "dark", dark: "system" }[themePref()];
@@ -556,13 +557,27 @@ function renderSources(container, sources) {
 
 /* ---------- Markdown ---------- */
 marked.setOptions({ breaks: true, gfm: true });
+
+/* Qwen3 等が content に混入させる <think> をレンダリング前に除去(ストリーミング対応)。
+   毎回バッファ全体へ適用するため、開きのみ/閉じのみの不完全タグにも自然対応する。 */
+function stripThink(text) {
+  if (!text) return text || "";
+  let s = text.replace(/<think\b[^>]*>[\s\S]*?<\/think\s*>/gi, "");   // 完全な <think>...</think>
+  if (/<\/think\s*>/i.test(s) && !/<think\b/i.test(s))               // 閉じのみ → 先頭〜閉じを除去
+    s = s.replace(/^[\s\S]*?<\/think\s*>/i, "");
+  if (/<think\b/i.test(s))                                           // 開きのみ → 開き〜末尾を除去
+    s = s.replace(/<think\b[^>]*>[\s\S]*$/i, "");
+  return s;
+}
+
 function renderMarkdown(target, text, final) {
-  const html = DOMPurify.sanitize(marked.parse(text || ""));
+  const html = DOMPurify.sanitize(marked.parse(stripThink(text || "")));
   target.innerHTML = html;
   if (final) enhanceCode(target);
 }
 function enhanceCode(container) {
   container.querySelectorAll("pre code").forEach((code) => {
+    if (code.classList.contains("language-mermaid")) return;   // Mermaid は描画側で処理
     try { hljs.highlightElement(code); } catch (_) {}
     const pre = code.parentElement;
     if (pre.querySelector(".code-head")) return;
@@ -581,7 +596,197 @@ function enhanceCode(container) {
     head.appendChild(right);
     pre.insertBefore(head, code);
   });
+  linkifyFileRefs(container);
+  renderMermaidBlocks(container);
 }
+
+/* ---- Mermaid 図のレンダリング(sandbox iframe・失敗時は生コードへフォールバック) ---- */
+
+/* デザイントークン(色・角丸・フォント・余白を1か所集約。色変更はここだけ) */
+const MERMAID_TOKENS = {
+  radius: 8,
+  font: '"Yu Gothic UI","Hiragino Kaku Gothic ProN","Noto Sans JP","Meiryo",system-ui,sans-serif',
+  // ノード種別: process=通常(既定/青), startend=開始終了(白+濃枠), decision=判定(ピンク),
+  //            accent1=特殊A(橙), accent2=特殊B(緑)
+  light: {
+    process:  { bg: "#E7EEFF", border: "#4C6EF5", text: "#1E3A8A" },
+    startend: { bg: "#FFFFFF", border: "#3A3833", text: "#2B2A27" },
+    decision: { bg: "#FCE3EC", border: "#D6336C", text: "#7A1F3D" },
+    accent1:  { bg: "#FFEFDD", border: "#E8590C", text: "#8A3B0B" },
+    accent2:  { bg: "#E4F3E8", border: "#2F9E44", text: "#1B5E2A" },
+    line: "#7C776B", edge: "#3A3833", edgeBg: "#F0EEE6",
+    cluster: "#F0EEE6", clusterBorder: "#D9D4C7",
+  },
+  dark: {
+    process:  { bg: "#27314F", border: "#5C7CFA", text: "#CDD9FF" },
+    startend: { bg: "#3A3833", border: "#CDC8BC", text: "#F5F2EA" },
+    decision: { bg: "#422836", border: "#E64980", text: "#FAD1E0" },
+    accent1:  { bg: "#3B2A1C", border: "#FD7E14", text: "#FFD8A8" },
+    accent2:  { bg: "#22341F", border: "#51CF66", text: "#C3F0CA" },
+    line: "#7A7568", edge: "#CFCABD", edgeBg: "#1E1D1A",
+    cluster: "#262521", clusterBorder: "#3A3833",
+  },
+};
+
+function mermaidConfig() {
+  const dark = document.documentElement.getAttribute("data-theme") === "dark";
+  const t = dark ? MERMAID_TOKENS.dark : MERMAID_TOKENS.light;
+  const R = MERMAID_TOKENS.radius, F = MERMAID_TOKENS.font;
+  const themeVariables = {
+    fontFamily: F, fontSize: "14px",
+    primaryColor: t.process.bg, primaryBorderColor: t.process.border, primaryTextColor: t.process.text,
+    mainBkg: t.process.bg, nodeBorder: t.process.border, nodeTextColor: t.process.text,
+    lineColor: t.line, textColor: t.edge,
+    clusterBkg: t.cluster, clusterBorder: t.clusterBorder,
+    edgeLabelBackground: t.edgeBg,
+  };
+  const C = (n) => t[n];
+  const themeCSS = `
+    .node rect, .node .basic, .node polygon { rx:${R}px; ry:${R}px; stroke-width:1.6px; stroke-linejoin:round; }
+    .nodeLabel, .edgeLabel, .label, .cluster .nodeLabel { font-family:${F}; }
+    .nodeLabel { font-weight:500; }
+    .label foreignObject, .nodeLabel { padding:0 2px; }
+    .edgeLabel, .edgeLabel p { background:transparent !important; color:${t.edge} !important; font-weight:600; }
+    .edgeLabel rect, .edgeLabel foreignObject { fill:${t.edgeBg}; opacity:.9; }
+    .flowchart-link, .edgePath .path { stroke:${t.line}; stroke-width:1.5px; }
+    .cluster rect { rx:10px; ry:10px; fill:${t.cluster}; stroke:${t.clusterBorder}; }
+    .node polygon { fill:${C("decision").bg} !important; stroke:${C("decision").border} !important; }   /* 安全網: ひし形=判定色 */
+    .node.decision polygon { fill:${C("decision").bg} !important; stroke:${C("decision").border} !important; }
+    .node.decision .nodeLabel { color:${C("decision").text} !important; }
+    .node.startend rect, .node.startend .basic, .node.startend path { fill:${C("startend").bg} !important; stroke:${C("startend").border} !important; stroke-width:2px !important; }
+    .node.startend .nodeLabel { color:${C("startend").text} !important; font-weight:700; }
+    .node.accent1 rect, .node.accent1 .basic { fill:${C("accent1").bg} !important; stroke:${C("accent1").border} !important; }
+    .node.accent1 .nodeLabel { color:${C("accent1").text} !important; }
+    .node.accent2 rect, .node.accent2 .basic { fill:${C("accent2").bg} !important; stroke:${C("accent2").border} !important; }
+    .node.accent2 .nodeLabel { color:${C("accent2").text} !important; }
+  `;
+  return { themeVariables, themeCSS };
+}
+
+let _mermaidReady = false;
+function initMermaid() {
+  if (!window.mermaid) return false;
+  const { themeVariables, themeCSS } = mermaidConfig();
+  try {
+    window.mermaid.initialize({
+      startOnLoad: false,
+      securityLevel: "sandbox",          // 図内の JS 実行を iframe で遮断
+      theme: "base",                     // base + themeVariables/themeCSS で完全カスタム
+      themeVariables,
+      themeCSS,
+      fontFamily: MERMAID_TOKENS.font,
+      flowchart: { htmlLabels: true, padding: 14, nodeSpacing: 50, rankSpacing: 55, useMaxWidth: true },
+    });
+    _mermaidReady = true;
+    return true;
+  } catch (_) { return false; }
+}
+async function renderMermaidBlocks(container) {
+  if (!window.mermaid) return;
+  if (!_mermaidReady && !initMermaid()) return;
+  const blocks = container.querySelectorAll("pre > code.language-mermaid");
+  for (const code of blocks) {
+    const pre = code.parentElement;
+    if (pre.dataset.mmHandled) continue;
+    pre.dataset.mmHandled = "1";
+    const src = (code.textContent || "").trim();
+    const id = "mmd-" + Math.random().toString(36).slice(2, 9);
+    // 一時コンテナで描画(失敗時に mermaid が残すエラー図ごと破棄できる)
+    const tmp = el("div"); tmp.style.cssText = "position:absolute;left:-99999px;top:0";
+    document.body.appendChild(tmp);
+    try {
+      const { svg } = await window.mermaid.render(id, src, tmp);
+      const fig = el("div", "mermaid-fig");
+      fig.dataset.src = src;
+      fig.innerHTML = svg;
+      pre.replaceWith(fig);                       // 成功 → 図に置換
+    } catch (err) {
+      // フォールバック: 生コードのコードブロックを残し、注記を添える
+      pre.dataset.mmHandled = "";
+      if (!(pre.previousElementSibling && pre.previousElementSibling.classList.contains("mermaid-error")))
+        pre.parentElement.insertBefore(el("div", "mermaid-error", "⚠ 図の描画に失敗しました(コードを表示)"), pre);
+    } finally {
+      tmp.remove();
+      [id, "d" + id].forEach((x) => { const n = document.getElementById(x); if (n) n.remove(); });
+    }
+  }
+}
+/* テーマ切替時に既存の図を新テーマで再描画 */
+async function rerenderMermaidTheme() {
+  if (!window.mermaid || !_mermaidReady) return;
+  _mermaidReady = false; initMermaid();
+  const figs = document.querySelectorAll(".mermaid-fig[data-src]");
+  for (const fig of figs) {
+    const src = fig.dataset.src; if (!src) continue;
+    try {
+      const { svg } = await window.mermaid.render("mmd-" + Math.random().toString(36).slice(2, 9), src);
+      fig.innerHTML = svg;
+    } catch (_) {}
+  }
+}
+
+/* 本文中の `相対パス:行番号` をクリック可能なリンクにする(Codeモードのみ) */
+const FILE_REF_EXTS = new Set(
+  ("bas cls frm vb vba py js mjs cjs ts tsx jsx java kt c cc cpp cxx h hpp cs go rs rb php " +
+   "swift scala lua r pl sql sh bash zsh bat cmd ps1 html htm css scss sass less json yaml yml " +
+   "toml ini cfg conf xml md markdown txt text csv tsv log gradle properties dockerfile makefile " +
+   "xlsx xlsm docx pptx pdf").split(" ")
+);
+function linkifyFileRefs(container) {
+  if (State.mode !== "code" || !State.current) return;
+  const re = /^([\w./-]+?\.([A-Za-z0-9]{1,6}))(?::(\d+))?$/;
+  container.querySelectorAll("code:not(pre code)").forEach((code) => {
+    if (code.dataset.fileref) return;
+    const tok = (code.textContent || "").trim();
+    const m = re.exec(tok);
+    if (!m) return;
+    if (tok.includes(" ") || tok.startsWith("/") || /^[A-Za-z]:[\\/]/.test(tok)) return; // 相対パスのみ
+    if (!FILE_REF_EXTS.has(m[2].toLowerCase())) return;
+    const a = el("a", "file-ref");
+    a.textContent = tok;
+    a.href = "#";
+    a.title = "クリックして開く";
+    a.dataset.fileref = "1";
+    const path = m[1], line = m[3] ? parseInt(m[3], 10) : 0;
+    a.onclick = (e) => { e.preventDefault(); openFileViewer(path, line); };
+    code.replaceWith(a);
+  });
+}
+
+async function openFileViewer(path, line) {
+  if (!State.current) return;
+  $("fv-title").textContent = path + (line ? ":" + line : "");
+  const body = $("fv-body");
+  body.innerHTML = '<div class="fv-note">読み込み中…</div>';
+  $("file-modal").classList.remove("hidden");
+  let data;
+  try {
+    data = await api(`/api/conversations/${State.current.id}/file?path=${encodeURIComponent(path)}`);
+  } catch (e) {
+    body.innerHTML = ""; body.appendChild(el("div", "fv-note", "開けませんでした: " + e.message));
+    return;
+  }
+  if (data.binary || data.too_large || data.content == null) {
+    body.innerHTML = ""; body.appendChild(el("div", "fv-note", data.note || "表示できません。"));
+    return;
+  }
+  body.innerHTML = "";
+  const wrap = el("div", "fv-wrap");
+  data.content.replace(/\n$/, "").split("\n").forEach((ln, i) => {
+    const n = i + 1;
+    const row = el("div", "fv-row" + (n === line ? " target" : ""));
+    row.appendChild(el("span", "fv-ln", String(n)));
+    const c = el("span", "fv-lc"); c.textContent = ln.length ? ln : " ";
+    row.appendChild(c);
+    wrap.appendChild(row);
+  });
+  body.appendChild(wrap);
+  if (line) {
+    const t = wrap.querySelector(".fv-row.target");
+    if (t) setTimeout(() => t.scrollIntoView({ block: "center" }), 30);
+  }
+}
+function closeFileViewer() { $("file-modal").classList.add("hidden"); }
 
 function scrollToBottom() {
   const box = $("messages");
@@ -644,6 +849,7 @@ async function streamAssistant(payload) {
   State.controller = new AbortController();
 
   let acc = "", think = "", renderScheduled = false, gotContent = false, finished = false;
+  let finalContent = null;   // done で届くサーバ後処理済み(スペル補正・フェンス補完済み)本文
   const scheduleRender = () => {
     if (renderScheduled) return;
     renderScheduled = true;
@@ -688,12 +894,14 @@ async function streamAssistant(payload) {
             if (!gotContent) { gotContent = true; refs.think.open = false; }
             acc += d; scheduleRender();
           },
+          onDone: (msg) => { if (msg && typeof msg.content === "string") finalContent = msg.content; },
           getAcc: () => acc,
         });
       }
     }
-    // 正常終了
-    renderMarkdown(refs.md, acc || "*(応答なし)*", true);
+    // 正常終了: サーバ後処理済み本文があればそれで最終描画(無ければ acc)
+    renderMarkdown(refs.md, finalContent != null ? finalContent : (acc || "*(応答なし)*"), true);
+    if (finalContent != null) acc = finalContent;
   } catch (e) {
     if (e.name === "AbortError") {
       renderMarkdown(refs.md, acc || "*(停止しました)*", true);  // 部分内容は保持
@@ -704,7 +912,7 @@ async function streamAssistant(payload) {
   } finally {
     finished = true;
     refs.md.classList.remove("cursor-blink");
-    refs.row.dataset.raw = acc;
+    refs.row.dataset.raw = stripThink(acc);
     buildAssistantActions(refs, true);
     setStreaming(false);
     State.controller = null;
@@ -716,8 +924,11 @@ function handleStreamEvent(ev, refs, cb) {
     case "thinking": cb.onThink(ev.delta); break;
     case "content": cb.onContent(ev.delta); break;
     case "sources": if (ev.sources && ev.sources.length) renderSources(refs.src, ev.sources); break;
-    case "done": if (ev.message && ev.message.sources && ev.message.sources.length)
-      renderSources(refs.src, ev.message.sources); break;
+    case "done":
+      if (cb.onDone) cb.onDone(ev.message);
+      if (ev.message && ev.message.sources && ev.message.sources.length)
+        renderSources(refs.src, ev.message.sources);
+      break;
     case "error": throw new Error(ev.error || "生成エラー");
     case "user_saved": break;
   }
@@ -768,21 +979,67 @@ function buildAgentRow() {
     `<div class="msg-body"><div class="msg-name">Code エージェント</div><div class="agent-log"></div></div>`;
   return { row, logBox: row.querySelector(".agent-log") };
 }
-function stepCallEl(name, args) {
-  return el("div", "step-call",
-    `▸ <span class="tool-name">${escapeHtml(name)}</span> ${escapeHtml(agentArgsSummary(name, args || {}))}`);
+const SMALL_DIFF_LINES = 12;   // この変更行数以下の差分は折りたたまず開いておく
+// 思考(thinking)の折りたたみボックス(チャット側の .thinking と同じ見た目)
+function buildThinkBox() {
+  const det = el("details", "thinking");
+  det.innerHTML = '<summary>💭 考え中…</summary><div class="think-text"></div>';
+  return { el: det, sum: det.querySelector("summary"), text: det.querySelector(".think-text") };
 }
-function stepResultEls(status, result, diff) {
-  const out = [];
+// unified diff から +追加 / −削除 の行数を数える
+function diffStat(d) {
+  let a = 0, r = 0;
+  (d || "").split("\n").forEach((l) => {
+    if (l.startsWith("+") && !l.startsWith("+++")) a++;
+    else if (l.startsWith("-") && !l.startsWith("---")) r++;
+  });
+  return { a, r };
+}
+// Claude 風の折りたたみツールステップ。ヘッダ(ツール名・引数・状態)+ 折りたたみ本文。
+// 返り値の fill(status,result,diff,opts) を tool_result 受信時に呼ぶ。
+function buildToolStep(name, args) {
+  const det = el("details", "step");
+  const sum = document.createElement("summary");
+  sum.className = "step-head";
+  sum.appendChild(el("span", "step-name", escapeHtml(name)));
+  sum.appendChild(el("span", "step-arg", escapeHtml(agentArgsSummary(name, args || {}))));
+  const stat = el("span", "step-stat running", '<span class="spin"></span>');  // 実行中スピナー
+  sum.appendChild(stat);
+  det.appendChild(sum);
+  const body = el("div", "step-body");
+  det.appendChild(body);
+  const ICON = { ok: "✓", error: "⚠", blocked: "⛔", rejected: "⊘", redirected: "↩" };
+  function fill(status, result, diff, opts) {
+    opts = opts || {};
+    det._filled = true;
+    const s = status || "ok";
+    stat.className = "step-stat " + s;
+    let label = ICON[s] || "✓";
+    if (diff) { const { a, r } = diffStat(diff); if (a || r) label += `  +${a} −${r}`; }
+    stat.textContent = label;
+    if (result) {
+      const rl = el("div", "step-result" + (s !== "ok" ? " " + s : ""));
+      rl.textContent = trimResult(result);
+      body.appendChild(rl);
+    }
+    let open = (s === "error" || s === "blocked" || s === "rejected");  // 問題は開いて見せる
+    if (diff && !opts.skipDiffRender) {
+      const { a, r } = diffStat(diff);
+      if (a + r <= SMALL_DIFF_LINES) open = true;   // 小さな差分は畳まず開いておく
+      const d = renderDiff(diff); d.classList.add("applied"); body.appendChild(d);
+    }
+    det.open = open;
+  }
+  return { el: det, body, fill };
+}
+// tool_call を伴わない結果(エラー/最大ステップ/停止など)の素朴な通知ボックス
+function plainNoticeEl(status, result, diff) {
+  const wrap = el("div", "step-notice");
   const div = el("div", "step-result" + (status && status !== "ok" ? " " + status : ""));
   div.textContent = trimResult(result || "");
-  out.push(div);
-  if (diff) {
-    const d = el("div", "confirm-diff applied-diff");
-    d.innerHTML = colorizeDiff(diff);
-    out.push(d);
-  }
-  return out;
+  wrap.appendChild(div);
+  if (diff) { const d = renderDiff(diff); d.classList.add("applied"); wrap.appendChild(d); }
+  return wrap;
 }
 function agentTextEl(text) {
   const d = el("div", "md agent-text");
@@ -810,17 +1067,21 @@ function renderTodos(container, todos, existing) {
   if (!existing) container.appendChild(box);
   return box;
 }
-// 保存済みステップ(message.sources)を静的に再描画
+// 保存済みステップ(message.sources)を静的に再描画。tool_call と直後の
+// tool_result を1つの折りたたみステップにまとめる(ライブ表示と同じ見た目)。
 function renderCodeSteps(container, steps) {
-  let todoEl = null;
+  let todoEl = null, pend = null;   // pend: 結果待ちステップの fill 関数
   (steps || []).forEach((ev) => {
     switch (ev.type) {
-      case "assistant": if (ev.text) container.appendChild(agentTextEl(ev.text)); break;
-      case "tool_call": container.appendChild(stepCallEl(ev.name, ev.args)); break;
-      case "tool_result": stepResultEls(ev.status, ev.result, ev.diff).forEach((e) => container.appendChild(e)); break;
-      case "plan": container.appendChild(planStaticEl(ev.plan)); break;
+      case "assistant": if (ev.text) container.appendChild(agentTextEl(ev.text)); pend = null; break;
+      case "tool_call": { const s = buildToolStep(ev.name, ev.args); container.appendChild(s.el); pend = s.fill; break; }
+      case "tool_result":
+        if (pend) { pend(ev.status, ev.result, ev.diff); pend = null; }
+        else container.appendChild(plainNoticeEl(ev.status, ev.result, ev.diff));
+        break;
+      case "plan": container.appendChild(planStaticEl(ev.plan)); pend = null; break;
       case "todos": todoEl = renderTodos(container, ev.todos, todoEl); break;
-      case "ask": container.appendChild(askStaticEl(ev.question, ev.options)); break;
+      case "ask": container.appendChild(askStaticEl(ev)); pend = null; break;
     }
   });
 }
@@ -834,14 +1095,39 @@ async function streamAgent(payload) {
   State.controller = new AbortController();
   let curText = null;   // 連続する assistant テキストの描画先
   let todoEl = null;    // TODOパネル(更新時は同じ要素を書き換え)
+  let curFill = null, curBody = null, hasConfirm = false;  // 結果待ちのツールステップ
+  let curThink = null;  // 思考の折りたたみボックス(本文/ツールが始まったら畳む)
 
-  const addStepCall = (name, args) => { curText = null; logBox.appendChild(stepCallEl(name, args)); scrollToBottom(); };
+  const collapseThink = () => {
+    if (curThink) { curThink.el.open = false; curThink.sum.textContent = "💭 思考"; curThink = null; }
+  };
+  const addThink = (t) => {
+    if (!curThink) {
+      curThink = buildThinkBox(); curThink._raw = "";
+      logBox.appendChild(curThink.el); curThink.el.open = true;
+    }
+    curThink._raw += t; curThink.text.textContent = curThink._raw; scrollToBottom();
+  };
+  const addStepCall = (name, args) => {
+    curText = null; collapseThink();
+    const s = buildToolStep(name, args);
+    logBox.appendChild(s.el);
+    curFill = s.fill; curBody = s.body; hasConfirm = false;
+    scrollToBottom();
+  };
   const addStepResult = (status, result, diff) => {
-    curText = null;
-    stepResultEls(status, result, diff).forEach((e) => logBox.appendChild(e));
+    curText = null; collapseThink();
+    if (curFill) {
+      // 確認カードが本文にある場合、差分はカード側に表示済みなので二重表示しない
+      curFill(status, result, diff, { skipDiffRender: hasConfirm });
+      curFill = null; curBody = null; hasConfirm = false;
+    } else {
+      logBox.appendChild(plainNoticeEl(status, result, diff));
+    }
     scrollToBottom();
   };
   const addText = (t) => {
+    collapseThink();
     if (!curText) { curText = el("div", "md agent-text"); curText._raw = ""; logBox.appendChild(curText); }
     curText._raw += t;
     renderMarkdown(curText, curText._raw, true);
@@ -870,14 +1156,21 @@ async function streamAgent(payload) {
         if (!line) continue;
         let ev; try { ev = JSON.parse(line); } catch (_) { continue; }
         switch (ev.type) {
+          case "thinking": if (ev.text) addThink(ev.text); break;
           case "assistant_delta": if (ev.text) addText(ev.text); break;
           case "assistant": if (ev.text) addText(ev.text); break;
           case "tool_call": addStepCall(ev.name, ev.args || {}); break;
           case "tool_result": addStepResult(ev.status, ev.result || "", ev.diff); break;
-          case "confirm": curText = null; logBox.appendChild(buildConfirmCard(ev)); scrollToBottom(); break;
-          case "plan": curText = null; logBox.appendChild(buildPlanCard(ev)); scrollToBottom(); break;
-          case "todos": curText = null; todoEl = renderTodos(logBox, ev.todos || [], todoEl); scrollToBottom(); break;
-          case "ask": curText = null; logBox.appendChild(buildAskCard(ev)); scrollToBottom(); break;
+          case "confirm": {
+            curText = null;
+            const card = buildConfirmCard(ev);
+            if (curBody) { curBody.appendChild(card); curBody.parentElement.open = true; hasConfirm = true; }
+            else logBox.appendChild(card);
+            scrollToBottom(); break;
+          }
+          case "plan": curText = null; curFill = null; curBody = null; collapseThink(); logBox.appendChild(buildPlanCard(ev)); scrollToBottom(); break;
+          case "todos": curText = null; collapseThink(); todoEl = renderTodos(logBox, ev.todos || [], todoEl); scrollToBottom(); break;
+          case "ask": curText = null; curFill = null; curBody = null; collapseThink(); logBox.appendChild(buildAskCard(ev)); scrollToBottom(); break;
           case "error": addStepResult("rejected", "⚠ " + (ev.error || "エラー")); toast("エラー: " + (ev.error || "")); break;
           case "max_steps": addStepResult("blocked", "最大ステップ数に達しました。続けるには再度指示してください。"); break;
           case "done": case "user_saved": break;
@@ -909,54 +1202,229 @@ function rejectOpenConfirms(box) {
 }
 
 // ユーザーへの質問カード(選択肢 + 自由記述)
+// 選択肢を {label, description, recommended} に正規化(文字列・オブジェクトの両対応)
+function optOf(o) {
+  if (o && typeof o === "object") {
+    return { label: String(o.label || o.text || o.value || "").trim(),
+             description: String(o.description || o.desc || "").trim(),
+             recommended: !!(o.recommended || o.default) };
+  }
+  return { label: String(o == null ? "" : o).trim(), description: "", recommended: false };
+}
+// 選択肢ボタン(見出し + 説明 + 推奨バッジ)。クリックで label を回答として送る。
+function askOptEl(o, onPick) {
+  const node = el(onPick ? "button" : "div", "ask-opt" + (o.recommended ? " rec" : "") + (onPick ? "" : " static"));
+  if (onPick) node.type = "button";
+  const main = el("div", "ask-opt-main");
+  main.appendChild(el("span", "ask-opt-label", escapeHtml(o.label)));
+  if (o.recommended) main.appendChild(el("span", "ask-opt-rec", "推奨"));
+  node.appendChild(main);
+  if (o.description) node.appendChild(el("div", "ask-opt-desc", escapeHtml(o.description)));
+  if (onPick) node.onclick = () => onPick(o.label);
+  return node;
+}
+// ask イベント / 保存ステップを質問配列に正規化(新形式 questions・旧形式 question/options 両対応)
+function normalizeQuestions(ev) {
+  let qs = ev.questions;
+  if (!Array.isArray(qs) || !qs.length) {
+    qs = [{ header: ev.header, question: ev.question, multiSelect: ev.multiSelect, options: ev.options }];
+  }
+  return qs.map((q) => ({
+    header: String((q && q.header) || "").trim(),
+    question: String((q && (q.question || q.text)) || "").trim(),
+    multiSelect: !!(q && (q.multiSelect || q.multi)),
+    options: ((q && q.options) || []).map(optOf).filter((o) => o.label),
+  })).filter((q) => q.question || q.options.length);
+}
+// 1問ぶんのブロック(複数質問・複数選択用)。getSelected() で選択ラベル配列を返す。
+function buildQuestionBlock(q, qi) {
+  const wrap = el("div", "ask-q");
+  const head = el("div", "ask-q-head");
+  if (q.header) head.appendChild(el("span", "ask-q-chip", escapeHtml(q.header)));
+  head.appendChild(el("span", "ask-q-text", escapeHtml(q.question)));
+  if (q.multiSelect) head.appendChild(el("span", "ask-q-multi", "複数選択可"));
+  wrap.appendChild(head);
+  const opts = el("div", "ask-options");
+  const inputs = [];
+  q.options.forEach((o) => {
+    const lab = el("label", "ask-opt ask-check" + (o.recommended ? " rec" : ""));
+    const inp = document.createElement("input");
+    inp.className = "ask-cb";
+    inp.type = q.multiSelect ? "checkbox" : "radio";
+    inp.name = "askq-" + qi;
+    inp.value = o.label;
+    lab.appendChild(inp);
+    const body = el("div", "ask-opt-body");
+    const main = el("div", "ask-opt-main");
+    main.appendChild(el("span", "ask-opt-label", escapeHtml(o.label)));
+    if (o.recommended) main.appendChild(el("span", "ask-opt-rec", "推奨"));
+    body.appendChild(main);
+    if (o.description) body.appendChild(el("div", "ask-opt-desc", escapeHtml(o.description)));
+    lab.appendChild(body);
+    opts.appendChild(lab);
+    inputs.push(inp);
+  });
+  wrap.appendChild(opts);
+  const free = el("input", "ask-input ask-free-q"); free.type = "text"; free.placeholder = "その他(自由に入力)…";
+  wrap.appendChild(free);
+  const getSelected = () => {
+    const sel = inputs.filter((i) => i.checked).map((i) => i.value);
+    const f = free.value.trim();
+    if (f) sel.push(f);
+    return sel;
+  };
+  return { el: wrap, getSelected };
+}
+function summarizeAnswers(questions, answers) {
+  return questions.map((q, i) =>
+    (q.header || `Q${i + 1}`) + ": " + (answers[i] && answers[i].length ? answers[i].join(", ") : "(なし)")
+  ).join(" / ");
+}
+// 複数質問は Claude と同様に「1問ずつ」のステッパーで提示する。
+function buildAskStepper(card, actionId, questions) {
+  const answers = questions.map(() => []);     // 質問ごとの選択ラベル配列
+  const freeText = questions.map(() => "");     // 質問ごとの自由記述(行き来で保持)
+  let step = 0;
+  const prog = el("div", "ask-step-prog");
+  const body = el("div", "ask-step-body");
+  const nav = el("div", "ask-step-nav");
+  card.appendChild(prog); card.appendChild(body); card.appendChild(nav);
+  const isLast = () => step === questions.length - 1;
+  const goNext = () => { if (isLast()) submitAnswers(card, actionId, answers, summarizeAnswers(questions, answers)); else { step++; render(); } };
+
+  function render() {
+    const q = questions[step];
+    prog.textContent = `質問 ${step + 1} / ${questions.length}`;
+    body.innerHTML = "";
+    const head = el("div", "ask-q-head");
+    if (q.header) head.appendChild(el("span", "ask-q-chip", escapeHtml(q.header)));
+    head.appendChild(el("span", "ask-q-text", escapeHtml(q.question)));
+    if (q.multiSelect) head.appendChild(el("span", "ask-q-multi", "複数選択可"));
+    body.appendChild(head);
+
+    const opts = el("div", "ask-options");
+    const checks = [];
+    q.options.forEach((o) => {
+      if (q.multiSelect) {
+        const lab = el("label", "ask-opt ask-check" + (o.recommended ? " rec" : ""));
+        const inp = document.createElement("input"); inp.type = "checkbox"; inp.className = "ask-cb"; inp.value = o.label;
+        if (answers[step].includes(o.label)) inp.checked = true;
+        lab.appendChild(inp);
+        const bd = el("div", "ask-opt-body"); const m = el("div", "ask-opt-main");
+        m.appendChild(el("span", "ask-opt-label", escapeHtml(o.label)));
+        if (o.recommended) m.appendChild(el("span", "ask-opt-rec", "推奨"));
+        bd.appendChild(m); if (o.description) bd.appendChild(el("div", "ask-opt-desc", escapeHtml(o.description)));
+        lab.appendChild(bd); opts.appendChild(lab); checks.push(inp);
+      } else {
+        const btn = askOptEl(o, (label) => { answers[step] = [label]; freeText[step] = ""; goNext(); });  // 単一選択はクリックで次へ
+        if (answers[step][0] === o.label) btn.classList.add("picked");
+        opts.appendChild(btn);
+      }
+    });
+    body.appendChild(opts);
+
+    const free = el("input", "ask-input ask-free-q"); free.type = "text"; free.placeholder = "その他(自由に入力)…";
+    free.value = freeText[step] || "";
+    body.appendChild(free);
+    const gather = () => {
+      const sel = q.multiSelect ? checks.filter((c) => c.checked).map((c) => c.value) : answers[step].slice();
+      const f = free.value.trim();
+      if (f && !sel.includes(f)) sel.push(f);
+      return sel;
+    };
+    const commit = () => { answers[step] = gather(); freeText[step] = free.value.trim(); };
+    free.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter" || e.isComposing || e.keyCode === 229) return;  // 日本語IME変換中は送信しない
+      e.preventDefault(); commit(); goNext();
+    });
+
+    nav.innerHTML = "";
+    const back = el("button", "btn ask-back", "← 戻る"); back.type = "button"; back.disabled = step === 0;
+    back.onclick = () => { commit(); if (step > 0) { step--; render(); } };
+    const next = el("button", "btn primary ask-next", isLast() ? "回答を送信" : "次へ →"); next.type = "button";
+    next.onclick = () => { commit(); goNext(); };
+    nav.appendChild(back); nav.appendChild(next);
+  }
+  render();
+}
 function buildAskCard(ev) {
   const card = el("div", "confirm-card ask-card");
   card.dataset.actionId = ev.action_id;
   card.dataset.kind = "ask";
-  card.appendChild(el("div", "confirm-title", "❓ " + (ev.question || "どう進めますか?")));
-  const opts = el("div", "ask-options");
-  (ev.options || []).forEach((o) => {
-    const btn = el("button", "btn ask-opt", o);
-    btn.onclick = () => submitAnswer(card, ev.action_id, o);
-    opts.appendChild(btn);
-  });
-  if ((ev.options || []).length) card.appendChild(opts);
-  const row = el("div", "ask-free");
-  const input = el("input", "ask-input"); input.type = "text"; input.placeholder = "その他(自由に入力)…";
-  const send = el("button", "btn ask-send", "送信");
-  const submitFree = () => { const v = input.value.trim(); if (v) submitAnswer(card, ev.action_id, v); };
-  send.onclick = submitFree;
-  input.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); submitFree(); } });
-  row.appendChild(input); row.appendChild(send);
-  card.appendChild(row);
+  if (ev.context) card.appendChild(el("div", "ask-context", escapeHtml(ev.context)));
+  const questions = normalizeQuestions(ev);
+  if (questions.length > 1) {
+    // 複数質問 → 1セクションずつのステッパー
+    card.appendChild(el("div", "confirm-title", "❓ いくつか確認させてください"));
+    buildAskStepper(card, ev.action_id, questions);
+  } else {
+    const q = questions[0] || { question: "どう進めますか?", options: [], multiSelect: false };
+    if (!q.multiSelect) {
+      // 1問・単一選択 → クリックで即送信(軽快なパス)
+      card.appendChild(el("div", "confirm-title", "❓ " + escapeHtml(q.header ? q.header + ": " + q.question : q.question)));
+      if (q.options.length) {
+        const opts = el("div", "ask-options");
+        q.options.forEach((o) => opts.appendChild(askOptEl(o, (label) => submitAnswers(card, ev.action_id, [[label]], label))));
+        card.appendChild(opts);
+      }
+      const row = el("div", "ask-free");
+      const input = el("input", "ask-input"); input.type = "text"; input.placeholder = "その他(自由に入力)…";
+      const send = el("button", "btn ask-send", "送信"); send.type = "button";
+      const submitFree = () => { const v = input.value.trim(); if (v) submitAnswers(card, ev.action_id, [[v]], v); };
+      send.onclick = submitFree;
+      input.addEventListener("keydown", (e) => {
+        if (e.key !== "Enter" || e.isComposing || e.keyCode === 229) return;
+        e.preventDefault(); submitFree();
+      });
+      row.appendChild(input); row.appendChild(send);
+      card.appendChild(row);
+    } else {
+      // 1問・複数選択 → チェックボックス + 送信
+      const block = buildQuestionBlock(q, 0);
+      card.appendChild(block.el);
+      const send = el("button", "btn primary ask-send-all", "回答を送信"); send.type = "button";
+      send.onclick = () => {
+        const a = block.getSelected();
+        submitAnswers(card, ev.action_id, [a], (q.header || "回答") + ": " + (a.length ? a.join(", ") : "(なし)"));
+      };
+      card.appendChild(send);
+    }
+  }
   card.appendChild(el("div", "confirm-status ask-status"));
   return card;
 }
 
-async function submitAnswer(card, actionId, answer) {
-  card.querySelectorAll("button").forEach((b) => (b.disabled = true));
-  const input = card.querySelector(".ask-input"); if (input) input.disabled = true;
+async function submitAnswers(card, actionId, answers, displayText) {
+  card.querySelectorAll("button, input").forEach((b) => (b.disabled = true));
   const status = card.querySelector(".ask-status");
   try {
-    await api("/api/code/answer", { method: "POST", body: JSON.stringify({ action_id: actionId, answer }) });
-    if (status) { status.textContent = "回答: " + answer; status.className = "confirm-status ask-status ok"; }
+    await api("/api/code/answer", { method: "POST", body: JSON.stringify({ action_id: actionId, answers }) });
+    if (status) { status.textContent = "回答: " + (displayText || answers.flat().join(" / ") || "(なし)"); status.className = "confirm-status ask-status ok"; }
     card.dataset.resolved = "1";
   } catch (e) {
     if (status) { status.textContent = "送信失敗: " + e.message; status.className = "confirm-status ask-status no"; }
-    card.querySelectorAll("button").forEach((b) => (b.disabled = false));
-    if (input) input.disabled = false;
+    card.querySelectorAll("button, input").forEach((b) => (b.disabled = false));
   }
 }
 
-// 保存済みステップ再表示用:質問(静的)
-function askStaticEl(question, options) {
+// 保存済みステップ再表示用:質問(静的・複数質問対応)
+function askStaticEl(ev) {
   const card = el("div", "confirm-card ask-card");
-  card.appendChild(el("div", "confirm-title", "❓ " + (question || "")));
-  if (options && options.length) {
-    const opts = el("div", "ask-options");
-    options.forEach((o) => opts.appendChild(el("span", "ask-opt-static", o)));
-    card.appendChild(opts);
-  }
+  if (ev.context) card.appendChild(el("div", "ask-context", escapeHtml(ev.context)));
+  normalizeQuestions(ev).forEach((q) => {
+    const wrap = el("div", "ask-q");
+    const head = el("div", "ask-q-head");
+    if (q.header) head.appendChild(el("span", "ask-q-chip", escapeHtml(q.header)));
+    head.appendChild(el("span", "ask-q-text", escapeHtml(q.question)));
+    if (q.multiSelect) head.appendChild(el("span", "ask-q-multi", "複数選択可"));
+    wrap.appendChild(head);
+    if (q.options.length) {
+      const opts = el("div", "ask-options");
+      q.options.forEach((o) => opts.appendChild(askOptEl(o, null)));
+      wrap.appendChild(opts);
+    }
+    card.appendChild(wrap);
+  });
   return card;
 }
 
@@ -1005,10 +1473,8 @@ function buildConfirmCard(ev) {
     card.appendChild(el("div", "confirm-cmd", "$ " + escapeHtml(ev.command || "")));
   } else {
     card.appendChild(el("div", "confirm-meta",
-      `${escapeHtml(ev.path || "")} ・ ${ev.exists ? "上書き" : "新規作成"} ・ ${ev.length || 0}字`));
-    const diff = el("div", "confirm-diff");
-    diff.innerHTML = colorizeDiff(ev.diff || "(差分なし)");
-    card.appendChild(diff);
+      `${escapeHtml(ev.path || "")} ・ ${ev.exists ? "上書き" : "新規作成"}`));
+    card.appendChild(renderDiff(ev.diff || ""));
   }
   const actions = el("div", "confirm-actions");
   const ok = el("button", "btn primary", isCmd ? "実行する" : "適用する");
@@ -1021,13 +1487,41 @@ function buildConfirmCard(ev) {
   return card;
 }
 
-function colorizeDiff(diff) {
-  return diff.split("\n").map((ln) => {
-    const safe = escapeHtml(ln);
-    if (ln.startsWith("+") && !ln.startsWith("+++")) return `<span class="add">${safe}</span>`;
-    if (ln.startsWith("-") && !ln.startsWith("---")) return `<span class="del">${safe}</span>`;
-    return safe;
-  }).join("\n");
+// Claude Code 風の差分表示。unified diff を行番号つき・行ごと色分けで描画する。
+function renderDiff(diffText) {
+  const wrap = el("div", "cc-diff");
+  const body = el("div", "cc-diff-body");
+  let oldLn = 0, newLn = 0, adds = 0, dels = 0, firstHunk = true, rows = 0;
+  (diffText || "").split("\n").forEach((ln) => {
+    if (ln.startsWith("+++") || ln.startsWith("---")) return;     // ファイルヘッダ行は隠す
+    const m = ln.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/); // ハンクヘッダ → 行番号を復元
+    if (m) {
+      oldLn = parseInt(m[1], 10); newLn = parseInt(m[2], 10);
+      if (!firstHunk) body.appendChild(el("div", "cc-diff-gap", "⋯"));
+      firstHunk = false;
+      return;
+    }
+    if (ln === "" ) return;
+    let cls, gutter, mark, text;
+    if (ln.startsWith("+")) { cls = "add"; gutter = newLn++; mark = "+"; text = ln.slice(1); adds++; }
+    else if (ln.startsWith("-")) { cls = "del"; gutter = oldLn++; mark = "-"; text = ln.slice(1); dels++; }
+    else { cls = "ctx"; gutter = newLn++; oldLn++; mark = " "; text = ln.startsWith(" ") ? ln.slice(1) : ln; }
+    const row = el("div", "cc-diff-row " + cls);
+    row.appendChild(el("span", "cc-ln", String(gutter)));
+    row.appendChild(el("span", "cc-mark", mark === " " ? "&nbsp;" : mark));
+    const code = el("span", "cc-code");
+    code.textContent = text;                                       // textContent で自動エスケープ
+    row.appendChild(code);
+    body.appendChild(row);
+    rows++;
+  });
+  const head = el("div", "cc-diff-head");
+  head.appendChild(el("span", "cc-add-cnt", "+" + adds));
+  head.appendChild(el("span", "cc-del-cnt", "−" + dels));
+  wrap.appendChild(head);
+  if (rows) wrap.appendChild(body);
+  else wrap.appendChild(el("div", "cc-diff-empty", "(差分なし)"));
+  return wrap;
 }
 
 async function respondConfirm(card, actionId, approved, statusEl, btns) {
@@ -1699,6 +2193,11 @@ function bindGlobalEvents() {
   $("summary-stop").onclick = () => { if (SummaryState.controller) SummaryState.controller.abort(); };
   $("summary-close").onclick = closeSummary;
   $("summary-close2").onclick = closeSummary;
+  // ファイル閲覧
+  $("fv-close").onclick = closeFileViewer;
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !$("file-modal").classList.contains("hidden")) closeFileViewer();
+  });
   // フォルダ
   $("fb-pick").onclick = pickFolder;
   $("fb-go").onclick = () => fbNavigate($("fb-path-input").value.trim());

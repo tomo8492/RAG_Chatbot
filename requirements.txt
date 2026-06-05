@@ -23,3 +23,9 @@ python-docx>=1.1             # Word (.docx) 読み書き
 openpyxl>=3.1                # Excel (.xlsx) 読み書き(数式・グラフ対応)
 python-pptx>=0.6.23          # PowerPoint (.pptx) 読み書き
 reportlab>=4.0               # PDF 生成(Code エージェントのファイル作成用)
+
+# --- OCR(スキャン/画像PDF。任意) ---
+# 既定の OCR_ENGINE=vlm は Ollama のビジョンモデルを使うため追加導入は不要
+# (VLモデルを ollama pull するだけ)。下記は OCR_ENGINE=tesseract を使う場合のみ:
+#   pillow>=10.0               # 画像処理(tesseract OCR用)
+#   pytesseract>=0.3.10        # Tesseract ラッパ。別途 OS に tesseract 本体 + jpn/eng データが必要
