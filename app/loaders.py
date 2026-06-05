@@ -15,10 +15,25 @@ log = get_logger("loaders")
 
 def load_pdf(path: Path) -> list[dict]:
     import fitz  # PyMuPDF
+
+    from . import ocr
+    from .config import settings
+
     docs = []
     with fitz.open(path) as pdf:
         for i, page in enumerate(pdf):
             text = page.get_text().strip()
+            # テキスト層が無い/極端に少ないページ(=スキャン)だけ OCR に回す。
+            # OCR_ENABLED=false のときは needs_ocr が常に False で従来動作のまま。
+            if ocr.needs_ocr(text):
+                try:
+                    png = page.get_pixmap(dpi=settings.ocr_dpi).tobytes("png")
+                    ocr_text = ocr.ocr_image_png(png)
+                except Exception as e:  # 画像化失敗等は従来どおりskip
+                    log.warning("ページ画像化に失敗 %s p.%d: %s", path.name, i + 1, e)
+                    ocr_text = ""
+                if ocr_text:
+                    text = ocr_text
             if text:
                 docs.append({"text": text, "source": path.name, "loc": f"p.{i + 1}"})
     return docs

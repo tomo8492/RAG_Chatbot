@@ -81,6 +81,17 @@ class Settings:
         self.chunk_size: int = _int("CHUNK_SIZE", 800)
         self.chunk_overlap: int = _int("CHUNK_OVERLAP", 120)
 
+        # --- OCR(スキャン/画像PDF。既定OFF=現行動作を変えない) ---
+        self.ocr_enabled: bool = _bool("OCR_ENABLED", False)
+        # エンジン: "vlm"(Ollamaのビジョンモデル) / "tesseract"
+        self.ocr_engine: str = os.getenv("OCR_ENGINE", "vlm").strip().lower()
+        # VLM用モデル(空なら vision_model を流用)。例: "qwen2.5vl"
+        self.ocr_vlm_model: str = os.getenv("OCR_VLM_MODEL", "").strip()
+        # ページのテキスト層がこの文字数未満なら「スキャン頁」とみなしOCRへ回す
+        self.ocr_min_chars: int = _int("OCR_MIN_CHARS", 16)
+        self.ocr_lang: str = os.getenv("OCR_LANG", "jpn+eng").strip()   # tesseract用(日英)
+        self.ocr_dpi: int = _int("OCR_DPI", 200)                        # 頁→画像の解像度
+
         # --- アップロード ---
         self.max_upload_mb: int = _int("MAX_UPLOAD_MB", 50)
 
