@@ -39,6 +39,9 @@ CONFIRM_TIMEOUT = 600     # 承認待ちの最大秒数
 MAX_GREP_FILE = 2_000_000  # grep で読むファイルの上限(2MB)
 READ_DEFAULT_LINES = 800   # read_file の既定の読み取り行数
 READ_CHAR_CAP = 20000      # read_file 1回の最大文字数(安全上限)
+# read_file がテキスト以外も読めるように(Claude の Read 相当)
+_DOC_EXTS = {".pdf", ".docx", ".xlsx", ".pptx"}   # loaders で本文抽出
+_IMG_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff"}
 
 SYSTEM_PROMPT = """あなたは優秀なソフトウェアエンジニアのエージェントです。
 指定された「作業フォルダ」の中だけで、ユーザーの依頼を達成します。
@@ -176,7 +179,8 @@ _T_LIST = {"type": "function", "function": {
     "parameters": {"type": "object", "properties": {}, "required": []}}}
 _T_READ = {"type": "function", "function": {
     "name": "read_file",
-    "description": "指定ファイルの内容を読み取る。大きいファイルは offset(開始行)/limit(行数)で続きも読める",
+    "description": "指定ファイルの内容を読み取る(テキストに加え PDF/Word/Excel/PowerPoint も本文抽出して読める)。"
+                   "大きいファイルは offset(開始行)/limit(行数)で続きも読める。画像は依頼に添付して見せる",
     "parameters": {"type": "object", "properties": {
         "path": {"type": "string", "description": "作業フォルダからの相対パス"},
         "offset": {"type": "integer", "description": "開始行(1始まり。省略時は先頭)"},
@@ -472,10 +476,23 @@ def t_read_file(ws: Path, path: str, offset: int = 0, limit: Optional[int] = Non
         return f"[エラー] {e}"
     if not p.exists() or not p.is_file():
         return f"[エラー] ファイルが存在しません: {path}"
-    try:
-        text = p.read_text(encoding="utf-8", errors="replace")
-    except Exception as e:
-        return f"[エラー] 読み取り失敗: {e}"
+    ext = p.suffix.lower()
+    if ext in _IMG_EXTS:
+        return ("[画像ファイルです] read_file はテキスト専用です。内容を見てほしいときは、"
+                "依頼に画像を添付してください(Vision対応モデルで読み取ります)。")
+    if ext in _DOC_EXTS:
+        try:                       # PDF/Office は loaders で本文抽出(Claude の Read 相当)
+            from . import loaders
+            text = "\n\n".join(d.get("text", "") for d in loaders.load_file(p))
+        except Exception as e:
+            return f"[エラー] {ext} の読み取りに失敗: {e}"
+        if not text.strip():
+            return f"[{ext} から本文を抽出できませんでした(スキャンPDF等。OCRを有効化すると読めます)]"
+    else:
+        try:
+            text = p.read_text(encoding="utf-8", errors="replace")
+        except Exception as e:
+            return f"[エラー] 読み取り失敗: {e}"
     lines = text.splitlines()
     total = len(lines)
     try:
