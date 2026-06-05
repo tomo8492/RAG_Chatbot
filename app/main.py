@@ -770,6 +770,17 @@ def api_code_answer(body: AnswerBody) -> dict:
     return {"ok": ok}
 
 
+class UndoBody(BaseModel):
+    undo_id: str
+
+
+@app.post("/api/code/undo", dependencies=[Depends(auth.require_auth)])
+def api_code_undo(body: UndoBody) -> dict:
+    """適用済みのファイル変更を取り消す(復元/新規は削除)。"""
+    msg = agent.undo(body.undo_id)
+    return {"ok": not msg.startswith("[エラー]"), "message": msg}
+
+
 @app.get("/api/conversations/{cid}/file", dependencies=[Depends(auth.require_auth)])
 def api_code_file(cid: str, path: str) -> dict:
     """Code 会話の作業フォルダ内のファイルを安全に読み出して返す(本文の path:line リンク閲覧用)。"""

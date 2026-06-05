@@ -1010,6 +1010,86 @@ def _tc_to_dict(tc) -> dict:
     return {"function": {"name": name, "arguments": args}}
 
 
+# ============================================================
+#  変更の取り消し(undo)と 適用後の自動構文チェック(自己検証)
+# ============================================================
+_UNDO: dict[str, dict] = {}          # undo_id -> {path(abs), before(str|None), rel}
+
+# 拡張子ごとの「構文だけ」を確かめるコマンド(.pyc を作らない・副作用なし)
+_SYNTAX_CMD = {
+    ".py": ["python", "-c", "import ast,sys; ast.parse(open(sys.argv[1],encoding='utf-8').read())"],
+    ".js": ["node", "--check"], ".mjs": ["node", "--check"], ".cjs": ["node", "--check"],
+    ".json": ["python", "-c", "import json,sys; json.load(open(sys.argv[1],encoding='utf-8'))"],
+}
+
+
+def _syntax_check(ws: Path, rel: str) -> Optional[str]:
+    """編集ファイルの構文を即チェック。エラーなら説明文、問題なし/対象外/ツール無しは None。"""
+    cmd = _SYNTAX_CMD.get(Path(rel).suffix.lower())
+    if not cmd:
+        return None
+    try:
+        p = _safe_path(ws, rel)
+        r = subprocess.run(cmd + [str(p)], cwd=str(ws), capture_output=True, text=True, timeout=20)
+        if r.returncode != 0:
+            return ((r.stderr or "") + (r.stdout or "")).strip()[:1500] or "構文エラー"
+    except FileNotFoundError:
+        return None                  # node 等が無ければスキップ
+    except Exception:
+        return None
+    return None
+
+
+def _apply_change(ws: Path, name: str, args: dict, detail: dict):
+    """ファイル変更を適用し (result, event) を返す。適用前の内容を undo に控え、
+    適用後に構文チェック(自己検証)を行い、失敗はツール結果に追記してモデルへ差し戻す。"""
+    rel = args.get("path", "")
+    before, captured = None, False
+    if name in ("write_file", "edit_file"):
+        try:
+            p = _safe_path(ws, rel)
+            before = p.read_text(encoding="utf-8", errors="replace") if p.is_file() else None
+            captured = True
+        except Exception:
+            captured = False
+    result = dispatch(ws, name, args)
+    status = _result_status(result)
+    undo_id = None
+    if name in ("write_file", "edit_file") and status != "error" and captured:
+        undo_id = uuid.uuid4().hex[:12]
+        _UNDO[undo_id] = {"path": str(_safe_path(ws, rel)), "before": before, "rel": rel}
+        serr = _syntax_check(ws, rel)
+        if serr:
+            result = f"{result}\n[構文エラー] {rel}\n{serr}\n→ 直してください。"
+            status = "error"
+    ev = {"type": "tool_result", "name": name, "status": status, "result": result}
+    if detail.get("diff"):
+        ev["diff"] = detail["diff"]
+    if detail.get("path"):
+        ev["path"] = detail["path"]
+    if undo_id:
+        ev["undo_id"] = undo_id
+    return result, ev
+
+
+def undo(undo_id: str) -> str:
+    """適用済みの変更を取り消す(復元/新規は削除)。1回限り。"""
+    info = _UNDO.pop(undo_id, None)
+    if not info:
+        return "[エラー] 取り消し情報が見つかりません(既に取り消し済み、またはサーバ再起動で失効)"
+    p = Path(info["path"])
+    try:
+        if info["before"] is None:
+            if p.is_file():
+                p.unlink()
+            return f"新規作成を取り消しました(削除): {info['rel']}"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(info["before"], encoding="utf-8")
+        return f"変更を取り消しました(復元): {info['rel']}"
+    except Exception as e:
+        return f"[エラー] 取り消しに失敗: {e}"
+
+
 def run_stream(model: str, messages: list, workspace: str,
                allow_changes: bool, plan_mode: bool = True,
                num_ctx: Optional[int] = None,
@@ -1222,13 +1302,7 @@ def run_stream(model: str, messages: list, workspace: str,
                     if decision is True and scope == "always":
                         auto_accept_edits = True
                     if decision is True:
-                        result = dispatch(ws, name, args)
-                        ev = {"type": "tool_result", "name": name,
-                              "status": _result_status(result), "result": result}
-                        if detail.get("diff"):
-                            ev["diff"] = detail["diff"]      # 履歴に残し再読込でも差分が見えるように
-                        if detail.get("path"):
-                            ev["path"] = detail["path"]
+                        result, ev = _apply_change(ws, name, args, detail)   # 適用+undo控え+構文チェック
                         yield ev
                     elif decision is None:
                         result = "[承認がタイムアウトしたため実行しませんでした]"
@@ -1240,13 +1314,7 @@ def run_stream(model: str, messages: list, workspace: str,
                 else:
                     # 計画承認済みのファイル編集 → 自動適用(差分を併記して透明性を確保)
                     detail = _action_detail(ws, name, args)
-                    result = dispatch(ws, name, args)
-                    ev = {"type": "tool_result", "name": name,
-                          "status": _result_status(result), "result": result}
-                    if detail.get("diff"):
-                        ev["diff"] = detail["diff"]
-                    if detail.get("path"):
-                        ev["path"] = detail["path"]
+                    result, ev = _apply_change(ws, name, args, detail)   # 適用+undo控え+構文チェック
                     yield ev
             else:
                 result = dispatch(ws, name, args)

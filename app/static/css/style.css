@@ -456,6 +456,10 @@ summary.step-head:hover { background: rgba(127,127,127,.06); }
 .step-result.blocked, .step-result.rejected, .step-result.error { color: var(--stop); border-color: var(--stop); }
 /* ステップ本文内の結果は枠を外して軽く見せる(差分・確認カードと馴染ませる) */
 .step-body .step-result { border: none; background: transparent; padding: 6px 0 0; max-height: 220px; }
+.undo-btn { align-self: flex-start; margin-top: 6px; font-size: 11.5px; padding: 3px 10px;
+  border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--ink-soft); cursor: pointer; }
+.undo-btn:hover { color: var(--ink); border-color: var(--accent); }
+.undo-btn.done { color: var(--green); border-color: var(--green); cursor: default; }
 .step-body > .confirm-card { margin-top: 8px; }
 /* 実行中スピナー(ステップのヘッダ右端) */
 .spin { display: inline-block; width: .8em; height: .8em; vertical-align: -1px;

@@ -1209,17 +1209,33 @@ function buildToolStep(name, args) {
       if (a + r <= SMALL_DIFF_LINES) open = true;   // 小さな差分は畳まず開いておく
       const d = renderDiff(diff); d.classList.add("applied"); body.appendChild(d);
     }
+    if (opts.undoId) body.appendChild(undoButtonEl(opts.undoId));   // 取り消しボタン
     det.open = open;
   }
   return { el: det, body, fill };
 }
+// 適用した変更を元に戻すボタン(ファイルを適用前に復元/新規は削除)
+function undoButtonEl(undoId) {
+  const btn = el("button", "undo-btn", "↶ 元に戻す");
+  btn.title = "この変更を取り消す(ファイルを適用前に戻す)";
+  btn.onclick = async () => {
+    btn.disabled = true;
+    try {
+      const r = await api("/api/code/undo", { method: "POST", body: JSON.stringify({ undo_id: undoId }) });
+      if (r.ok) { btn.textContent = "↶ 取り消し済み"; btn.classList.add("done"); toast(r.message || "取り消しました"); }
+      else { btn.disabled = false; toast(r.message || "取り消せませんでした"); }
+    } catch (e) { btn.disabled = false; toast("取り消し失敗: " + e.message); }
+  };
+  return btn;
+}
 // tool_call を伴わない結果(エラー/最大ステップ/停止など)の素朴な通知ボックス
-function plainNoticeEl(status, result, diff) {
+function plainNoticeEl(status, result, diff, undoId) {
   const wrap = el("div", "step-notice");
   const div = el("div", "step-result" + (status && status !== "ok" ? " " + status : ""));
   div.textContent = trimResult(result || "");
   wrap.appendChild(div);
   if (diff) { const d = renderDiff(diff); d.classList.add("applied"); wrap.appendChild(d); }
+  if (undoId) wrap.appendChild(undoButtonEl(undoId));
   return wrap;
 }
 function agentTextEl(text) {
@@ -1257,8 +1273,8 @@ function renderCodeSteps(container, steps) {
       case "assistant": if (ev.text) container.appendChild(agentTextEl(ev.text)); pend = null; break;
       case "tool_call": { const s = buildToolStep(ev.name, ev.args); container.appendChild(s.el); pend = s.fill; break; }
       case "tool_result":
-        if (pend) { pend(ev.status, ev.result, ev.diff); pend = null; }
-        else container.appendChild(plainNoticeEl(ev.status, ev.result, ev.diff));
+        if (pend) { pend(ev.status, ev.result, ev.diff, { undoId: ev.undo_id }); pend = null; }
+        else container.appendChild(plainNoticeEl(ev.status, ev.result, ev.diff, ev.undo_id));
         break;
       case "plan": container.appendChild(planStaticEl(ev.plan)); pend = null; break;
       case "todos": todoEl = renderTodos(container, ev.todos, todoEl); break;
@@ -1298,14 +1314,14 @@ async function streamAgent(payload) {
     curFill = s.fill; curBody = s.body; hasConfirm = false;
     scrollToBottom();
   };
-  const addStepResult = (status, result, diff) => {
+  const addStepResult = (status, result, diff, undoId) => {
     curText = null; collapseThink();
     if (curFill) {
       // 確認カードが本文にある場合、差分はカード側に表示済みなので二重表示しない
-      curFill(status, result, diff, { skipDiffRender: hasConfirm });
+      curFill(status, result, diff, { skipDiffRender: hasConfirm, undoId });
       curFill = null; curBody = null; hasConfirm = false;
     } else {
-      logBox.appendChild(plainNoticeEl(status, result, diff));
+      logBox.appendChild(plainNoticeEl(status, result, diff, undoId));
     }
     scrollToBottom();
   };
@@ -1343,7 +1359,7 @@ async function streamAgent(payload) {
           case "assistant_delta": if (ev.text) addText(ev.text); break;
           case "assistant": if (ev.text) addText(ev.text); break;
           case "tool_call": addStepCall(ev.name, ev.args || {}); break;
-          case "tool_result": addStepResult(ev.status, ev.result || "", ev.diff); break;
+          case "tool_result": addStepResult(ev.status, ev.result || "", ev.diff, ev.undo_id); break;
           case "confirm": {
             curText = null;
             const card = buildConfirmCard(ev);
