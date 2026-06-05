@@ -66,6 +66,10 @@ class Settings:
         # 画像(スクショ)付き質問のときに使う Vision モデル。
         # Gemma 3 はマルチモーダルなので既定では同じモデルを使用(切替なし)。
         self.vision_model: str = os.getenv("VISION_MODEL", "gemma3:27b").strip()
+        # OCR API(/api/ocr)を VBA / Python など外部から呼ぶときの簡易APIキー。
+        # CHAT_PASSWORD を設定して認証を有効にしている場合、Cookieの代わりに
+        # X-API-Key ヘッダでこのキーを送れば呼び出せる(VBA等からの利用向け)。
+        self.ocr_api_key: str = os.getenv("OCR_API_KEY", "").strip()
 
         # --- 埋め込み ---
         self.embed_backend: str = os.getenv("EMBED_BACKEND", "sentence-transformers").strip().lower()

@@ -284,3 +284,22 @@ def chat_stream(messages: list[dict], model: str, *,
                     yield {"type": "content", "text": ct}
         else:
             raise
+
+
+def vision_complete(image_b64s: list[str], instruction: str, model: str, *,
+                    temperature: float = 0.1, num_predict: int = 512,
+                    num_ctx: Optional[int] = None) -> str:
+    """画像 + 指示文を Vision モデルに渡し、応答テキストをまとめて返す(非ストリーミング)。
+
+    OCR API 用。instruction に「画像の文字を読み取って」「購入数量を数字で返信」など
+    具体的な指示を入れると、その指示に沿った結果(整形・判断済み)が返る。
+    """
+    if not image_b64s:
+        raise ValueError("画像がありません")
+    options = {"temperature": float(temperature), "num_predict": int(num_predict)}
+    if num_ctx:
+        options["num_ctx"] = int(num_ctx)
+    messages = [{"role": "user", "content": instruction, "images": list(image_b64s)}]
+    resp = _client().chat(model=model, messages=messages, stream=False, options=options)
+    content = _extract(resp, "content")
+    return content or ""
