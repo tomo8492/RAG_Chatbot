@@ -847,6 +847,7 @@ async function streamAssistant(payload) {
   State.controller = new AbortController();
 
   let acc = "", think = "", renderScheduled = false, gotContent = false, finished = false;
+  let finalContent = null;   // done で届くサーバ後処理済み(スペル補正・フェンス補完済み)本文
   const scheduleRender = () => {
     if (renderScheduled) return;
     renderScheduled = true;
@@ -891,12 +892,14 @@ async function streamAssistant(payload) {
             if (!gotContent) { gotContent = true; refs.think.open = false; }
             acc += d; scheduleRender();
           },
+          onDone: (msg) => { if (msg && typeof msg.content === "string") finalContent = msg.content; },
           getAcc: () => acc,
         });
       }
     }
-    // 正常終了
-    renderMarkdown(refs.md, acc || "*(応答なし)*", true);
+    // 正常終了: サーバ後処理済み本文があればそれで最終描画(無ければ acc)
+    renderMarkdown(refs.md, finalContent != null ? finalContent : (acc || "*(応答なし)*"), true);
+    if (finalContent != null) acc = finalContent;
   } catch (e) {
     if (e.name === "AbortError") {
       renderMarkdown(refs.md, acc || "*(停止しました)*", true);  // 部分内容は保持
@@ -919,8 +922,11 @@ function handleStreamEvent(ev, refs, cb) {
     case "thinking": cb.onThink(ev.delta); break;
     case "content": cb.onContent(ev.delta); break;
     case "sources": if (ev.sources && ev.sources.length) renderSources(refs.src, ev.sources); break;
-    case "done": if (ev.message && ev.message.sources && ev.message.sources.length)
-      renderSources(refs.src, ev.message.sources); break;
+    case "done":
+      if (cb.onDone) cb.onDone(ev.message);
+      if (ev.message && ev.message.sources && ev.message.sources.length)
+        renderSources(refs.src, ev.message.sources);
+      break;
     case "error": throw new Error(ev.error || "生成エラー");
     case "user_saved": break;
   }

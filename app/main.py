@@ -643,8 +643,9 @@ def api_code_answer(body: AnswerBody) -> dict:
 
 
 @app.get("/api/conversations/{cid}/file", dependencies=[Depends(auth.require_auth)])
-def api_code_file(cid: str, path: str, max_bytes: int = 2_000_000) -> dict:
+def api_code_file(cid: str, path: str) -> dict:
     """Code 会話の作業フォルダ内のファイルを安全に読み出して返す(本文の path:line リンク閲覧用)。"""
+    max_bytes = 2_000_000   # 閲覧上限(クライアントからは変更不可)
     conv = db.get_conversation(cid)
     if not conv:
         raise HTTPException(404, "会話が見つかりません")
