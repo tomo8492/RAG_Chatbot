@@ -250,10 +250,13 @@ def chat_stream(messages: list[dict], model: str, *,
     """
     eff = EFFORT_LEVELS.get((effort or "medium").lower(), EFFORT_LEVELS["medium"])
     think = eff["think"]
+    np = int(num_predict)
     options = {
         "temperature": float(temperature),
         "top_p": float(top_p),
-        "num_predict": int(num_predict) + eff["num_predict_boost"],
+        # num_predict<=0 は「上限なし」(EOSまで生成。途中で切れない)。
+        # 工数ブーストは正の上限を指定したときだけ加える。
+        "num_predict": -1 if np <= 0 else np + eff["num_predict_boost"],
     }
     if num_ctx:
         options["num_ctx"] = int(num_ctx)
