@@ -6,6 +6,7 @@ export.py
 """
 from __future__ import annotations
 
+import base64
 import html as _html
 import io
 import re
@@ -581,17 +582,18 @@ def _pdf_inline(text: str) -> str:
     return s
 
 
-def to_pdf(md: str, title: str = "回答") -> bytes:
+def to_pdf(md: str, title: str = "回答", images: list | None = None) -> bytes:
     """Markdown を、HTML出力と同じ意匠の整ったPDFにする(日本語=内蔵CIDフォント)。
-    ※サーバ側では Mermaid 図を描画できないため、図はコード枠として表示する(図入りは HTML 推奨)。"""
+    images(フロントで描画した Mermaid 図のPNG。出現順)が渡されれば図を埋め込む。
+    画像が無い図はコード枠で表示する。"""
     from reportlab.lib import colors
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.styles import ParagraphStyle
     from reportlab.lib.units import mm
     from reportlab.pdfbase import pdfmetrics
     from reportlab.pdfbase.cidfonts import UnicodeCIDFont
-    from reportlab.platypus import (HRFlowable, ListFlowable, ListItem, Paragraph,
-                                    Preformatted, SimpleDocTemplate, Spacer, Table, TableStyle)
+    from reportlab.platypus import (HRFlowable, Image as RLImage, ListFlowable, ListItem,
+                                    Paragraph, Preformatted, SimpleDocTemplate, Spacer, Table, TableStyle)
 
     FONT = "HeiseiKakuGo-W5"
     for f in (FONT, "HeiseiMin-W3"):
@@ -628,6 +630,9 @@ def to_pdf(md: str, title: str = "回答") -> bytes:
             _strip_inline(blocks[0]["text"]).strip() == (title or "").strip():
         blocks = blocks[1:]
 
+    content_width = A4[0] - 44 * mm   # 図の最大表示幅(左右マージン22mm)
+    mm_idx = 0                        # Mermaid 図の出現番号(images と対応づけ)
+
     for b in blocks:
         t = b["type"]
         if t == "heading":
@@ -639,7 +644,24 @@ def to_pdf(md: str, title: str = "回答") -> bytes:
             story.append(ListFlowable(items, bulletType="1" if b["ordered"] else "bullet",
                                       bulletColor=ACCENT, bulletFontName=FONT, leftIndent=16))
         elif t == "code":
-            story.append(Preformatted(b["text"], code_st))   # Mermaid もコード枠で表示
+            is_mmd = b.get("lang", "").lower() == "mermaid"
+            img = images[mm_idx] if (is_mmd and images and mm_idx < len(images)) else None
+            if is_mmd:
+                mm_idx += 1
+            embedded = False
+            if img and img.get("data"):
+                try:
+                    raw = base64.b64decode(img["data"])
+                    iw = float(img.get("w") or 0) or 600.0
+                    ih = float(img.get("h") or 0) or 400.0
+                    disp_w = min(content_width, iw * 0.75)        # px(96dpi)→pt(72)で実寸、幅で制限
+                    story.append(RLImage(io.BytesIO(raw), width=disp_w, height=disp_w * (ih / iw), hAlign="CENTER"))
+                    story.append(Spacer(1, 8))
+                    embedded = True
+                except Exception:
+                    embedded = False
+            if not embedded:
+                story.append(Preformatted(b["text"], code_st))   # 画像が無い図はコード枠で表示
         elif t == "quote":
             story.append(Paragraph(_pdf_inline(b["text"]).replace("\n", "<br/>"), quote_st))
         elif t == "table":
@@ -694,7 +716,7 @@ def to_csv(md: str, title: str = "回答") -> bytes:
 #  ディスパッチ
 # ============================================================
 def export_content(content: str, fmt: str, ext: str | None = None,
-                   title: str = "回答") -> tuple[bytes, str, str]:
+                   title: str = "回答", images: list | None = None) -> tuple[bytes, str, str]:
     """(bytes, mime, 拡張子) を返す。"""
     fmt = (fmt or "md").lower()
     title = (title or "回答").strip() or "回答"
@@ -717,7 +739,7 @@ def export_content(content: str, fmt: str, ext: str | None = None,
             return doc.encode("utf-8"), MIME["html"], "html"
         return to_html(content, title), MIME["html"], "html"
     if fmt == "pdf":
-        return to_pdf(content, title), MIME["pdf"], "pdf"
+        return to_pdf(content, title, images=images), MIME["pdf"], "pdf"
     if fmt == "csv":
         return to_csv(content, title), MIME["csv"], "csv"
     if fmt == "docx":

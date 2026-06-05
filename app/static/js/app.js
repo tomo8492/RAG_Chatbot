@@ -530,9 +530,14 @@ function extForLang(l) { return LANG_EXT[(l || "").toLowerCase()] || "txt"; }
 async function exportContent(content, fmt, ext, title) {
   if (!content || !content.trim()) { toast("内容が空です"); return; }
   try {
+    let images = null;
+    if (fmt === "pdf") {
+      try { images = await collectMermaidImages(content); }   // 図をPNG化してPDFに埋め込む
+      catch (_) { images = null; }
+    }
     const res = await fetch("/api/export", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ content, format: fmt, ext, title }),
+      body: JSON.stringify({ content, format: fmt, ext, title, images }),
     });
     if (res.status === 401) { showLogin(); throw new Error("認証が必要です"); }
     if (!res.ok) { let d; try { d = (await res.json()).detail; } catch (_) {} throw new Error(d || "変換に失敗"); }
@@ -631,8 +636,9 @@ const MERMAID_TOKENS = {
   },
 };
 
-function mermaidConfig() {
-  const dark = document.documentElement.getAttribute("data-theme") === "dark";
+function mermaidConfig(forceDark) {
+  const dark = (forceDark !== undefined) ? forceDark
+    : (document.documentElement.getAttribute("data-theme") === "dark");
   const t = dark ? MERMAID_TOKENS.dark : MERMAID_TOKENS.light;
   const R = MERMAID_TOKENS.radius, F = MERMAID_TOKENS.font;
   const themeVariables = {
@@ -667,9 +673,9 @@ function mermaidConfig() {
 }
 
 let _mermaidReady = false;
-function initMermaid() {
+function initMermaid(forceDark) {
   if (!window.mermaid) return false;
-  const { themeVariables, themeCSS } = mermaidConfig();
+  const { themeVariables, themeCSS } = mermaidConfig(forceDark);
   try {
     window.mermaid.initialize({
       startOnLoad: false,
@@ -764,7 +770,32 @@ function _figSvgString(fig) {
   return null;
 }
 
-function downloadDiagram(fig, kind) {
+// svg文字列 → PNG dataURL(寸法つき)。bg は背景色。
+function svgToPngDataUrl(xml, scale, bg) {
+  scale = scale || 2;
+  return new Promise((resolve, reject) => {
+    let w = 800, h = 600;
+    const probe = el("div"); probe.innerHTML = xml;
+    const ps = probe.querySelector("svg");
+    if (ps) {
+      const vb = ps.viewBox && ps.viewBox.baseVal;
+      w = (vb && vb.width) || parseFloat(ps.getAttribute("width")) || 800;
+      h = (vb && vb.height) || parseFloat(ps.getAttribute("height")) || 600;
+    }
+    const img = new Image();
+    img.onload = () => {
+      const canvas = el("canvas"); canvas.width = Math.round(w * scale); canvas.height = Math.round(h * scale);
+      const ctx = canvas.getContext("2d");
+      ctx.fillStyle = bg || "#ffffff"; ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.scale(scale, scale); ctx.drawImage(img, 0, 0, w, h);
+      resolve({ dataUrl: canvas.toDataURL("image/png"), w, h });
+    };
+    img.onerror = () => reject(new Error("svg→png 失敗"));
+    img.src = "data:image/svg+xml;base64," + btoa(unescape(encodeURIComponent(xml)));
+  });
+}
+
+async function downloadDiagram(fig, kind) {
   const xml = _figSvgString(fig);
   if (!xml) { toast("図の取得に失敗しました"); return; }
   const name = "diagram-" + new Date().toISOString().slice(0, 19).replace(/[:T]/g, "");
@@ -773,25 +804,43 @@ function downloadDiagram(fig, kind) {
     triggerDownload(URL.createObjectURL(blob), name + ".svg");
     return;
   }
-  // PNG: svg文字列から寸法を得て画像化
-  let w = 800, h = 600;
-  const probe = el("div"); probe.innerHTML = xml;
-  const ps = probe.querySelector("svg");
-  if (ps) {
-    const vb = ps.viewBox && ps.viewBox.baseVal;
-    w = (vb && vb.width) || parseFloat(ps.getAttribute("width")) || 800;
-    h = (vb && vb.height) || parseFloat(ps.getAttribute("height")) || 600;
+  try {
+    const { dataUrl } = await svgToPngDataUrl(xml, 2, _bg());   // 単体保存はテーマ背景
+    triggerDownload(dataUrl, name + ".png");
+  } catch (e) { toast("PNG化に失敗しました"); }
+}
+
+// Mermaid ソース → 生SVG文字列(sandbox iframe からも復元)
+async function renderMermaidSvg(src) {
+  const { svg } = await window.mermaid.render("pdf-" + Math.random().toString(36).slice(2, 9), src);
+  const tmp = el("div"); tmp.innerHTML = svg;
+  return _figSvgString(tmp);
+}
+
+// PDF用: 本文中の ```mermaid 図を順に PNG 化して [{data,w,h}|null] を返す(白背景・明テーマ)
+async function collectMermaidImages(content) {
+  if (!window.mermaid) return null;
+  if (!_mermaidReady && !initMermaid()) return null;
+  const re = /```[ \t]*mermaid[ \t]*\r?\n([\s\S]*?)\r?\n[ \t]*```/gi;
+  const blocks = []; let m;
+  while ((m = re.exec(content)) !== null) blocks.push(m[1].trim());
+  if (!blocks.length) return null;
+  const dark = document.documentElement.getAttribute("data-theme") === "dark";
+  const out = [];
+  try {
+    if (dark) initMermaid(false);                 // 白背景の文書に合わせ明テーマで描画
+    for (const src of blocks) {
+      try {
+        const xml = await renderMermaidSvg(src);
+        if (!xml) { out.push(null); continue; }
+        const r = await svgToPngDataUrl(xml, 2, "#ffffff");
+        out.push({ data: r.dataUrl.split(",")[1], w: Math.round(r.w), h: Math.round(r.h) });
+      } catch (_) { out.push(null); }
+    }
+  } finally {
+    if (dark) initMermaid();                       // 元のテーマに戻す
   }
-  const scale = 2, img = new Image();
-  img.onload = () => {
-    const canvas = el("canvas"); canvas.width = Math.round(w * scale); canvas.height = Math.round(h * scale);
-    const ctx = canvas.getContext("2d");
-    ctx.fillStyle = _bg(); ctx.fillRect(0, 0, canvas.width, canvas.height);
-    ctx.scale(scale, scale); ctx.drawImage(img, 0, 0, w, h);
-    canvas.toBlob((blob) => { if (blob) triggerDownload(URL.createObjectURL(blob), name + ".png"); else toast("PNG化に失敗しました"); }, "image/png");
-  };
-  img.onerror = () => toast("PNG化に失敗しました");
-  img.src = "data:image/svg+xml;base64," + btoa(unescape(encodeURIComponent(xml)));
+  return out;
 }
 
 function triggerDownload(href, name) {

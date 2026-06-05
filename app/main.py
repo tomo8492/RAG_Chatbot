@@ -1031,9 +1031,10 @@ def api_fs_estimate(paths: list[str] = Body(..., embed=True)) -> dict:
 # ============================================================
 class ExportBody(BaseModel):
     content: str
-    format: str = "md"        # md|txt|html|docx|xlsx|pptx|code
+    format: str = "md"        # md|txt|html|pdf|docx|xlsx|csv|pptx|code
     ext: Optional[str] = None  # format=code のときの拡張子(例: bas)
     title: Optional[str] = "回答"
+    images: Optional[list] = None   # PDF用: Mermaid図のPNG(順序対応) [{data(base64), w, h}]
 
 
 def _safe_stem(title: str) -> str:
@@ -1044,7 +1045,8 @@ def _safe_stem(title: str) -> str:
 @app.post("/api/export", dependencies=[Depends(auth.require_auth)])
 def api_export(body: ExportBody) -> Response:
     try:
-        data, mime, ext = export.export_content(body.content, body.format, body.ext, body.title or "回答")
+        data, mime, ext = export.export_content(body.content, body.format, body.ext,
+                                                body.title or "回答", images=body.images)
     except ValueError as e:
         raise HTTPException(400, str(e))
     except ImportError as e:
