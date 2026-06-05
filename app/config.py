@@ -81,7 +81,7 @@ class Settings:
         self.embed_model: str = os.getenv("EMBED_MODEL", default_embed).strip()
 
         # --- RAG ---
-        self.rag_top_k: int = _int("RAG_TOP_K", 5)
+        self.rag_top_k: int = _int("RAG_TOP_K", 15)
         self.chunk_size: int = _int("CHUNK_SIZE", 800)
         self.chunk_overlap: int = _int("CHUNK_OVERLAP", 120)
 

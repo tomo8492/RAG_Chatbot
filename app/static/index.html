@@ -130,21 +130,23 @@
             </div>
             <div class="quick only-chat">
               <label>長さ</label>
-              <select id="q-length" class="mini-select" title="回答の長さ">
+              <select id="q-length" class="mini-select" title="回答の最大長(上限なしは途中で切れません)">
                 <option value="512">短い</option>
                 <option value="1024">標準</option>
                 <option value="2048">長い</option>
                 <option value="4096">最大</option>
+                <option value="8192">特大</option>
+                <option value="-1">上限なし</option>
               </select>
             </div>
             <div class="quick only-chat">
               <label title="回答の根拠にする資料の最大件数。0で資料を参照しません">参照</label>
               <div class="qseg" id="q-topk" role="group" aria-label="参照件数の上限">
                 <button type="button" class="qseg-btn" data-v="0" title="資料を参照しない">0</button>
-                <button type="button" class="qseg-btn" data-v="3" title="少なめ">3</button>
-                <button type="button" class="qseg-btn" data-v="5" title="標準">5</button>
-                <button type="button" class="qseg-btn" data-v="10" title="多め">10</button>
-                <button type="button" class="qseg-btn" data-v="15" title="最大">15</button>
+                <button type="button" class="qseg-btn" data-v="15" title="標準">15</button>
+                <button type="button" class="qseg-btn" data-v="30" title="多め">30</button>
+                <button type="button" class="qseg-btn" data-v="45" title="さらに多め">45</button>
+                <button type="button" class="qseg-btn" data-v="60" title="最大">60</button>
                 <button type="button" class="qseg-btn" data-v="9999" title="上限なし(全件参照・コンテキスト超過に注意)">∞</button>
               </div>
             </div>
@@ -198,7 +200,7 @@
           </div>
           <div class="field">
             <label>回答の最大長 (num_predict): <span id="set-numpredict-val"></span></label>
-            <input type="range" id="set-numpredict" min="128" max="8192" step="128" />
+            <input type="range" id="set-numpredict" min="128" max="16384" step="128" />
           </div>
         </div>
 
@@ -216,7 +218,7 @@
         <div class="grid2">
           <div class="field">
             <label>参照件数 top_k: <span id="set-topk-val"></span></label>
-            <input type="range" id="set-topk" min="0" max="15" step="1" />
+            <input type="range" id="set-topk" min="0" max="60" step="1" />
           </div>
           <div class="field">
             <label>コンテキスト長 num_ctx (0=既定): <span id="set-numctx-val"></span></label>

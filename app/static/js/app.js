@@ -1218,7 +1218,9 @@ function renderCodeSteps(container, steps) {
 
 async function streamAgent(payload) {
   const { row, logBox } = buildAgentRow();
+  const avatar = row.querySelector(".avatar");
   $("messages").appendChild(row);
+  if (avatar) avatar.classList.add("thinking");   // 考え中/作業中:アイコンをアニメーション
   scrollToBottom();
 
   setStreaming(true);
@@ -1313,6 +1315,7 @@ async function streamAgent(payload) {
     else { addStepResult("rejected", "⚠ " + e.message); toast("エラー: " + e.message); }
   } finally {
     finishConfirmCards(logBox);
+    if (avatar) avatar.classList.remove("thinking");   // 完了/停止/エラーでアニメ停止
     setStreaming(false);
     State.controller = null;
   }
