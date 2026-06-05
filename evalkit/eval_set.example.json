@@ -1,0 +1,38 @@
+{
+  "_note": "このファイルを eval_set.json にコピーし、index_ids と questions を自社コーパスに合わせて埋めてください。index_ids は `python evalkit/run_eval.py --list-indexes` で確認できます。失敗例の3分類(a誤検索/b生成/cOCR)を網羅するよう、各タイプを最低1問入れると効果が測りやすいです。",
+  "index_ids": ["REPLACE_WITH_YOUR_INDEX_ID"],
+  "top_k": 8,
+  "model": null,
+  "questions": [
+    {
+      "id": "scan_pdf",
+      "question": "(例/分類c) スキャンされた英文の輸出書類に記載の対象品目は何ですか？",
+      "expected_files": ["export_document.pdf"],
+      "expected_answer_contains": []
+    },
+    {
+      "id": "table_cell",
+      "question": "(例/分類c) 価格表で製品Aの単価はいくらですか？",
+      "expected_files": ["price_list.pdf"],
+      "expected_answer_contains": []
+    },
+    {
+      "id": "cross_file",
+      "question": "(例/分類a) A規定とB規定で承認フローはどう違いますか？",
+      "expected_files": ["A_kitei.docx", "B_kitei.docx"],
+      "expected_answer_contains": []
+    },
+    {
+      "id": "exact_term",
+      "question": "(例/分類a) 型番 ABC-123 の仕様はどこに書かれていますか？",
+      "expected_files": ["spec_ABC-123.xlsx"],
+      "expected_answer_contains": []
+    },
+    {
+      "id": "not_in_corpus",
+      "question": "(例/分類b) 資料に存在しない事項を聞いたとき、正しく『記載なし』と答えるか？",
+      "expected_files": [],
+      "expected_answer_contains": ["見つかりませんでした"]
+    }
+  ]
+}
