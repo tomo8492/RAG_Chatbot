@@ -215,6 +215,13 @@ body {
 .cursor-blink::after { content: "▍"; color: var(--accent); animation: blink 1s steps(2) infinite; }
 @keyframes blink { 0%,50% { opacity: 1; } 50.01%,100% { opacity: 0; } }
 
+/* 考え中:回答アイコン(アバター)のパルス+グロー アニメーション */
+@keyframes avatarThink {
+  0%, 100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(76,110,245,.5); }
+  50%      { transform: scale(1.1); box-shadow: 0 0 0 6px rgba(76,110,245,0); }
+}
+.avatar.thinking { animation: avatarThink 1.3s ease-in-out infinite; }
+
 /* ============ 入力欄(Claude風:入力が上・設定と送信は下の1列) ============ */
 .composer-wrap { padding: 8px 24px 14px; }
 .composer {
@@ -305,10 +312,16 @@ body {
   background: rgba(181,72,58,.1); border: 1px solid var(--stop); border-radius: 8px; padding: 7px 10px; }
 
 /* Mermaid 図(sandbox iframe で描画) */
-.mermaid-fig { margin: 12px 0; padding: 10px 12px; background: var(--card);
+.mermaid-fig { position: relative; margin: 12px 0; padding: 10px 12px; background: var(--card);
   border: 1px solid var(--line); border-radius: 10px; overflow: auto; text-align: center; }
 .mermaid-fig iframe { width: 100%; border: 0; }
 .mermaid-fig svg { max-width: 100%; height: auto; }
+.diagram-tools { position: absolute; top: 6px; right: 6px; display: flex; gap: 4px;
+  opacity: 0; transition: opacity .15s; }
+.mermaid-fig:hover .diagram-tools { opacity: 1; }
+.diagram-tool { font-size: 11px; padding: 2px 8px; border: 1px solid var(--line); border-radius: 6px;
+  background: var(--bg); color: var(--ink-soft); cursor: pointer; }
+.diagram-tool:hover { color: var(--ink); border-color: var(--accent); }
 .mermaid-error { font-size: 12.5px; color: var(--stop); margin: 10px 0 2px; }
 
 /* 本文中のファイル参照リンク(`相対パス:行番号`) */
@@ -466,6 +479,11 @@ summary.step-head:hover { background: rgba(127,127,127,.06); }
 .cc-diff-row.ctx .cc-code { color: var(--ink-soft); }
 .cc-diff-gap { padding: 1px 10px; color: var(--ink-soft); opacity: .45; user-select: none; }
 .cc-diff-empty { padding: 8px 10px; color: var(--ink-soft); }
+/* 拒否理由の入力(承認カード) */
+.reject-form { display: flex; gap: 6px; align-items: center; width: 100%; margin-top: 6px; }
+.reject-reason { flex: 1 1 auto; min-width: 0; padding: 6px 9px; border: 1px solid var(--line);
+  border-radius: 6px; background: var(--bg); color: var(--ink); font-size: 13px; }
+.reject-reason:focus { outline: none; border-color: var(--accent); }
 /* TODO 進捗パネル */
 .todo-panel { border: 1px solid var(--line); border-radius: 10px; background: var(--panel);
   padding: 10px 12px; font-size: 13px; }

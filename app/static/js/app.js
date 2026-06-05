@@ -284,6 +284,7 @@ function updateCodeBar(conv) {
   $("cb-allow").disabled = plan;
   const allowLabel = $("cb-allow").closest(".cb-toggle");
   if (allowLabel) allowLabel.classList.toggle("disabled", plan);
+  if ($("cb-autoaccept")) $("cb-autoaccept").checked = !!s.auto_accept_edits;
 }
 
 async function deleteConversation(cid) {
@@ -461,6 +462,7 @@ function createAssistantRow() {
     </div>`;
   const refs = {
     row,
+    avatar: row.querySelector(".avatar"),
     think: row.querySelector(".thinking"),
     thinkText: row.querySelector(".think-text"),
     md: row.querySelector(".md"),
@@ -488,7 +490,8 @@ function buildAssistantActions(refs, isLast) {
 /* ---------- 保存(ファイル出力) ---------- */
 const SAVE_FORMATS = [
   ["Markdown (.md)", "md"], ["テキスト (.txt)", "txt"], ["HTML (.html)", "html"],
-  ["Word (.docx)", "docx"], ["Excel (.xlsx)", "xlsx"], ["PowerPoint (.pptx)", "pptx"],
+  ["PDF (.pdf)", "pdf"], ["Word (.docx)", "docx"],
+  ["Excel (.xlsx)", "xlsx"], ["CSV (.csv)", "csv"], ["PowerPoint (.pptx)", "pptx"],
 ];
 function currentTitle() { return (State.current && State.current.title) || "回答"; }
 
@@ -527,9 +530,14 @@ function extForLang(l) { return LANG_EXT[(l || "").toLowerCase()] || "txt"; }
 async function exportContent(content, fmt, ext, title) {
   if (!content || !content.trim()) { toast("内容が空です"); return; }
   try {
+    let images = null;
+    if (fmt === "pdf" || fmt === "docx" || fmt === "pptx") {
+      try { images = await collectMermaidImages(content); }   // 図をPNG化して文書に埋め込む
+      catch (_) { images = null; }
+    }
     const res = await fetch("/api/export", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ content, format: fmt, ext, title }),
+      body: JSON.stringify({ content, format: fmt, ext, title, images }),
     });
     if (res.status === 401) { showLogin(); throw new Error("認証が必要です"); }
     if (!res.ok) { let d; try { d = (await res.json()).detail; } catch (_) {} throw new Error(d || "変換に失敗"); }
@@ -628,8 +636,9 @@ const MERMAID_TOKENS = {
   },
 };
 
-function mermaidConfig() {
-  const dark = document.documentElement.getAttribute("data-theme") === "dark";
+function mermaidConfig(forceDark) {
+  const dark = (forceDark !== undefined) ? forceDark
+    : (document.documentElement.getAttribute("data-theme") === "dark");
   const t = dark ? MERMAID_TOKENS.dark : MERMAID_TOKENS.light;
   const R = MERMAID_TOKENS.radius, F = MERMAID_TOKENS.font;
   const themeVariables = {
@@ -664,9 +673,9 @@ function mermaidConfig() {
 }
 
 let _mermaidReady = false;
-function initMermaid() {
+function initMermaid(forceDark) {
   if (!window.mermaid) return false;
-  const { themeVariables, themeCSS } = mermaidConfig();
+  const { themeVariables, themeCSS } = mermaidConfig(forceDark);
   try {
     window.mermaid.initialize({
       startOnLoad: false,
@@ -699,6 +708,7 @@ async function renderMermaidBlocks(container) {
       const fig = el("div", "mermaid-fig");
       fig.dataset.src = src;
       fig.innerHTML = svg;
+      addDiagramTools(fig);                        // SVG/PNG 保存ボタン
       pre.replaceWith(fig);                       // 成功 → 図に置換
     } catch (err) {
       // フォールバック: 生コードのコードブロックを残し、注記を添える
@@ -721,8 +731,122 @@ async function rerenderMermaidTheme() {
     try {
       const { svg } = await window.mermaid.render("mmd-" + Math.random().toString(36).slice(2, 9), src);
       fig.innerHTML = svg;
+      addDiagramTools(fig);
     } catch (_) {}
   }
+}
+
+/* 図(Mermaid)を SVG / PNG で保存するツール(Claude風の図エクスポート) */
+function addDiagramTools(fig) {
+  const tools = el("div", "diagram-tools");
+  for (const kind of ["SVG", "PNG"]) {
+    const btn = el("button", "diagram-tool", kind);
+    btn.title = `図を ${kind} で保存`;
+    btn.onclick = (e) => { e.stopPropagation(); downloadDiagram(fig, kind.toLowerCase()); };
+    tools.appendChild(btn);
+  }
+  fig.appendChild(tools);
+}
+
+function _bg() {
+  return (getComputedStyle(document.documentElement).getPropertyValue("--bg") || "#ffffff").trim() || "#ffffff";
+}
+
+// 図のSVG文字列を取り出す。sandbox描画では svg は iframe(data URL)の中にあるので復元する。
+function _figSvgString(fig) {
+  const direct = fig.querySelector("svg");
+  if (direct) return new XMLSerializer().serializeToString(direct);
+  const ifr = fig.querySelector("iframe");
+  if (ifr && ifr.src && ifr.src.startsWith("data:")) {
+    try {
+      const comma = ifr.src.indexOf(",");
+      const meta = ifr.src.slice(0, comma);
+      let html = ifr.src.slice(comma + 1);
+      html = meta.includes("base64") ? decodeURIComponent(escape(atob(html))) : decodeURIComponent(html);
+      const m = html.match(/<svg[\s\S]*?<\/svg>/i);
+      return m ? m[0] : null;
+    } catch (e) { return null; }
+  }
+  return null;
+}
+
+// svg文字列 → PNG dataURL(寸法つき)。bg は背景色。
+function svgToPngDataUrl(xml, scale, bg) {
+  scale = scale || 2;
+  return new Promise((resolve, reject) => {
+    let w = 800, h = 600;
+    const probe = el("div"); probe.innerHTML = xml;
+    const ps = probe.querySelector("svg");
+    if (ps) {
+      const vb = ps.viewBox && ps.viewBox.baseVal;
+      w = (vb && vb.width) || parseFloat(ps.getAttribute("width")) || 800;
+      h = (vb && vb.height) || parseFloat(ps.getAttribute("height")) || 600;
+    }
+    const img = new Image();
+    img.onload = () => {
+      const canvas = el("canvas"); canvas.width = Math.round(w * scale); canvas.height = Math.round(h * scale);
+      const ctx = canvas.getContext("2d");
+      ctx.fillStyle = bg || "#ffffff"; ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.scale(scale, scale); ctx.drawImage(img, 0, 0, w, h);
+      resolve({ dataUrl: canvas.toDataURL("image/png"), w, h });
+    };
+    img.onerror = () => reject(new Error("svg→png 失敗"));
+    img.src = "data:image/svg+xml;base64," + btoa(unescape(encodeURIComponent(xml)));
+  });
+}
+
+async function downloadDiagram(fig, kind) {
+  const xml = _figSvgString(fig);
+  if (!xml) { toast("図の取得に失敗しました"); return; }
+  const name = "diagram-" + new Date().toISOString().slice(0, 19).replace(/[:T]/g, "");
+  if (kind === "svg") {
+    const blob = new Blob(['<?xml version="1.0" encoding="UTF-8"?>\n' + xml], { type: "image/svg+xml" });
+    triggerDownload(URL.createObjectURL(blob), name + ".svg");
+    return;
+  }
+  try {
+    const { dataUrl } = await svgToPngDataUrl(xml, 2, _bg());   // 単体保存はテーマ背景
+    triggerDownload(dataUrl, name + ".png");
+  } catch (e) { toast("PNG化に失敗しました"); }
+}
+
+// Mermaid ソース → 生SVG文字列(sandbox iframe からも復元)
+async function renderMermaidSvg(src) {
+  const { svg } = await window.mermaid.render("pdf-" + Math.random().toString(36).slice(2, 9), src);
+  const tmp = el("div"); tmp.innerHTML = svg;
+  return _figSvgString(tmp);
+}
+
+// PDF用: 本文中の ```mermaid 図を順に PNG 化して [{data,w,h}|null] を返す(白背景・明テーマ)
+async function collectMermaidImages(content) {
+  if (!window.mermaid) return null;
+  if (!_mermaidReady && !initMermaid()) return null;
+  const re = /```[ \t]*mermaid[ \t]*\r?\n([\s\S]*?)\r?\n[ \t]*```/gi;
+  const blocks = []; let m;
+  while ((m = re.exec(content)) !== null) blocks.push(m[1].trim());
+  if (!blocks.length) return null;
+  const dark = document.documentElement.getAttribute("data-theme") === "dark";
+  const out = [];
+  try {
+    if (dark) initMermaid(false);                 // 白背景の文書に合わせ明テーマで描画
+    for (const src of blocks) {
+      try {
+        const xml = await renderMermaidSvg(src);
+        if (!xml) { out.push(null); continue; }
+        const r = await svgToPngDataUrl(xml, 2, "#ffffff");
+        out.push({ data: r.dataUrl.split(",")[1], w: Math.round(r.w), h: Math.round(r.h) });
+      } catch (_) { out.push(null); }
+    }
+  } finally {
+    if (dark) initMermaid();                       // 元のテーマに戻す
+  }
+  return out;
+}
+
+function triggerDownload(href, name) {
+  const a = el("a"); a.href = href; a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(href), 4000);
 }
 
 /* 本文中の `相対パス:行番号` をクリック可能なリンクにする(Codeモードのみ) */
@@ -843,6 +967,7 @@ async function streamAssistant(payload) {
   const { row, refs } = createAssistantRow();
   $("messages").appendChild(row);
   refs.md.classList.add("cursor-blink");
+  refs.avatar.classList.add("thinking");   // 考え中:回答アイコンをアニメーション
   scrollToBottom();
 
   setStreaming(true);
@@ -889,9 +1014,13 @@ async function streamAssistant(payload) {
         let ev; try { ev = JSON.parse(line); } catch (_) { continue; }
         handleStreamEvent(ev, refs, {
           onThink: (d) => { think += d; refs.think.classList.remove("hidden");
-            refs.think.open = true; refs.thinkText.textContent = think; scrollToBottom(); },
+            refs.think.open = false;   // 思考タブは既定で折りたたみ(クリックで展開)
+            refs.thinkText.textContent = think; scrollToBottom(); },
           onContent: (d) => {
-            if (!gotContent) { gotContent = true; refs.think.open = false; }
+            if (!gotContent) {
+              gotContent = true; refs.think.open = false;
+              refs.avatar.classList.remove("thinking");   // 回答開始でアニメ停止
+            }
             acc += d; scheduleRender();
           },
           onDone: (msg) => { if (msg && typeof msg.content === "string") finalContent = msg.content; },
@@ -912,6 +1041,7 @@ async function streamAssistant(payload) {
   } finally {
     finished = true;
     refs.md.classList.remove("cursor-blink");
+    refs.avatar.classList.remove("thinking");   // 完了/停止/エラーでアニメ停止
     refs.row.dataset.raw = stripThink(acc);
     buildAssistantActions(refs, true);
     setStreaming(false);
@@ -1480,9 +1610,21 @@ function buildConfirmCard(ev) {
   const ok = el("button", "btn primary", isCmd ? "実行する" : "適用する");
   const no = el("button", "btn", "拒否");
   const status = el("span", "confirm-status");
-  ok.onclick = () => respondConfirm(card, ev.action_id, true, status, [ok, no]);
-  no.onclick = () => respondConfirm(card, ev.action_id, false, status, [ok, no]);
-  actions.appendChild(ok); actions.appendChild(no); actions.appendChild(status);
+  const btns = [ok, no];
+  // ファイル編集のみ「以後自動適用」(acceptEdits)を提示。コマンドは安全のため毎回確認のまま。
+  let always = null;
+  if (!isCmd) {
+    always = el("button", "btn", "以後自動適用");
+    always.title = "このセッションは以後、ファイル編集を確認なしで適用(Claude Code の acceptEdits 相当)";
+    btns.push(always);
+  }
+  ok.onclick = () => respondConfirm(card, ev.action_id, true, status, btns, "once");
+  no.onclick = () => showRejectForm(card, ev.action_id, status, btns);   // 理由を書いて拒否
+  if (always) always.onclick = () => respondConfirm(card, ev.action_id, true, status, btns, "always");
+  actions.appendChild(ok);
+  if (always) actions.appendChild(always);
+  actions.appendChild(no);
+  actions.appendChild(status);
   card.appendChild(actions);
   return card;
 }
@@ -1524,20 +1666,47 @@ function renderDiff(diffText) {
   return wrap;
 }
 
-async function respondConfirm(card, actionId, approved, statusEl, btns) {
+async function respondConfirm(card, actionId, approved, statusEl, btns, scope, reason) {
   btns.forEach((b) => (b.disabled = true));
   try {
     await api("/api/code/approve", {
-      method: "POST", body: JSON.stringify({ action_id: actionId, approved }),
+      method: "POST",
+      body: JSON.stringify({ action_id: actionId, approved, scope: scope || null, reason: reason || null }),
     });
-    statusEl.textContent = approved ? "承認しました" : "拒否しました";
+    statusEl.textContent = scope === "always" ? "承認しました(以後この会話の編集は自動適用)"
+      : approved ? "承認しました"
+      : (reason ? "拒否しました(理由を伝えました)" : "拒否しました");
     statusEl.className = "confirm-status " + (approved ? "ok" : "no");
     card.dataset.resolved = "1";
+    if (scope === "always") setCodeAutoAccept(true);   // 設定に保存し、コードバーのトグルも更新
   } catch (e) {
     statusEl.textContent = "送信失敗: " + e.message;
     statusEl.className = "confirm-status no";
     btns.forEach((b) => (b.disabled = false));
   }
+}
+
+// 拒否時に「理由・どう直すか」を任意で添えて送る(Claude Code の "No, tell Claude what to do" 相当)
+function showRejectForm(card, actionId, statusEl, mainBtns) {
+  const actions = card.querySelector(".confirm-actions");
+  if (!actions || card.querySelector(".reject-form")) return;
+  mainBtns.forEach((b) => (b.style.display = "none"));
+  const form = el("div", "reject-form");
+  const input = el("input", "reject-reason");
+  input.type = "text";
+  input.placeholder = "拒否の理由・どう直してほしいか(任意)";
+  const send = el("button", "btn primary", "拒否を送信");
+  const back = el("button", "btn", "戻る");
+  const submit = () =>
+    respondConfirm(card, actionId, false, statusEl, [send, back, input], null, input.value.trim());
+  send.onclick = submit;
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); submit(); }  // IME変換中は送信しない
+  });
+  back.onclick = () => { form.remove(); mainBtns.forEach((b) => (b.style.display = "")); };
+  form.appendChild(input); form.appendChild(send); form.appendChild(back);
+  actions.appendChild(form);
+  input.focus();
 }
 
 function finishConfirmCards(box) {
@@ -2107,6 +2276,17 @@ async function setCodePlan(on) {
   } catch (e) { toast("設定失敗: " + e.message); $("cb-plan").checked = !on; }
 }
 
+async function setCodeAutoAccept(on) {
+  if (!State.current) return;
+  try {
+    const conv = await api(`/api/conversations/${State.current.id}`, {
+      method: "PATCH", body: JSON.stringify({ settings: { auto_accept_edits: !!on } }),
+    });
+    State.current = conv;
+    if ($("cb-autoaccept")) $("cb-autoaccept").checked = !!on;
+  } catch (e) { toast("設定失敗: " + e.message); if ($("cb-autoaccept")) $("cb-autoaccept").checked = !on; }
+}
+
 /* ============================================================
    入力欄の挙動
    ============================================================ */
@@ -2137,6 +2317,7 @@ function bindGlobalEvents() {
   $("cb-pick").onclick = () => openFolderBrowser("workspace");
   $("cb-plan").onchange = (e) => setCodePlan(e.target.checked);
   $("cb-allow").onchange = (e) => setCodeAllow(e.target.checked);
+  $("cb-autoaccept").onchange = (e) => setCodeAutoAccept(e.target.checked);
 
   $("chat-title").addEventListener("change", renameConversation);
   $("chat-title").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); $("chat-title").blur(); } });

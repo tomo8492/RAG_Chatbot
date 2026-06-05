@@ -577,6 +577,8 @@ class AgentBody(BaseModel):
 class ApproveBody(BaseModel):
     action_id: str
     approved: bool = False
+    scope: Optional[str] = None   # "always" で以後このセッションの編集を自動適用
+    reason: Optional[str] = None  # 拒否理由(任意。モデルにどう直すか伝える)
 
 
 class AnswerBody(BaseModel):
@@ -614,6 +616,7 @@ def api_agent(cid: str, body: AgentBody) -> Response:
     workspace = (s.get("workspace") or "").strip()
     allow_changes = bool(s.get("allow_changes"))
     plan_mode = bool(s.get("plan_mode", True))
+    auto_accept_edits = bool(s.get("auto_accept_edits"))
     if not workspace:
         raise HTTPException(400, "作業フォルダが設定されていません。先にフォルダを選択してください。")
     ws = Path(workspace).expanduser()
@@ -684,7 +687,8 @@ def api_agent(cid: str, body: AgentBody) -> Response:
                     acc_text.append(tt)
 
         try:
-            for ev in agent.run_stream(model, ctx, str(ws.resolve()), allow_changes, plan_mode, num_ctx):
+            for ev in agent.run_stream(model, ctx, str(ws.resolve()), allow_changes, plan_mode,
+                                       num_ctx, auto_accept_edits=auto_accept_edits):
                 t = ev.get("type")
                 if t in ("assistant_delta", "assistant"):
                     if ev.get("text"):
@@ -729,7 +733,7 @@ def api_agent(cid: str, body: AgentBody) -> Response:
 
 @app.post("/api/code/approve", dependencies=[Depends(auth.require_auth)])
 def api_code_approve(body: ApproveBody) -> dict:
-    ok = agent.resolve(body.action_id, body.approved)
+    ok = agent.resolve(body.action_id, body.approved, body.scope, body.reason)
     return {"ok": ok}
 
 
@@ -1027,9 +1031,10 @@ def api_fs_estimate(paths: list[str] = Body(..., embed=True)) -> dict:
 # ============================================================
 class ExportBody(BaseModel):
     content: str
-    format: str = "md"        # md|txt|html|docx|xlsx|pptx|code
+    format: str = "md"        # md|txt|html|pdf|docx|xlsx|csv|pptx|code
     ext: Optional[str] = None  # format=code のときの拡張子(例: bas)
     title: Optional[str] = "回答"
+    images: Optional[list] = None   # PDF用: Mermaid図のPNG(順序対応) [{data(base64), w, h}]
 
 
 def _safe_stem(title: str) -> str:
@@ -1040,7 +1045,8 @@ def _safe_stem(title: str) -> str:
 @app.post("/api/export", dependencies=[Depends(auth.require_auth)])
 def api_export(body: ExportBody) -> Response:
     try:
-        data, mime, ext = export.export_content(body.content, body.format, body.ext, body.title or "回答")
+        data, mime, ext = export.export_content(body.content, body.format, body.ext,
+                                                body.title or "回答", images=body.images)
     except ValueError as e:
         raise HTTPException(400, str(e))
     except ImportError as e:

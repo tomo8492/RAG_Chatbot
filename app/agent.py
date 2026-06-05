@@ -703,16 +703,22 @@ _pending_lock = threading.Lock()
 def new_pending() -> str:
     aid = uuid.uuid4().hex
     with _pending_lock:
-        _pending[aid] = {"event": threading.Event(), "approved": False, "answer": None}
+        _pending[aid] = {"event": threading.Event(), "approved": False,
+                         "answer": None, "scope": None, "reason": None}
     return aid
 
 
-def resolve(action_id: str, approved: bool) -> bool:
+def resolve(action_id: str, approved: bool, scope: Optional[str] = None,
+            reason: Optional[str] = None) -> bool:
+    """承認/拒否を記録。scope='always' なら以後このセッションの編集を自動適用する。
+    reason は拒否理由(任意)で、モデルに「どう直すか」を伝えるために使う。"""
     with _pending_lock:
         p = _pending.get(action_id)
     if not p:
         return False
     p["approved"] = bool(approved)
+    p["scope"] = scope
+    p["reason"] = reason
     p["event"].set()
     return True
 
@@ -754,6 +760,21 @@ def wait(action_id: str, timeout: float = CONFIRM_TIMEOUT) -> Optional[bool]:
     if not ok or p is None:
         return None
     return p["approved"]
+
+
+def wait_decision(action_id: str, timeout: float = CONFIRM_TIMEOUT):
+    """承認待ち。(approved, scope, reason) を返す。approved: True/False/None、
+    scope: 'always' なら以後自動適用、reason: 拒否理由(任意)。"""
+    with _pending_lock:
+        p = _pending.get(action_id)
+    if not p:
+        return (None, None, None)
+    ok = p["event"].wait(timeout)
+    with _pending_lock:
+        p = _pending.pop(action_id, None)
+    if not ok or p is None:
+        return (None, None, None)
+    return (p["approved"], p.get("scope"), p.get("reason"))
 
 
 # ============================================================
@@ -903,12 +924,17 @@ def compact_ctx_with_model(model: str, messages: list, num_ctx: Optional[int] = 
     return compact_ctx(messages, summarizer)
 
 
-def _change_action(name: str, plan_mode: bool, phase: str, allow_changes: bool) -> str:
+def _change_action(name: str, plan_mode: bool, phase: str, allow_changes: bool,
+                   auto_accept_edits: bool = False) -> str:
     """変更系ツールの扱いを返す: 'block'(不可) / 'confirm'(差分つき確認) / 'apply'(自動適用)。
     計画モードで計画が未承認でも、ハードブロックせず1操作ずつ確認に回す
     (present_plan を出さないモデルでも修正を適用できるようにするため)。"""
     if not plan_mode and not allow_changes:
         return "block"               # 非計画モードで変更オフ → 読み取りのみ
+    # セッションで「編集を自動適用(acceptEdits)」が選ばれていれば、ファイル編集は確認不要。
+    # コマンド系(run_command/run_background)は安全のため引き続き確認する(Claude Code 同様)。
+    if auto_accept_edits and name not in CONFIRM_IN_EXEC:
+        return "apply"
     if phase != "execute":
         return "confirm"             # 計画未承認 → 個別に差分つきで確認
     if not plan_mode:
@@ -940,7 +966,8 @@ def _tc_to_dict(tc) -> dict:
 
 def run_stream(model: str, messages: list, workspace: str,
                allow_changes: bool, plan_mode: bool = True,
-               num_ctx: Optional[int] = None) -> Iterator[dict]:
+               num_ctx: Optional[int] = None,
+               auto_accept_edits: bool = False) -> Iterator[dict]:
     """
     エージェントを1依頼ぶん実行し、イベントを順次 yield する。
     イベント type:
@@ -1134,7 +1161,7 @@ def run_stream(model: str, messages: list, workspace: str,
 
             if name in MUTATING:
                 did_attempt_change = True   # 変更を試みた(=安全網の催促は不要)
-                action = _change_action(name, plan_mode, phase, allow_changes)
+                action = _change_action(name, plan_mode, phase, allow_changes, auto_accept_edits)
                 if action == "block":
                     result = ("[変更は許可されていません。画面の『変更を許可』をオンにすると、"
                               "承認のうえで変更・実行できます(読み取りは可能です)]")
@@ -1144,7 +1171,10 @@ def run_stream(model: str, messages: list, workspace: str,
                     detail = _action_detail(ws, name, args)
                     aid = new_pending()
                     yield {"type": "confirm", "action_id": aid, "name": name, **detail}
-                    decision = wait(aid)
+                    decision, scope, reason = wait_decision(aid)
+                    # 「以後自動適用」が選ばれたら、このセッションのファイル編集は確認を省く
+                    if decision is True and scope == "always":
+                        auto_accept_edits = True
                     if decision is True:
                         result = dispatch(ws, name, args)
                         ev = {"type": "tool_result", "name": name,
@@ -1158,7 +1188,8 @@ def run_stream(model: str, messages: list, workspace: str,
                         result = "[承認がタイムアウトしたため実行しませんでした]"
                         yield {"type": "tool_result", "name": name, "status": "rejected", "result": result}
                     else:
-                        result = "[ユーザーが操作を拒否しました]"
+                        rtxt = (reason or "").strip()
+                        result = ("[ユーザーが操作を拒否しました" + (f"。理由: {rtxt}" if rtxt else "") + "]")
                         yield {"type": "tool_result", "name": name, "status": "rejected", "result": result}
                 else:
                     # 計画承認済みのファイル編集 → 自動適用(差分を併記して透明性を確保)

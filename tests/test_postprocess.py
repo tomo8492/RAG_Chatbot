@@ -8,6 +8,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.postprocess import (  # noqa: E402
+    _balance_brackets,
     clean,
     close_unclosed_fence,
     fix_spelling,
@@ -140,6 +141,41 @@ def test_clean_fixes_spelling_in_mermaid():
     out = clean("<think>x</think>図:\n```mermaid\nflowchart TD\n  A[Srart]:::startend --> B[Defualt]")
     assert "A[Start]" in out and "B[Default]" in out
     assert out.rstrip().endswith("```")               # 未閉じも閉じる
+
+
+# ---------------- _balance_brackets(flowchart 括弧補修) ----------------
+def test_balance_fixes_mismatched_close():
+    assert _balance_brackets("  E --> F[問題発覚?}") == "  E --> F[問題発覚?]"
+
+
+def test_balance_closes_truncated_node():
+    assert _balance_brackets("  L --> M[手順書・特殊工程仕様書承") == "  L --> M[手順書・特殊工程仕様書承]"
+
+
+def test_balance_keeps_valid_lines_unchanged():
+    for ln in ("flowchart LR", "  A[起案] --> B{必要か?}", "  B -- はい --> C[移管準備会議]",
+               "  classDef accent fill:#87ceeb,stroke:#555;", "  X([stadium]) --> Y[[sub]]"):
+        assert _balance_brackets(ln) == ln           # 正しい行は不変(冪等)
+
+
+def test_balance_quote_safe():
+    assert _balance_brackets('  A["a ] b"] --> C') == '  A["a ] b"] --> C'   # 引用内は無視
+
+
+def test_balance_skips_comment():
+    assert _balance_brackets("  %% note [unclosed") == "  %% note [unclosed"
+
+
+def test_normalize_repairs_flowchart_block():
+    src = "```mermaid\nflowchart LR\n  E --> F[問題発覚?}\n  L --> M[手順書承\n```"
+    out = normalize_mermaid(src)
+    assert "F[問題発覚?]" in out and "M[手順書承]" in out
+
+
+def test_normalize_leaves_non_flowchart_brackets():
+    # sequenceDiagram は flowchart ではないので括弧補修の対象外(誤補修しない)
+    src = "```mermaid\nsequenceDiagram\n  A->>B: msg [note}\n```"
+    assert "[note}" in normalize_mermaid(src)
 
 
 if __name__ == "__main__":
