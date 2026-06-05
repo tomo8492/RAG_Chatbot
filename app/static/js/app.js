@@ -1138,18 +1138,25 @@ async function sendCode() {
   const s = State.current.settings || {};
   if (!s.workspace) { toast("先に「フォルダを選択」で作業フォルダを設定してください"); return; }
   const text = $("input").value.trim();
-  if (!text) return;
+  const images = State.pendingImages.map((i) => i.dataUrl);   // スクショ等(Vision対応モデルで読む)
+  if (!text && !images.length) return;
   $("input").value = ""; autoResize();
+  State.pendingImages = []; renderAttachChips();
 
   const welcome = $("messages").querySelector(".welcome");
   if (welcome) welcome.remove();
 
   const urow = el("div", "msg-row user");
-  const bubble = el("div", "bubble"); bubble.textContent = text;
+  const bubble = el("div", "bubble"); bubble.textContent = text || "(画像)";
+  if (images.length) {
+    const att = el("div", "attach-chips");
+    images.forEach((src) => { const im = el("img", "msg-img"); im.src = src; att.appendChild(im); });
+    bubble.appendChild(att);
+  }
   urow.appendChild(bubble);
   $("messages").appendChild(urow);
 
-  await streamAgent({ content: text });
+  await streamAgent({ content: text, images });
   await loadConversations(); // タイトル更新を反映
 }
 

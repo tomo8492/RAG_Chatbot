@@ -598,6 +598,31 @@ _code_ctx_lock = threading.Lock()
 
 class AgentBody(BaseModel):
     content: str = ""
+    images: list[str] = []          # スクショ等(base64/data URL)。Vision対応モデルで読む
+
+
+def _resolve_mentions(ws: Path, content: str) -> str:
+    """本文中の @相対パス を作業フォルダから読み、文脈の前置きにする(@file)。"""
+    paths = re.findall(r"@([^\s,;:、。]+)", content or "")
+    if not paths:
+        return ""
+    blocks, total = [], 0
+    for rel in paths[:8]:
+        try:
+            p = agent._safe_path(ws, rel)
+        except Exception:
+            continue
+        if not p.is_file():
+            continue
+        try:
+            txt = p.read_text(encoding="utf-8", errors="replace")[:6000]
+        except Exception:
+            continue
+        blocks.append(f"【指定ファイル: {rel}】\n```\n{txt}\n```")
+        total += len(txt)
+        if total > 24000:
+            break
+    return ("\n\n".join(blocks) + "\n\n") if blocks else ""
 
 
 class ApproveBody(BaseModel):
@@ -654,7 +679,7 @@ def api_agent(cid: str, body: AgentBody) -> Response:
         raise HTTPException(400, f"このフォルダでは実行できません: {reason}")
 
     content = (body.content or "").strip()
-    if not content:
+    if not content and not body.images:
         raise HTTPException(400, "依頼が空です")
 
     eff = effective_for(conv)
@@ -671,17 +696,30 @@ def api_agent(cid: str, body: AgentBody) -> Response:
             _code_ctx[cid] = ctx
         _code_running.add(cid)
 
-    user_msg = db.add_message(cid, "user", content)
+    # スクショ等の画像を保存(Vision対応モデルで読む)
+    image_atts: list = []
+    image_b64s: list[str] = []
+    for raw in (body.images or [])[:6]:
+        saved = _save_b64_image(raw)
+        if saved:
+            name, b64 = saved
+            image_atts.append({"type": "image", "file": name})
+            image_b64s.append(b64)
+    user_msg = db.add_message(cid, "user", content or "(画像)", attachments=image_atts)
     # 文脈が大きくなっていれば自動圧縮(古い履歴を要約に置換)してから依頼を追加
     try:
         if agent.compact_ctx_with_model(model, ctx, num_ctx):
             log.info("文脈を自動圧縮しました [conv=%s]", cid)
     except Exception:
         log.exception("文脈圧縮に失敗(無視して続行)")
-    ctx.append({"role": "user", "content": content})
+    # @file 指定があれば対象ファイルを文脈に前置きしてから依頼を追加
+    um = {"role": "user", "content": _resolve_mentions(ws, content) + (content or "添付された画像について説明・対応してください")}
+    if image_b64s:
+        um["images"] = image_b64s
+    ctx.append(um)
     if conv.get("title") in (None, "", "新しい会話", "新しいコード"):
-        title = content.splitlines()[0][:30] if content.strip() else "コード"
-        db.update_conversation(cid, title=title or "コード")
+        base = content or "画像"
+        db.update_conversation(cid, title=(base.splitlines()[0][:30] or "コード"))
 
     def _finish():
         with _code_ctx_lock:
