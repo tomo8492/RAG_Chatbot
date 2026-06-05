@@ -436,6 +436,7 @@ def api_generate(cid: str, body: GenerateBody) -> Response:
     # --- 対象クエリとユーザーメッセージの確定 ---
     user_msg = None
     image_b64s: list[str] = []
+    content = ""                # 既定(再生成パスでは未代入のため。タイトル生成参照の保険)
     is_first_msg = False        # 初回送信のときだけ True(タイトル自動生成の対象)
     if mode == "regenerate":
         msgs = db.list_messages(cid)
