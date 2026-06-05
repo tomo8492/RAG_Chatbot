@@ -353,6 +353,7 @@ body[data-mode="code"] .code-bar.only-code { display: flex; }
 .cb-toggle { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; cursor: pointer;
   color: var(--ink-soft); user-select: none; white-space: nowrap; }
 .cb-toggle input { accent-color: var(--accent); width: 16px; height: 16px; }
+.cb-toggle.disabled { opacity: .45; cursor: not-allowed; }
 
 /* エージェントのステップ表示 */
 .agent-log { display: flex; flex-direction: column; gap: 8px; }
@@ -362,7 +363,7 @@ body[data-mode="code"] .code-bar.only-code { display: flex; }
 .step-result { background: var(--code-bg); border: 1px solid var(--line); border-radius: 8px;
   padding: 8px 10px; font-family: ui-monospace, "SFMono-Regular", Consolas, monospace; font-size: 12px;
   white-space: pre-wrap; max-height: 260px; overflow: auto; color: var(--ink-soft); }
-.step-result.blocked, .step-result.rejected { color: var(--stop); border-color: var(--stop); }
+.step-result.blocked, .step-result.rejected, .step-result.error { color: var(--stop); border-color: var(--stop); }
 
 /* 承認カード(変更・コマンドの確認) */
 .confirm-card { border: 1px solid var(--accent); border-radius: 10px; padding: 12px 14px; background: var(--panel); }
@@ -374,6 +375,45 @@ body[data-mode="code"] .code-bar.only-code { display: flex; }
   white-space: pre-wrap; max-height: 320px; overflow: auto; margin-bottom: 10px; }
 .confirm-diff .add { color: var(--green); }
 .confirm-diff .del { color: var(--stop); }
+/* TODO 進捗パネル */
+.todo-panel { border: 1px solid var(--line); border-radius: 10px; background: var(--panel);
+  padding: 10px 12px; font-size: 13px; }
+.todo-title { font-weight: 700; color: var(--ink-soft); margin-bottom: 6px; font-size: 12.5px; }
+.todo-item { padding: 2px 0; color: var(--ink); white-space: pre-wrap; }
+.todo-item.completed { color: var(--ink-soft); text-decoration: line-through; }
+.todo-item.in_progress { color: var(--accent-dk); font-weight: 600; }
+
+/* 一括要約モーダル */
+.summary-presets { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip-btn { padding: 4px 10px; border: 1px solid var(--line); border-radius: 999px;
+  background: var(--panel); color: var(--text); cursor: pointer; font-size: 13px; }
+.chip-btn:hover { border-color: var(--accent); }
+.chip-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.summary-controls { display: flex; align-items: center; gap: 10px; margin: 6px 0 10px; }
+.summary-result { border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px;
+  margin-top: 8px; max-height: 46vh; overflow-y: auto; background: var(--panel); min-height: 40px; }
+.summary-result:empty { display: none; }
+#summary-save-wrap { margin-right: auto; }
+
+/* ユーザーへの質問カード(選択式) */
+.ask-card { border-color: var(--accent); }
+.ask-card .confirm-title { color: var(--accent-dk); }
+.ask-options { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+.ask-opt { padding: 7px 14px; }
+.ask-opt-static { border: 1px solid var(--line); border-radius: 8px; padding: 4px 10px;
+  font-size: 12.5px; color: var(--ink-soft); }
+.ask-free { display: flex; gap: 8px; }
+.ask-input { flex: 1; padding: 8px 11px; border: 1px solid var(--line); border-radius: 9px;
+  background: var(--panel); color: var(--ink); font-family: inherit; font-size: 13.5px; }
+.ask-input:focus { outline: none; border-color: var(--accent); }
+.ask-status:empty { display: none; }
+.ask-status { margin-top: 8px; }
+
+/* 実行計画カード(承認で実行フェーズへ) */
+.plan-card { border-color: var(--green); }
+.plan-card .confirm-title { color: var(--green); }
+.plan-body { margin: 4px 0 10px; font-size: 13.5px; }
+.applied-diff { margin-top: 4px; }
 .confirm-actions { display: flex; gap: 8px; align-items: center; }
 .confirm-status { font-weight: 700; font-size: 13px; }
 .confirm-status.ok { color: var(--green); }

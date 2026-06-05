@@ -22,7 +22,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import agent, auth, db, export, llm, rag, safety
+from . import agent, auth, db, export, llm, rag, safety, summarize
 from .config import settings
 from .defaults import effective_for, get_defaults, set_defaults
 from .fsbrowse import count_supported_recursive, get_roots, list_dir
@@ -61,7 +61,11 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
 def _ip_allowed(host: str | None) -> bool:
-    """ループバック / プライベートLAN / リンクローカル / ALLOWED_CIDRS で許可。"""
+    """ループバック / プライベートLAN / リンクローカル / 追加許可レンジで許可。
+
+    RFC1918 以外で社内として許可したいレンジ(例 172.36.x.x)は、コードに埋め込まず
+    .env の ALLOWED_CIDRS(git管理外=より安全)で指定する。
+    """
     if not host:
         return False
     try:
@@ -70,7 +74,7 @@ def _ip_allowed(host: str | None) -> bool:
         return host == "localhost"
     if ip.is_loopback or ip.is_private or ip.is_link_local:
         return True
-    for net in settings.allowed_cidrs:
+    for net in settings.allowed_cidrs:  # .env の ALLOWED_CIDRS による追加許可(社内の非標準レンジ等)
         if ip.version == net.version and ip in net:
             return True
     return False
@@ -536,13 +540,18 @@ def api_generate(cid: str, body: GenerateBody) -> Response:
             raise
         except Exception as e:
             log.exception("生成エラー")
-            msg = str(e)
+            emsg = str(e)
+            low = emsg.lower()
             # 選択したモデルが画像入力(Vision)に対応していない場合の分かりやすい案内。
-            if use_vision and "image input is not supported" in msg.lower():
-                msg = (f"選択中のモデル『{model}』は画像入力に対応していません"
-                       "(Vision/mmproj 非対応)。設定の「画像認識モデル」で画像対応モデル"
-                       "(例: qwen2.5vl / llama3.2-vision / gemma3)を選択してください。")
-            yield sse({"type": "error", "error": msg})
+            if use_vision and "image input is not supported" in low:
+                emsg = (f"選択中のモデル『{model}』は画像入力に対応していません"
+                        "(Vision/mmproj 非対応)。設定の「画像認識モデル」で画像対応モデル"
+                        "(例: qwen2.5vl / llama3.2-vision / gemma3)を選択してください。")
+            # コンテキスト長を超えた場合の案内。
+            elif "context" in low and ("exceed" in low or "ctx" in low or "context size" in low):
+                emsg = ("コンテキスト長を超えました。チャット欄の『参照』件数を減らす(∞→5など)、"
+                        "または設定でコンテキスト長(num_ctx)を上げてください。")
+            yield sse({"type": "error", "error": emsg})
         finally:
             if not saved and acc_content.strip():
                 db.add_message(cid, "assistant", acc_content, sources=sources)
@@ -570,13 +579,22 @@ class ApproveBody(BaseModel):
     approved: bool = False
 
 
+class AnswerBody(BaseModel):
+    action_id: str
+    answer: str = ""
+
+
 def _init_code_ctx(cid: str, ws: Path) -> list:
-    """システム+作業フォルダ案内+これまでのテキスト履歴から文脈を再構築。"""
+    """システム+作業フォルダ案内(+CLAUDE.md)+これまでのテキスト履歴から文脈を再構築。"""
     msgs: list = [
         {"role": "system", "content": agent.SYSTEM_PROMPT},
         {"role": "user", "content": f"作業フォルダの絶対パスは {ws} です。この中だけで作業してください。"},
-        {"role": "assistant", "content": "了解しました。依頼をどうぞ。"},
     ]
+    instructions = agent.read_project_instructions(ws)
+    if instructions:
+        msgs.append({"role": "user",
+                     "content": "このプロジェクトの指示書(CLAUDE.md 等)です。従ってください:\n\n" + instructions})
+    msgs.append({"role": "assistant", "content": "了解しました。依頼をどうぞ。"})
     for m in db.list_messages(cid):
         if m["role"] in ("user", "assistant"):
             msgs.append({"role": m["role"], "content": m["content"]})
@@ -594,6 +612,7 @@ def api_agent(cid: str, body: AgentBody) -> Response:
     s = conv.get("settings") or {}
     workspace = (s.get("workspace") or "").strip()
     allow_changes = bool(s.get("allow_changes"))
+    plan_mode = bool(s.get("plan_mode", True))
     if not workspace:
         raise HTTPException(400, "作業フォルダが設定されていません。先にフォルダを選択してください。")
     ws = Path(workspace).expanduser()
@@ -610,6 +629,7 @@ def api_agent(cid: str, body: AgentBody) -> Response:
 
     eff = effective_for(conv)
     model = eff["model"]
+    num_ctx = int(eff["num_ctx"]) or None   # 0 はモデル既定。Chat と同じく設定値を反映
 
     # 文脈を用意(新規ならDB履歴から再構築) → 依頼をDBへ保存 → 文脈へ追加
     with _code_ctx_lock:
@@ -622,6 +642,12 @@ def api_agent(cid: str, body: AgentBody) -> Response:
         _code_running.add(cid)
 
     user_msg = db.add_message(cid, "user", content)
+    # 文脈が大きくなっていれば自動圧縮(古い履歴を要約に置換)してから依頼を追加
+    try:
+        if agent.compact_ctx_with_model(model, ctx, num_ctx):
+            log.info("文脈を自動圧縮しました [conv=%s]", cid)
+    except Exception:
+        log.exception("文脈圧縮に失敗(無視して続行)")
     ctx.append({"role": "user", "content": content})
     if conv.get("title") in (None, "", "新しい会話", "新しいコード"):
         title = content.splitlines()[0][:30] if content.strip() else "コード"
@@ -643,13 +669,43 @@ def api_agent(cid: str, body: AgentBody) -> Response:
             _finish()
             return
 
-        log.info("エージェント開始 [conv=%s model=%s ws=%s allow=%s] 依頼=%s",
-                 cid, model, ws, allow_changes, content[:60])
+        log.info("エージェント開始 [conv=%s model=%s ws=%s allow=%s plan=%s] 依頼=%s",
+                 cid, model, ws, allow_changes, plan_mode, content[:60])
         acc_text: list[str] = []
+        steps: list[dict] = []    # 再表示用にステップを保存(差分・計画・TODO含む)
+        buf: list[str] = []       # ストリーミング中の本文バッファ
+
+        def flush_text():
+            if buf:
+                tt = "".join(buf); buf.clear()
+                if tt.strip():
+                    steps.append({"type": "assistant", "text": tt})
+                    acc_text.append(tt)
+
         try:
-            for ev in agent.run_stream(model, ctx, str(ws.resolve()), allow_changes):
-                if ev.get("type") == "assistant" and ev.get("text"):
-                    acc_text.append(ev["text"])
+            for ev in agent.run_stream(model, ctx, str(ws.resolve()), allow_changes, plan_mode, num_ctx):
+                t = ev.get("type")
+                if t in ("assistant_delta", "assistant"):
+                    if ev.get("text"):
+                        buf.append(ev["text"])
+                    yield sse(ev)
+                    continue
+                flush_text()   # 区切り → それまでの本文を1ステップとして確定
+                if t == "tool_call":
+                    steps.append({"type": "tool_call", "name": ev.get("name"), "args": ev.get("args", {})})
+                elif t == "tool_result":
+                    s = {"type": "tool_result", "name": ev.get("name"),
+                         "status": ev.get("status"), "result": ev.get("result", "")}
+                    if ev.get("diff"):
+                        s["diff"] = ev["diff"]
+                    steps.append(s)
+                elif t == "plan":
+                    steps.append({"type": "plan", "plan": ev.get("plan", "")})
+                elif t == "todos":
+                    steps.append({"type": "todos", "todos": ev.get("todos", [])})
+                elif t == "ask":
+                    steps.append({"type": "ask", "question": ev.get("question", ""),
+                                  "options": ev.get("options", [])})
                 yield sse(ev)
         except GeneratorExit:
             log.info("エージェント停止(クライアント切断)[conv=%s]", cid)
@@ -658,8 +714,9 @@ def api_agent(cid: str, body: AgentBody) -> Response:
             log.exception("エージェントエラー")
             yield sse({"type": "error", "error": str(e)})
         finally:
-            text = "\n\n".join(t for t in acc_text if t).strip() or "(操作を実行しました)"
-            db.add_message(cid, "assistant", text)
+            flush_text()
+            text = "\n\n".join(x for x in acc_text if x).strip() or "(操作を実行しました)"
+            db.add_message(cid, "assistant", text, sources=steps)
             _finish()
 
     headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"}
@@ -669,6 +726,12 @@ def api_agent(cid: str, body: AgentBody) -> Response:
 @app.post("/api/code/approve", dependencies=[Depends(auth.require_auth)])
 def api_code_approve(body: ApproveBody) -> dict:
     ok = agent.resolve(body.action_id, body.approved)
+    return {"ok": ok}
+
+
+@app.post("/api/code/answer", dependencies=[Depends(auth.require_auth)])
+def api_code_answer(body: AnswerBody) -> dict:
+    ok = agent.resolve_answer(body.action_id, body.answer)
     return {"ok": ok}
 
 
@@ -686,7 +749,17 @@ def _build_async(iid: str, paths: list[str]) -> None:
 
 @app.get("/api/indexes", dependencies=[Depends(auth.require_auth)])
 def api_list_indexes() -> list:
-    return db.list_indexes()
+    items = db.list_indexes()
+    for it in items:
+        st = db.get_kv(f"summary:{it['id']}") or {}
+        it["summary"] = {
+            "status": st.get("status", "none"),
+            "msg": st.get("msg", ""),
+            "has_result": bool(st.get("result")),
+            "finished_at": st.get("finished_at"),
+        }
+        it["bg_threshold"] = SUMMARY_BG_THRESHOLD
+    return items
 
 
 @app.post("/api/indexes", dependencies=[Depends(auth.require_auth)])
@@ -718,8 +791,150 @@ def api_rebuild_index(iid: str) -> dict:
     if not idx:
         raise HTTPException(404, "インデックスが見つかりません")
     db.update_index(iid, status="building", error=None)
+    db.set_kv(f"summary:{iid}", {"status": "none"})   # 内容が変わるため古い要約は破棄
     _build_async(iid, idx["paths"])
     return db.get_index(iid)
+
+
+class SummarizeBody(BaseModel):
+    instruction: str = ""
+    model: Optional[str] = None
+    map_model: Optional[str] = None
+    categories: list[str] = []
+
+
+@app.post("/api/indexes/{iid}/summarize", dependencies=[Depends(auth.require_auth)])
+def api_index_summarize(iid: str, body: SummarizeBody) -> Response:
+    """資料フォルダ配下の全ファイルを map-reduce で一括要約(進捗をSSEで配信)。"""
+    idx = db.get_index(iid)
+    if not idx:
+        raise HTTPException(404, "資料が見つかりません")
+    files = rag.scan_files(idx.get("paths") or [])
+    defs = get_defaults()
+    model = body.model or defs["model"]
+    map_model = (body.map_model or defs.get("summarize_map_model") or "").strip() or None
+    if map_model == model:
+        map_model = None
+    instruction = (body.instruction or "").strip()
+    categories = [c.strip() for c in (body.categories or []) if c and c.strip()]
+
+    def gen():
+        if not files:
+            yield sse({"type": "error", "error": "対象ファイルがありません"})
+            return
+        if not model:
+            yield sse({"type": "error", "error": "モデルが選択されていません"})
+            return
+        if not llm.is_ollama_available():
+            yield sse({"type": "error",
+                       "error": f"Ollama に接続できません({settings.ollama_host})。"})
+            return
+        yield sse({"type": "start", "files": len(files), "model": model, "map_model": map_model})
+        log.info("一括要約 開始 [idx=%s files=%d model=%s map=%s] 観点=%s cats=%d",
+                 iid, len(files), model, map_model, instruction[:40], len(categories))
+        fn = summarize.model_summarize_fn(model, instruction, map_model=map_model, categories=categories)
+        try:
+            for ev in summarize.stream_summarize(files, instruction, fn):
+                yield sse(ev)
+        except GeneratorExit:
+            log.info("一括要約 停止(クライアント切断)[idx=%s]", iid)
+            raise
+        except Exception as e:
+            log.exception("一括要約エラー")
+            yield sse({"type": "error", "error": str(e)})
+
+    headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"}
+    return StreamingResponse(gen(), media_type="text/event-stream", headers=headers)
+
+
+# --- バックグラウンド一括要約(参照ファイルが多いとき。ウィンドウを出さず裏で実行) ---
+SUMMARY_BG_THRESHOLD = 100   # この件数以上はフロントが裏(バックグラウンド)実行を選ぶ
+_summary_cancel: set[str] = set()
+_summary_lock = threading.Lock()
+
+
+def _summary_set(iid: str, **fields) -> dict:
+    st = db.get_kv(f"summary:{iid}", {}) or {}
+    st.update(fields)
+    db.set_kv(f"summary:{iid}", st)
+    return st
+
+
+def _summarize_worker(iid: str, files, instruction: str, categories: list,
+                      model: str, map_model) -> None:
+    db.set_kv(f"summary:{iid}", {
+        "status": "running", "files": len(files), "msg": "準備中…",
+        "instruction": instruction, "categories": categories, "map_model": map_model,
+        "result": None, "error": None, "started_at": time.time(), "finished_at": None})
+    log.info("一括要約(裏) 開始 [idx=%s files=%d model=%s map=%s]", iid, len(files), model, map_model)
+    fn = summarize.model_summarize_fn(model, instruction, map_model=map_model, categories=categories)
+    gen = summarize.stream_summarize(files, instruction, fn)
+    try:
+        for ev in gen:
+            with _summary_lock:
+                canceled = iid in _summary_cancel
+            if canceled:
+                gen.close()
+                _summary_set(iid, status="canceled", msg="中止しました", finished_at=time.time())
+                log.info("一括要約(裏) 中止 [idx=%s]", iid)
+                break
+            t = ev.get("type")
+            if t == "progress":
+                _summary_set(iid, msg=ev.get("msg", ""))
+            elif t == "result":
+                _summary_set(iid, status="done", result=ev.get("text", ""),
+                             msg="完了", finished_at=time.time())
+                log.info("一括要約(裏) 完了 [idx=%s]", iid)
+            elif t == "error":
+                _summary_set(iid, status="error", error=ev.get("error", ""),
+                             msg="エラー", finished_at=time.time())
+    except Exception as e:
+        log.exception("一括要約(裏) 失敗 [idx=%s]", iid)
+        _summary_set(iid, status="error", error=str(e), msg="エラー", finished_at=time.time())
+    finally:
+        with _summary_lock:
+            _summary_cancel.discard(iid)
+
+
+@app.post("/api/indexes/{iid}/summarize/start", dependencies=[Depends(auth.require_auth)])
+def api_summarize_start(iid: str, body: SummarizeBody) -> dict:
+    """裏(バックグラウンド)で一括要約を開始する。進捗は GET /summary でポーリング。"""
+    idx = db.get_index(iid)
+    if not idx:
+        raise HTTPException(404, "資料が見つかりません")
+    cur = db.get_kv(f"summary:{iid}")
+    if cur and cur.get("status") == "running":
+        return {"status": "running", "files": cur.get("files")}
+    files = rag.scan_files(idx.get("paths") or [])
+    if not files:
+        raise HTTPException(400, "対象ファイルがありません")
+    if not llm.is_ollama_available():
+        raise HTTPException(503, f"Ollama に接続できません({settings.ollama_host})。")
+    defs = get_defaults()
+    model = body.model or defs["model"]
+    map_model = (body.map_model or defs.get("summarize_map_model") or "").strip() or None
+    if map_model == model:
+        map_model = None
+    instruction = (body.instruction or "").strip()
+    categories = [c.strip() for c in (body.categories or []) if c and c.strip()]
+    with _summary_lock:
+        _summary_cancel.discard(iid)
+    threading.Thread(target=_summarize_worker,
+                     args=(iid, files, instruction, categories, model, map_model),
+                     daemon=True).start()
+    return {"status": "running", "files": len(files)}
+
+
+@app.get("/api/indexes/{iid}/summary", dependencies=[Depends(auth.require_auth)])
+def api_summary_status(iid: str) -> dict:
+    return db.get_kv(f"summary:{iid}", {"status": "none"}) or {"status": "none"}
+
+
+@app.post("/api/indexes/{iid}/summary/cancel", dependencies=[Depends(auth.require_auth)])
+def api_summary_cancel(iid: str) -> dict:
+    with _summary_lock:
+        _summary_cancel.add(iid)
+    return {"ok": True}
 
 
 @app.delete("/api/indexes/{iid}", dependencies=[Depends(auth.require_auth)])

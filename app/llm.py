@@ -113,32 +113,53 @@ def is_ollama_available() -> bool:
         return False
 
 
-def build_context_block(hits: list[dict]) -> str:
-    blocks = []
+# コンテキスト超過を防ぐための上限(参照件数を ∞ にしても溢れないように)
+RAG_CONTEXT_CHAR_BUDGET = 12000   # 参考資料ブロックの最大文字数
+MAX_HISTORY_MESSAGES = 30         # 文脈に含める直近の発話数
+
+
+def build_context_block(hits: list[dict], max_chars: int = RAG_CONTEXT_CHAR_BUDGET) -> str:
+    """関連度順のヒットを、文字数上限に収まる範囲で連結する。"""
+    blocks: list[str] = []
+    total = 0
+    used = 0
     for i, h in enumerate(hits, 1):
         loc = f" {h['loc']}" if h.get("loc") else ""
-        blocks.append(f"[資料{i}] (出典: {h['source']}{loc})\n{h['text']}")
+        blk = f"[資料{i}] (出典: {h['source']}{loc})\n{h['text']}"
+        if blocks and total + len(blk) > max_chars:
+            break
+        blocks.append(blk)
+        total += len(blk)
+        used = i
+    if used < len(hits):
+        blocks.append(f"...(コンテキスト上限のため、関連度の高い {used} 件のみ使用。全 {len(hits)} 件中)")
     return "\n\n".join(blocks)
 
 
 def build_messages(system_prompt: str, history: list[dict], hits: list[dict],
-                   strict: bool = False) -> list[dict]:
+                   strict: bool = False,
+                   max_context_chars: int = RAG_CONTEXT_CHAR_BUDGET) -> list[dict]:
     """system + 履歴からOllama用messagesを組み立てる。
 
     - strict=True(参照フォルダ選択時): 参考資料の内容だけで回答する厳格指示を必ず付与。
       ヒットが無くても付与し、「資料内に記載なし」と答えさせる(一般知識で答えない)。
     - strict=False: ヒットがあるときだけ通常のRAG指示を付与(一般知識での補完を許容)。
+    参考資料・履歴はコンテキスト超過を防ぐため上限でトリムする。
     """
     sys_text = (system_prompt or DEFAULT_SYSTEM_PROMPT).strip()
     if strict:
-        context = build_context_block(hits) if hits else "(参照フォルダ内に該当する資料が見つかりませんでした)"
+        context = (build_context_block(hits, max_context_chars) if hits
+                   else "(参照フォルダ内に該当する資料が見つかりませんでした)")
         sys_text = sys_text + "\n\n" + RAG_INSTRUCTION_STRICT.format(context=context)
     elif hits:
-        sys_text = sys_text + "\n\n" + RAG_INSTRUCTION.format(context=build_context_block(hits))
+        sys_text = sys_text + "\n\n" + RAG_INSTRUCTION.format(
+            context=build_context_block(hits, max_context_chars))
     messages = [{"role": "system", "content": sys_text}]
-    for m in history:
-        if m["role"] in ("user", "assistant"):
-            messages.append({"role": m["role"], "content": m["content"]})
+    hist = [m for m in history if m["role"] in ("user", "assistant")]
+    if len(hist) > MAX_HISTORY_MESSAGES:
+        hist = hist[-MAX_HISTORY_MESSAGES:]   # 直近のみ(古い発話は省略してコンテキスト超過を防ぐ)
+    for m in hist:
+        messages.append({"role": m["role"], "content": m["content"]})
     return messages
 
 

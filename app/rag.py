@@ -82,6 +82,34 @@ def scan_files(paths: list[str]) -> list[Path]:
     return found
 
 
+def _file_sig(f: Path) -> str:
+    """ファイルの簡易署名(更新時刻:サイズ)。増分インデックスの変更判定に使う。"""
+    try:
+        st = f.stat()
+        return f"{int(st.st_mtime)}:{st.st_size}"
+    except Exception:
+        return ""
+
+
+def _embed_error_hint(e: Exception) -> str:
+    """埋め込みモデルの読込失敗を、原因別の分かりやすい対処メッセージに変換。"""
+    s = str(e)
+    low = s.lower()
+    if "certificate" in low or "ssl" in low or "self-signed" in low or "self signed" in low:
+        return ("埋め込みモデルのダウンロードがSSL証明書エラーで失敗しました"
+                "(社内プロキシのTLS検査が原因)。対処のいずれか: "
+                "①【推奨】.env で EMBED_BACKEND=ollama にして `ollama pull nomic-embed-text` を実行 / "
+                "② 環境変数 SSL_CERT_FILE に社内ルートCA証明書(.pem)を指定 / "
+                "③ モデルを別PCで事前DLし、そのフォルダのパスを EMBED_MODEL に設定(オフライン)。")
+    if ("client has been closed" in low or "offline" in low or "max retries" in low
+            or "connection" in low or "timed out" in low or "failed to resolve" in low
+            or "getaddrinfo" in low):
+        return ("埋め込みモデルの取得に失敗しました(ネットワーク不通/オフライン)。対処: "
+                "①【推奨】.env で EMBED_BACKEND=ollama にして `ollama pull nomic-embed-text` / "
+                "② モデルを事前DLしてローカルパスを EMBED_MODEL に指定。")
+    return f"埋め込みモデルの読み込みに失敗しました: {s}"
+
+
 def build_index(iid: str, paths: list[str],
                 progress: Optional[Callable[[str], None]] = None) -> dict:
     """フォルダ群を読み込み、コレクションを構築する。同期処理(ワーカースレッドから呼ぶ)。"""
@@ -99,12 +127,7 @@ def build_index(iid: str, paths: list[str],
         embedder = get_embedder()
         cname = _index_collection_name(iid)
         client = _get_client()
-        # 既存コレクションを作り直し(再インデックス対応)
-        try:
-            client.delete_collection(cname)
-        except Exception:
-            pass
-        col = _collection(cname)
+        col = _collection(cname)   # 削除せず get_or_create(増分インデックス)
 
         emit("ファイルを走査中...")
         files = scan_files(paths)
@@ -114,22 +137,72 @@ def build_index(iid: str, paths: list[str],
                             file_count=0, chunk_count=0)
             return db.get_index(iid)
 
+        # 埋め込みモデルを先に1回ロード(失敗ならN件スキップせず、明確なエラーで中断する)
+        try:
+            emit("埋め込みモデルを準備中...(初回はDLに時間がかかります)")
+            dim = len(embedder.embed_query("ウォームアップ"))
+        except Exception as e:
+            hint = _embed_error_hint(e)
+            log.error("埋め込みモデルの準備に失敗: %s", e)
+            db.update_index(iid, status="error", error=hint, file_count=0, chunk_count=0)
+            emit("エラー: " + hint)
+            return db.get_index(iid)
+
+        # 既存チャンクの path→署名 / path→ids を取得(増分判定用)。
+        # 埋め込み次元が変わっていたら(モデル変更)コレクションを作り直す。
+        path_sig: dict[str, str] = {}
+        path_ids: dict[str, list] = {}
+        try:
+            peek = col.get(limit=1, include=["embeddings"])
+            pe = peek.get("embeddings")
+            if pe is not None and len(pe) > 0 and len(pe[0]) != dim:
+                emit("埋め込みモデルが変わったため、インデックスを作り直します")
+                client.delete_collection(cname)
+                col = _collection(cname)
+            else:
+                ex = col.get(include=["metadatas"])
+                for cid_, meta in zip(ex.get("ids") or [], ex.get("metadatas") or []):
+                    p = (meta or {}).get("path")
+                    if not p:
+                        continue
+                    path_sig.setdefault(p, (meta or {}).get("sig"))
+                    path_ids.setdefault(p, []).append(cid_)
+        except Exception:
+            log.exception("既存インデックスの読取に失敗(全件作り直し)")
+            path_sig, path_ids = {}, {}
+
         total_chunks = 0
         ok_files = 0
+        changed = 0
+        skipped = 0
+        current_paths: set[str] = set()
         for fi, f in enumerate(files, 1):
             try:
+                fpath = str(f.resolve())
+                current_paths.add(fpath)
+                sig = _file_sig(f)
+                # 変更なし → 既存チャンクを保持してスキップ(再埋め込みしない)
+                if path_ids.get(fpath) and path_sig.get(fpath) == sig:
+                    skipped += 1
+                    ok_files += 1
+                    total_chunks += len(path_ids[fpath])
+                    continue
+                # 変更 or 新規 → 旧チャンクを削除してから作り直す
+                if path_ids.get(fpath):
+                    try:
+                        col.delete(ids=path_ids[fpath])
+                    except Exception:
+                        pass
                 blocks = load_file(f)
                 if not blocks:
                     emit(f"  [skip] {f.name}(抽出テキストなし)")
                     continue
-                fpath = str(f.resolve())
                 pending = []
                 for b in blocks:
                     for chunk in split_text(b["text"], cs, co):
                         pending.append((chunk, b["source"], b["loc"], fpath))
                 if not pending:
                     continue
-                # バッチ単位で埋め込み&追加
                 for s in range(0, len(pending), _BATCH):
                     batch = pending[s:s + _BATCH]
                     vecs = embedder.embed_documents([c[0] for c in batch])
@@ -137,14 +210,25 @@ def build_index(iid: str, paths: list[str],
                         ids=[uuid.uuid4().hex for _ in batch],
                         embeddings=vecs,
                         documents=[c[0] for c in batch],
-                        metadatas=[{"source": c[1], "loc": c[2], "path": c[3]} for c in batch],
+                        metadatas=[{"source": c[1], "loc": c[2], "path": c[3], "sig": sig} for c in batch],
                     )
                 total_chunks += len(pending)
                 ok_files += 1
-                emit(f"  読込 {fi}/{len(files)}: {f.name}({len(pending)}チャンク)")
+                changed += 1
+                emit(f"  更新 {fi}/{len(files)}: {f.name}({len(pending)}チャンク)")
             except Exception as e:
                 log.exception("ファイル読込失敗: %s", f)
                 emit(f"  [skip] {f.name}(エラー: {e})")
+
+        # 削除されたファイルのチャンクを除去
+        removed = [p for p in path_ids if p not in current_paths]
+        for p in removed:
+            try:
+                col.delete(ids=path_ids[p])
+            except Exception:
+                pass
+        if removed:
+            emit(f"削除されたファイル {len(removed)} 件のデータを除去しました")
 
         if total_chunks == 0:
             db.update_index(iid, status="error",
@@ -154,7 +238,8 @@ def build_index(iid: str, paths: list[str],
 
         db.update_index(iid, status="ready", error=None,
                         file_count=ok_files, chunk_count=total_chunks)
-        emit(f"インデックス完了: {ok_files}ファイル / {total_chunks}チャンク")
+        emit(f"インデックス完了: {ok_files}ファイル / {total_chunks}チャンク"
+             f"(更新 {changed} / 据置 {skipped} / 削除 {len(removed)})")
         return db.get_index(iid)
     except Exception as e:
         log.exception("インデックス構築失敗")
@@ -209,11 +294,19 @@ def delete_conv_collection(cid: str) -> None:
 # ============================================================
 #  検索
 # ============================================================
+UNLIMITED_TOP_K = 9999  # これ以上は「上限なし(全件取得)」とみなすセンチネル
+MAX_PER_SOURCE = 5      # 1ファイルから採用する最大チャンク数(多ファイル横断の多様化)
+
+
 def retrieve(query: str, index_ids: list[str], conversation_id: Optional[str] = None,
              top_k: int = 5) -> list[dict]:
-    """有効インデックス + 会話添付を横断検索し、上位 top_k を返す。"""
+    """有効インデックス + 会話添付を横断検索し、上位 top_k を返す。
+
+    top_k <= 0 で参照なし、top_k >= UNLIMITED_TOP_K で上限なし(全件)。
+    """
     if top_k <= 0:
         return []
+    unlimited = top_k >= UNLIMITED_TOP_K
 
     names: list[str] = [_index_collection_name(i) for i in index_ids]
     if conversation_id:
@@ -238,7 +331,8 @@ def retrieve(query: str, index_ids: list[str], conversation_id: Optional[str] = 
             n = col.count()
             if n == 0:
                 continue
-            res = col.query(query_embeddings=[qvec], n_results=min(top_k, n))
+            n_results = n if unlimited else min(top_k, n)
+            res = col.query(query_embeddings=[qvec], n_results=n_results)
             docs = res.get("documents", [[]])[0]
             metas = res.get("metadatas", [[]])[0]
             dists = res.get("distances", [[]])[0]
@@ -252,11 +346,25 @@ def retrieve(query: str, index_ids: list[str], conversation_id: Optional[str] = 
                     "score": 1.0 - float(dist),  # cosine距離 -> 類似度
                     "distance": float(dist),
                 })
-        except Exception:
-            log.exception("コレクション検索失敗: %s", name)
+        except Exception as e:
+            es = str(e).lower()
+            if any(k in es for k in ("hnsw", "compactor", "backfill", "segment")):
+                log.warning("インデックスが壊れている可能性があります。参照資料を削除→再作成してください "
+                            "(同期フォルダOneDrive配下だと破損しやすい): %s / %s", name, str(e)[:160])
+            else:
+                log.warning("コレクション検索失敗(%s): %s", name, str(e)[:200])
 
     hits.sort(key=lambda h: h["distance"])
-    return hits[:top_k]
+    # 1ファイルが結果を独占しないよう、ソース単位の上限で多様化(多ファイル横断に有効)
+    capped: list[dict] = []
+    per: dict[str, int] = {}
+    for h in hits:
+        src = h.get("source", "")
+        if per.get(src, 0) >= MAX_PER_SOURCE:
+            continue
+        per[src] = per.get(src, 0) + 1
+        capped.append(h)
+    return capped if unlimited else capped[:top_k]
 
 
 def reset_all() -> None:

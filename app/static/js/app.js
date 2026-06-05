@@ -150,6 +150,7 @@ async function boot() {
   $("app").classList.remove("hidden");
   if (State.config.auth_enabled) $("logout-btn").classList.remove("hidden");
   await Promise.all([loadModels(), loadDefaults(), loadIndexes()]);
+  maybeStartPolling();   // ページ読み込み時に裏要約が進行中なら通知ポーリング再開
   await loadConversations();
   const mine = convsOfMode();
   if (mine.length) {
@@ -275,7 +276,13 @@ function updateCodeBar(conv) {
   f.textContent = folder || "未設定";
   f.title = folder || "";
   f.classList.toggle("set", !!folder);
+  const plan = s.plan_mode !== false;   // 既定ON
+  $("cb-plan").checked = plan;
   $("cb-allow").checked = !!s.allow_changes;
+  // 計画モード中は「変更を許可」は計画承認が代替するため無効化(視覚的にも)
+  $("cb-allow").disabled = plan;
+  const allowLabel = $("cb-allow").closest(".cb-toggle");
+  if (allowLabel) allowLabel.classList.toggle("disabled", plan);
 }
 
 async function deleteConversation(cid) {
@@ -394,8 +401,8 @@ function buildWelcome() {
     w.innerHTML = `<div class="brand-big"><span class="dot">${LOGO_SVG}</span></div>
       <h2>コードエージェント</h2>
       <p class="muted">作業フォルダを選び、依頼を入力してください。<br/>
-      AIがフォルダ内のファイルを読み・作成・編集し、コマンドも実行できます。<br/>
-      変更・実行は<strong>「変更を許可」をオンにして、毎回承認</strong>したときだけ行われます。</p>`;
+      <strong>計画モード</strong>では、AIがまず調査して<strong>実行計画</strong>を提示し、<strong>承認</strong>すると実行します。<br/>
+      ファイル編集は自動適用、コマンド実行など重要操作は都度確認します。</p>`;
   } else {
     w.innerHTML = `<div class="brand-big"><span class="dot">${LOGO_SVG}</span></div>
       <h2>こんにちは</h2>
@@ -426,7 +433,13 @@ function renderMessage(m, isLastAssistant) {
     row.appendChild(bubble);
     return row;
   }
-  // assistant
+  // assistant — Codeの会話で保存済みステップ(計画/ツール/差分/TODO)があれば再現
+  if (State.current && (State.current.kind || "chat") === "code" &&
+      Array.isArray(m.sources) && m.sources.length && m.sources[0] && m.sources[0].type) {
+    const { row, logBox } = buildAgentRow();
+    renderCodeSteps(logBox, m.sources);
+    return row;
+  }
   const { row, refs } = createAssistantRow();
   renderMarkdown(refs.md, m.content, true);
   refs.row.dataset.raw = m.content;
@@ -748,30 +761,85 @@ async function sendCode() {
   await loadConversations(); // タイトル更新を反映
 }
 
-async function streamAgent(payload) {
+/* ---- エージェントのステップ描画(ライブ/再表示で共用) ---- */
+function buildAgentRow() {
   const row = el("div", "msg-row assistant");
-  row.innerHTML = `<div class="avatar">${LOGO_SVG}</div>
-    <div class="msg-body"><div class="msg-name">Code エージェント</div>
-    <div class="agent-log"></div></div>`;
-  const logBox = row.querySelector(".agent-log");
+  row.innerHTML = `<div class="avatar">${LOGO_SVG}</div>` +
+    `<div class="msg-body"><div class="msg-name">Code エージェント</div><div class="agent-log"></div></div>`;
+  return { row, logBox: row.querySelector(".agent-log") };
+}
+function stepCallEl(name, args) {
+  return el("div", "step-call",
+    `▸ <span class="tool-name">${escapeHtml(name)}</span> ${escapeHtml(agentArgsSummary(name, args || {}))}`);
+}
+function stepResultEls(status, result, diff) {
+  const out = [];
+  const div = el("div", "step-result" + (status && status !== "ok" ? " " + status : ""));
+  div.textContent = trimResult(result || "");
+  out.push(div);
+  if (diff) {
+    const d = el("div", "confirm-diff applied-diff");
+    d.innerHTML = colorizeDiff(diff);
+    out.push(d);
+  }
+  return out;
+}
+function agentTextEl(text) {
+  const d = el("div", "md agent-text");
+  renderMarkdown(d, text || "", true);
+  return d;
+}
+function planStaticEl(plan) {
+  const card = el("div", "confirm-card plan-card");
+  card.appendChild(el("div", "confirm-title", "📋 実行計画(承認済み)"));
+  const body = el("div", "plan-body md");
+  renderMarkdown(body, plan || "", true);
+  card.appendChild(body);
+  return card;
+}
+// TODOパネル。existing を渡すと同じ要素を書き換える(進捗の更新)
+function renderTodos(container, todos, existing) {
+  const box = existing || el("div", "todo-panel");
+  box.innerHTML = "";
+  box.appendChild(el("div", "todo-title", "✅ タスク"));
+  (todos || []).forEach((t) => {
+    const st = t.status || "pending";
+    const icon = st === "completed" ? "☑" : st === "in_progress" ? "▣" : "☐";
+    box.appendChild(el("div", "todo-item " + st, `${icon} ${escapeHtml(t.content || "")}`));
+  });
+  if (!existing) container.appendChild(box);
+  return box;
+}
+// 保存済みステップ(message.sources)を静的に再描画
+function renderCodeSteps(container, steps) {
+  let todoEl = null;
+  (steps || []).forEach((ev) => {
+    switch (ev.type) {
+      case "assistant": if (ev.text) container.appendChild(agentTextEl(ev.text)); break;
+      case "tool_call": container.appendChild(stepCallEl(ev.name, ev.args)); break;
+      case "tool_result": stepResultEls(ev.status, ev.result, ev.diff).forEach((e) => container.appendChild(e)); break;
+      case "plan": container.appendChild(planStaticEl(ev.plan)); break;
+      case "todos": todoEl = renderTodos(container, ev.todos, todoEl); break;
+      case "ask": container.appendChild(askStaticEl(ev.question, ev.options)); break;
+    }
+  });
+}
+
+async function streamAgent(payload) {
+  const { row, logBox } = buildAgentRow();
   $("messages").appendChild(row);
   scrollToBottom();
 
   setStreaming(true);
   State.controller = new AbortController();
-  let curText = null;  // 連続する assistant テキストの描画先
+  let curText = null;   // 連続する assistant テキストの描画先
+  let todoEl = null;    // TODOパネル(更新時は同じ要素を書き換え)
 
-  const addStepCall = (name, args) => {
+  const addStepCall = (name, args) => { curText = null; logBox.appendChild(stepCallEl(name, args)); scrollToBottom(); };
+  const addStepResult = (status, result, diff) => {
     curText = null;
-    const div = el("div", "step-call",
-      `▸ <span class="tool-name">${escapeHtml(name)}</span> ${escapeHtml(agentArgsSummary(name, args))}`);
-    logBox.appendChild(div); scrollToBottom();
-  };
-  const addStepResult = (status, result) => {
-    curText = null;
-    const div = el("div", "step-result" + (status && status !== "ok" ? " " + status : ""));
-    div.textContent = trimResult(result);
-    logBox.appendChild(div); scrollToBottom();
+    stepResultEls(status, result, diff).forEach((e) => logBox.appendChild(e));
+    scrollToBottom();
   };
   const addText = (t) => {
     if (!curText) { curText = el("div", "md agent-text"); curText._raw = ""; logBox.appendChild(curText); }
@@ -802,10 +870,14 @@ async function streamAgent(payload) {
         if (!line) continue;
         let ev; try { ev = JSON.parse(line); } catch (_) { continue; }
         switch (ev.type) {
+          case "assistant_delta": if (ev.text) addText(ev.text); break;
           case "assistant": if (ev.text) addText(ev.text); break;
           case "tool_call": addStepCall(ev.name, ev.args || {}); break;
-          case "tool_result": addStepResult(ev.status, ev.result || ""); break;
+          case "tool_result": addStepResult(ev.status, ev.result || "", ev.diff); break;
           case "confirm": curText = null; logBox.appendChild(buildConfirmCard(ev)); scrollToBottom(); break;
+          case "plan": curText = null; logBox.appendChild(buildPlanCard(ev)); scrollToBottom(); break;
+          case "todos": curText = null; todoEl = renderTodos(logBox, ev.todos || [], todoEl); scrollToBottom(); break;
+          case "ask": curText = null; logBox.appendChild(buildAskCard(ev)); scrollToBottom(); break;
           case "error": addStepResult("rejected", "⚠ " + (ev.error || "エラー")); toast("エラー: " + (ev.error || "")); break;
           case "max_steps": addStepResult("blocked", "最大ステップ数に達しました。続けるには再度指示してください。"); break;
           case "done": case "user_saved": break;
@@ -823,22 +895,98 @@ async function streamAgent(payload) {
   }
 }
 
-// 未応答の承認カードを「拒否」としてサーバへ送り、待機中のエージェントを解放
+// 未応答のカードを解決してサーバ側の待機を解放(停止/切断時)
 function rejectOpenConfirms(box) {
   box.querySelectorAll(".confirm-card:not([data-resolved])").forEach((card) => {
     const aid = card.dataset.actionId;
-    if (aid) {
-      api("/api/code/approve", { method: "POST", body: JSON.stringify({ action_id: aid, approved: false }) })
-        .catch(() => {});
+    if (!aid) return;
+    if (card.dataset.kind === "ask") {
+      api("/api/code/answer", { method: "POST", body: JSON.stringify({ action_id: aid, answer: "" }) }).catch(() => {});
+    } else {
+      api("/api/code/approve", { method: "POST", body: JSON.stringify({ action_id: aid, approved: false }) }).catch(() => {});
     }
   });
 }
 
+// ユーザーへの質問カード(選択肢 + 自由記述)
+function buildAskCard(ev) {
+  const card = el("div", "confirm-card ask-card");
+  card.dataset.actionId = ev.action_id;
+  card.dataset.kind = "ask";
+  card.appendChild(el("div", "confirm-title", "❓ " + (ev.question || "どう進めますか?")));
+  const opts = el("div", "ask-options");
+  (ev.options || []).forEach((o) => {
+    const btn = el("button", "btn ask-opt", o);
+    btn.onclick = () => submitAnswer(card, ev.action_id, o);
+    opts.appendChild(btn);
+  });
+  if ((ev.options || []).length) card.appendChild(opts);
+  const row = el("div", "ask-free");
+  const input = el("input", "ask-input"); input.type = "text"; input.placeholder = "その他(自由に入力)…";
+  const send = el("button", "btn ask-send", "送信");
+  const submitFree = () => { const v = input.value.trim(); if (v) submitAnswer(card, ev.action_id, v); };
+  send.onclick = submitFree;
+  input.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); submitFree(); } });
+  row.appendChild(input); row.appendChild(send);
+  card.appendChild(row);
+  card.appendChild(el("div", "confirm-status ask-status"));
+  return card;
+}
+
+async function submitAnswer(card, actionId, answer) {
+  card.querySelectorAll("button").forEach((b) => (b.disabled = true));
+  const input = card.querySelector(".ask-input"); if (input) input.disabled = true;
+  const status = card.querySelector(".ask-status");
+  try {
+    await api("/api/code/answer", { method: "POST", body: JSON.stringify({ action_id: actionId, answer }) });
+    if (status) { status.textContent = "回答: " + answer; status.className = "confirm-status ask-status ok"; }
+    card.dataset.resolved = "1";
+  } catch (e) {
+    if (status) { status.textContent = "送信失敗: " + e.message; status.className = "confirm-status ask-status no"; }
+    card.querySelectorAll("button").forEach((b) => (b.disabled = false));
+    if (input) input.disabled = false;
+  }
+}
+
+// 保存済みステップ再表示用:質問(静的)
+function askStaticEl(question, options) {
+  const card = el("div", "confirm-card ask-card");
+  card.appendChild(el("div", "confirm-title", "❓ " + (question || "")));
+  if (options && options.length) {
+    const opts = el("div", "ask-options");
+    options.forEach((o) => opts.appendChild(el("span", "ask-opt-static", o)));
+    card.appendChild(opts);
+  }
+  return card;
+}
+
 function agentArgsSummary(name, args) {
   if (name === "write_file") return `${args.path || ""} (${args.length || 0}字)`;
-  if (name === "run_command") return args.command || "";
-  if (name === "read_file") return args.path || "";
+  if (name === "edit_file") return args.path || "";
+  if (name === "run_command" || name === "run_background") return args.command || "";
+  if (name === "command_output" || name === "stop_command") return "job " + (args.job_id || "");
+  if (name === "read_file" || name === "summarize_path") return args.path || "";
+  if (name === "glob" || name === "grep") return args.pattern || "";
   return "";
+}
+
+// 実行計画の承認カード(承認すると実行フェーズへ)
+function buildPlanCard(ev) {
+  const card = el("div", "confirm-card plan-card");
+  card.dataset.actionId = ev.action_id;
+  card.appendChild(el("div", "confirm-title", "📋 実行計画 — 承認すると実行フェーズに進みます"));
+  const body = el("div", "plan-body md");
+  renderMarkdown(body, ev.plan || "(計画なし)", true);
+  card.appendChild(body);
+  const actions = el("div", "confirm-actions");
+  const ok = el("button", "btn primary", "承認して実行");
+  const no = el("button", "btn", "却下");
+  const status = el("span", "confirm-status");
+  ok.onclick = () => respondConfirm(card, ev.action_id, true, status, [ok, no]);
+  no.onclick = () => respondConfirm(card, ev.action_id, false, status, [ok, no]);
+  actions.appendChild(ok); actions.appendChild(no); actions.appendChild(status);
+  card.appendChild(actions);
+  return card;
 }
 function trimResult(s) {
   s = String(s == null ? "" : s);
@@ -848,9 +996,11 @@ function trimResult(s) {
 function buildConfirmCard(ev) {
   const card = el("div", "confirm-card");
   card.dataset.actionId = ev.action_id;
-  const isCmd = ev.name === "run_command";
-  card.appendChild(el("div", "confirm-title",
-    isCmd ? "⚠ このコマンドを実行しますか?" : "⚠ このファイル変更を適用しますか?"));
+  const isCmd = ev.name === "run_command" || ev.name === "run_background";
+  const title = ev.name === "run_background" ? "⚠ このコマンドをバックグラウンド実行しますか?"
+    : ev.name === "run_command" ? "⚠ このコマンドを実行しますか?"
+    : "⚠ このファイル変更を適用しますか?";
+  card.appendChild(el("div", "confirm-title", title));
   if (isCmd) {
     card.appendChild(el("div", "confirm-cmd", "$ " + escapeHtml(ev.command || "")));
   } else {
@@ -1073,6 +1223,27 @@ function renderKbList() {
     if (idx.error) card.appendChild(el("div", "kb-status error", escapeHtml(idx.error)));
     const actions = el("div", "kb-actions");
     actions.style.marginTop = "8px";
+    if (idx.status === "ready") {
+      const sm = idx.summary || {};
+      const bg = (idx.file_count || 0) >= (idx.bg_threshold || 100);
+      if (sm.status === "running") {
+        card.appendChild(el("div", "kb-status building", "⏳ 要約中… " + escapeHtml(sm.msg || "")));
+        const stop = el("button", "btn stop", "■ 中止");
+        stop.onclick = () => cancelSummary(idx.id);
+        actions.appendChild(stop);
+      } else {
+        const sum = el("button", "btn", "📝 要約" + (bg ? "(裏で実行)" : ""));
+        sum.onclick = () => summarizeIndex(idx.id, idx.name, idx.file_count, idx.bg_threshold);
+        actions.appendChild(sum);
+        if (sm.status === "done" && sm.has_result) {
+          const view = el("button", "btn", "📄 要約を表示");
+          view.onclick = () => viewSummary(idx.id, idx.name);
+          actions.appendChild(view);
+        } else if (sm.status === "error") {
+          card.appendChild(el("div", "kb-status error", "要約エラー: " + escapeHtml(sm.msg || "")));
+        }
+      }
+    }
     const rebuild = el("button", "btn", "↻ 再構築");
     rebuild.onclick = () => rebuildIndex(idx.id);
     const del = el("button", "btn", "🗑 削除");
@@ -1082,10 +1253,7 @@ function renderKbList() {
     list.appendChild(card);
   });
 
-  // 作成中があれば自動更新
-  if (State.indexes.some((i) => i.status === "building")) {
-    setTimeout(async () => { await loadIndexes(); if (!$("kb-modal").classList.contains("hidden")) renderKbList(); }, 1500);
-  }
+  maybeStartPolling();
 }
 
 async function toggleActiveIndex(iid, on) {
@@ -1097,6 +1265,206 @@ async function toggleActiveIndex(iid, on) {
     method: "PATCH", body: JSON.stringify({ active_indexes: active }),
   });
   updateHeaderBadges();
+}
+
+/* ---------- 資料の一括要約(map-reduce) ---------- */
+const SummaryState = { iid: null, controller: null, running: false, text: "", categories: [] };
+
+const SUMMARY_PRESETS = {
+  "規程・規定": ["目的", "適用範囲・対象者", "定義", "主な規定内容・手続き", "責任者・体制", "罰則・例外", "改廃・施行日"],
+  "契約書": ["当事者", "目的・対象", "期間", "金額・支払条件", "義務・責任", "解除・違約", "特記事項"],
+  "議事録": ["会議名・日時・出席者", "議題", "決定事項", "対応・TODO(担当/期限)", "保留・課題"],
+  "マニュアル/手順": ["目的", "対象・前提", "手順の流れ", "注意点・禁止事項", "トラブル時の対応"],
+};
+
+function renderSummaryPresets() {
+  const wrap = $("summary-presets");
+  wrap.innerHTML = "";
+  Object.keys(SUMMARY_PRESETS).forEach((name) => {
+    const cats = SUMMARY_PRESETS[name];
+    const active = JSON.stringify(SummaryState.categories) === JSON.stringify(cats);
+    const b = el("button", "chip-btn" + (active ? " active" : ""), name);
+    b.onclick = () => {
+      SummaryState.categories = active ? [] : cats.slice();
+      renderSummaryPresets();
+    };
+    wrap.appendChild(b);
+  });
+}
+
+function fillSummaryMapModel() {
+  const sel = $("summary-map-model");
+  sel.innerHTML = "";
+  const none = el("option", null, "(メインモデルと同じ=二段なし)");
+  none.value = "";
+  sel.appendChild(none);
+  const sorted = [...(State.models || [])].sort((a, b) => (a.size || 0) - (b.size || 0));
+  sorted.forEach((m) => {
+    const gb = m.size ? ` (${(m.size / 1e9).toFixed(1)}GB)` : "";
+    const o = el("option", null, m.name + gb);
+    o.value = m.name;
+    sel.appendChild(o);
+  });
+  // 既定: 2つ以上あれば最小モデルを下書き用に(=二段ON)
+  sel.value = sorted.length > 1 ? sorted[0].name : "";
+}
+
+function summarizeIndex(iid, name, fileCount, threshold) {
+  SummaryState.iid = iid;
+  SummaryState.text = "";
+  SummaryState.categories = [];
+  SummaryState.fileCount = fileCount || 0;
+  SummaryState.threshold = threshold || 100;
+  const bg = SummaryState.fileCount >= SummaryState.threshold;
+  $("summary-progress").textContent = bg
+    ? `${SummaryState.fileCount} 件と多いため、実行すると裏(バックグラウンド)で処理します。`
+    : "";
+  $("summary-result").innerHTML = "";
+  $("summary-save-wrap").innerHTML = "";
+  $("summary-instruction").value = "";
+  $("summary-run").textContent = bg ? "裏で要約を開始" : "要約を実行";
+  renderSummaryPresets();
+  fillSummaryMapModel();
+  $("summary-modal").querySelector("h2").textContent = "📝 一括要約: " + name;
+  $("summary-modal").classList.remove("hidden");
+}
+
+async function viewSummary(iid, name) {
+  let data;
+  try { data = await api(`/api/indexes/${iid}/summary`); } catch (e) { toast(e.message); return; }
+  SummaryState.iid = iid;
+  SummaryState.text = data.result || "";
+  SummaryState.categories = data.categories || [];
+  SummaryState.fileCount = data.files || 0;
+  $("summary-modal").querySelector("h2").textContent = "📄 要約結果: " + name;
+  $("summary-run").textContent = "再実行";
+  renderSummaryPresets();
+  fillSummaryMapModel();
+  $("summary-instruction").value = data.instruction || "";
+  $("summary-progress").textContent = "前回の結果" + (data.files ? `(${data.files}件)` : "");
+  $("summary-result").innerHTML = "";
+  renderMarkdown($("summary-result"), SummaryState.text, true);
+  $("summary-save-wrap").innerHTML = "";
+  $("summary-save-wrap").appendChild(makeSaveMenu(() => SummaryState.text));
+  $("summary-modal").classList.remove("hidden");
+}
+
+async function cancelSummary(iid) {
+  try { await api(`/api/indexes/${iid}/summary/cancel`, { method: "POST" }); } catch (_) {}
+  await loadIndexes();
+  if (!$("kb-modal").classList.contains("hidden")) renderKbList();
+}
+
+async function startBackgroundSummary() {
+  const instruction = $("summary-instruction").value.trim();
+  const mapModel = $("summary-map-model").value || null;
+  try {
+    await api(`/api/indexes/${SummaryState.iid}/summarize/start`, {
+      method: "POST",
+      body: JSON.stringify({ instruction, map_model: mapModel, categories: SummaryState.categories }),
+    });
+    toast("裏で要約を開始しました。完了後に通知します。");
+    $("summary-modal").classList.add("hidden");
+    await loadIndexes();
+    if (!$("kb-modal").classList.contains("hidden")) renderKbList();
+    maybeStartPolling();
+  } catch (e) { toast("要約の開始に失敗: " + e.message); }
+}
+
+/* バックグラウンド要約/索引作成の進捗をポーリングし、完了時に通知 */
+let _summaryPolling = false;
+const _summaryPrev = {};
+function maybeStartPolling() {
+  const active = (State.indexes || []).some(
+    (i) => i.status === "building" || (i.summary && i.summary.status === "running"));
+  if (active) pollSummaries();
+}
+async function pollSummaries() {
+  if (_summaryPolling) return;
+  _summaryPolling = true;
+  try {
+    while (true) {
+      await new Promise((r) => setTimeout(r, 2000));
+      await loadIndexes();
+      (State.indexes || []).forEach((idx) => {
+        const now = (idx.summary && idx.summary.status) || "none";
+        const prev = _summaryPrev[idx.id];
+        if (prev === "running" && now === "done") toast("📄 要約が完了しました: " + idx.name);
+        else if (prev === "running" && now === "error") toast("要約でエラー: " + idx.name);
+        _summaryPrev[idx.id] = now;
+      });
+      if (!$("kb-modal").classList.contains("hidden")) renderKbList();
+      const stillActive = (State.indexes || []).some(
+        (i) => i.status === "building" || (i.summary && i.summary.status === "running"));
+      if (!stillActive) break;
+    }
+  } finally { _summaryPolling = false; }
+}
+
+function closeSummary() {
+  if (SummaryState.running && SummaryState.controller) SummaryState.controller.abort();
+  $("summary-modal").classList.add("hidden");
+}
+
+async function runSummary() {
+  if (SummaryState.running || !SummaryState.iid) return;
+  // 参照ファイルが多いときはウィンドウを出さず裏で実行
+  if ((SummaryState.fileCount || 0) >= (SummaryState.threshold || 100)) {
+    return startBackgroundSummary();
+  }
+  SummaryState.running = true;
+  SummaryState.text = "";
+  SummaryState.controller = new AbortController();
+  $("summary-run").classList.add("hidden");
+  $("summary-stop").classList.remove("hidden");
+  $("summary-result").innerHTML = "";
+  $("summary-save-wrap").innerHTML = "";
+  $("summary-progress").textContent = "準備中…";
+  const instruction = $("summary-instruction").value.trim();
+  const mapModel = $("summary-map-model").value || null;
+  try {
+    const res = await fetch(`/api/indexes/${SummaryState.iid}/summarize`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ instruction, map_model: mapModel, categories: SummaryState.categories }),
+      signal: SummaryState.controller.signal,
+    });
+    if (res.status === 401) { showLogin(); throw new Error("認証が必要です"); }
+    if (!res.ok) { let d = res.statusText; try { d = (await res.json()).detail || d; } catch (_) {} throw new Error(d); }
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      let idx;
+      while ((idx = buf.indexOf("\n\n")) >= 0) {
+        const line = buf.slice(0, idx).replace(/^data: /, ""); buf = buf.slice(idx + 2);
+        if (!line) continue;
+        let ev; try { ev = JSON.parse(line); } catch (_) { continue; }
+        if (ev.type === "start") $("summary-progress").textContent =
+          `${ev.files} 件を要約します…` + (ev.map_model ? `(下書き: ${ev.map_model})` : "");
+        else if (ev.type === "progress") $("summary-progress").textContent = ev.msg || "";
+        else if (ev.type === "result") {
+          SummaryState.text = ev.text || "";
+          renderMarkdown($("summary-result"), SummaryState.text, true);
+          $("summary-progress").textContent = "完了";
+          $("summary-save-wrap").appendChild(makeSaveMenu(() => SummaryState.text));
+        } else if (ev.type === "error") {
+          $("summary-progress").textContent = "エラー: " + (ev.error || "");
+          toast("要約エラー: " + (ev.error || ""));
+        }
+      }
+    }
+  } catch (e) {
+    if (e.name === "AbortError") $("summary-progress").textContent = "停止しました";
+    else { $("summary-progress").textContent = "エラー: " + e.message; toast(e.message); }
+  } finally {
+    SummaryState.running = false;
+    SummaryState.controller = null;
+    $("summary-run").classList.remove("hidden");
+    $("summary-stop").classList.add("hidden");
+  }
 }
 
 async function rebuildIndex(iid) {
@@ -1234,6 +1602,17 @@ async function setCodeAllow(on) {
   } catch (e) { toast("設定失敗: " + e.message); $("cb-allow").checked = !on; }
 }
 
+async function setCodePlan(on) {
+  if (!State.current) return;
+  try {
+    const conv = await api(`/api/conversations/${State.current.id}`, {
+      method: "PATCH", body: JSON.stringify({ settings: { plan_mode: !!on } }),
+    });
+    State.current = conv;
+    updateCodeBar(conv);
+  } catch (e) { toast("設定失敗: " + e.message); $("cb-plan").checked = !on; }
+}
+
 /* ============================================================
    入力欄の挙動
    ============================================================ */
@@ -1262,6 +1641,7 @@ function bindGlobalEvents() {
     (t.onclick = () => setMode(t.dataset.mode)));
   // Code: 作業フォルダ / 変更許可
   $("cb-pick").onclick = () => openFolderBrowser("workspace");
+  $("cb-plan").onchange = (e) => setCodePlan(e.target.checked);
   $("cb-allow").onchange = (e) => setCodeAllow(e.target.checked);
 
   $("chat-title").addEventListener("change", renameConversation);
@@ -1314,6 +1694,11 @@ function bindGlobalEvents() {
   // KBモーダル
   $("open-kb").onclick = openKb;
   $("add-kb").onclick = () => openFolderBrowser("index");
+  // 一括要約モーダル
+  $("summary-run").onclick = runSummary;
+  $("summary-stop").onclick = () => { if (SummaryState.controller) SummaryState.controller.abort(); };
+  $("summary-close").onclick = closeSummary;
+  $("summary-close2").onclick = closeSummary;
   // フォルダ
   $("fb-pick").onclick = pickFolder;
   $("fb-go").onclick = () => fbNavigate($("fb-path-input").value.trim());
