@@ -76,6 +76,64 @@ def test_export_content_unknown_format_raises():
     raise AssertionError("未対応形式で例外が出なかった")
 
 
+# ---------------- HTML変換の品質(バグ修正・忠実度) ----------------
+def _h(md):
+    return export.to_html(md).decode("utf-8")
+
+
+def test_html_inline_code_is_literal():
+    # コード内の ** は整形されずリテラルのまま
+    assert "<code>a**b**c</code>" in _h("`a**b**c`")
+
+
+def test_html_bolditalic_nesting_is_valid():
+    h = _h("***強調***")
+    assert "<strong><em>強調</em></strong>" in h
+    assert "<strong><em>強調</strong></em>" not in h   # 壊れた閉じ順でない
+
+
+def test_html_image_becomes_img_tag():
+    assert '<img src="pic.png" alt="代替">' in _h("![代替](pic.png)")
+
+
+def test_html_neutralizes_dangerous_url():
+    h = _h("[x](javascript:alert(1))")
+    assert "javascript:" not in h and 'href="#"' in h
+
+
+def test_html_nested_list_structure():
+    h = _h("- 親\n  - 子1\n  - 子2\n- 親2")
+    assert "<li>親<ul><li>子1</li><li>子2</li></ul></li>" in h
+
+
+def test_html_task_list_checkboxes():
+    h = _h("- [ ] 未\n- [x] 済")
+    assert '<input type="checkbox" disabled>' in h
+    assert '<input type="checkbox" disabled checked>' in h
+
+
+def test_html_heading_demoted_no_body_h1():
+    body = _h("# 見出しX\n本文").split('<div class="doc-body">')[1]
+    assert "<h2>見出しX</h2>" in body and "<h1" not in body
+
+
+def test_html_underscore_emphasis_protects_snake_case():
+    h = _h("__太__ と _斜_ と snake_case_x")
+    assert "<strong>太</strong>" in h and "<em>斜</em>" in h
+    assert "snake_case_x" in h and "<em>case</em>" not in h
+
+
+def test_html_table_alignment_applied():
+    h = _h("| 左 | 右 |\n|:--|--:|\n| a | b |")
+    assert 'style="text-align:left"' in h and 'style="text-align:right"' in h
+
+
+def test_html_code_highlight_inlined_only_when_code():
+    with_code = _h("```python\nprint(1)\n```")
+    assert "hljs.highlightAll" in with_code and 'class="language-python"' in with_code
+    assert "hljs.highlightAll" not in _h("ただの段落です。")
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     passed = 0
