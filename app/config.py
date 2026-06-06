@@ -73,8 +73,10 @@ class Settings:
 
         # --- 埋め込み ---
         self.embed_backend: str = os.getenv("EMBED_BACKEND", "sentence-transformers").strip().lower()
+        # 既定は multilingual-e5-base(small より日本語検索の精度が高い。768次元)。
+        # 軽量・低メモリ優先なら .env で EMBED_MODEL=intfloat/multilingual-e5-small に変更可。
         default_embed = (
-            "intfloat/multilingual-e5-small"
+            "intfloat/multilingual-e5-base"
             if self.embed_backend == "sentence-transformers"
             else "nomic-embed-text"
         )

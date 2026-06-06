@@ -534,11 +534,21 @@ def api_generate(cid: str, body: GenerateBody) -> Response:
             fb = (content or "画像").strip().splitlines()[0][:30] or "新しい会話"
             db.update_conversation(cid, title=fb)
 
-    # --- RAG 検索 ---
+    # --- RAG 検索(追問は履歴をふまえ独立クエリへ書き換えてから検索) ---
     sources: list[dict] = []
     hits: list[dict] = []
+    search_query = query
     try:
-        hits = rag.retrieve(query, conv.get("active_indexes", []), cid, int(eff["top_k"]))
+        prior = [m for m in db.list_messages(cid) if m["role"] in ("user", "assistant")]
+        if prior and prior[-1]["role"] == "user":
+            prior = prior[:-1]          # 今回の質問を除いた過去のやり取り
+        search_query = llm.rewrite_query(prior, query, eff["model"])
+        if search_query != query:
+            log.info("クエリ書き換え [conv=%s] %s -> %s", cid, query[:40], search_query[:40])
+    except Exception:
+        log.exception("クエリ書き換えに失敗(原文で検索)")
+    try:
+        hits = rag.retrieve(search_query, conv.get("active_indexes", []), cid, int(eff["top_k"]))
     except Exception:
         log.exception("検索失敗(無視して続行)")
     if hits:
@@ -554,7 +564,9 @@ def api_generate(cid: str, body: GenerateBody) -> Response:
     history = db.list_messages(cid)
     # 参照フォルダ(インデックス)を選択している会話は、その資料だけで回答する厳格モード。
     strict_rag = bool(conv.get("active_indexes"))
-    messages = llm.build_messages(eff["system_prompt"], history, hits, strict=strict_rag)
+    # 図を求めていない通常QAでは簡潔な整形ガイドにして根拠提示に集中させる。
+    messages = llm.build_messages(eff["system_prompt"], history, hits,
+                                  strict=strict_rag, diagram_hint=llm.wants_diagram(query))
     use_vision = bool(image_b64s)
     # Vision/OCR モデルは設定(既定値)で選べる。未設定なら .env の VISION_MODEL を使用。
     vision_model = (eff.get("vision_model") or settings.vision_model or "").strip()
