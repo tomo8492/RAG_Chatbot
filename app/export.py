@@ -551,7 +551,7 @@ def _extract_html_document(content: str, title: str) -> str | None:
 def to_docx(md: str, title: str = "回答", images: list | None = None) -> bytes:
     from docx import Document
     from docx.enum.text import WD_ALIGN_PARAGRAPH
-    from docx.shared import Inches, Pt, RGBColor
+    from docx.shared import Inches, Pt
     doc = Document()
     mm_idx = 0
     for b in parse_blocks(md):
@@ -688,7 +688,6 @@ def _autofit(ws) -> None:
 
 def to_pptx(md: str, title: str = "回答", images: list | None = None) -> bytes:
     from pptx import Presentation
-    from pptx.util import Pt
     prs = Presentation()
     blocks = parse_blocks(md)
 

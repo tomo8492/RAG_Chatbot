@@ -1,0 +1,19 @@
+# ============================================================
+#  CI / ユニットテスト用の最小依存
+#  重い ML 依存(sentence-transformers → torch)と任意の pymupdf は除外している。
+#  これらが無い環境ではテストが自動 skip される設計のため、ユニットテストには不要。
+#  本番フル機能は requirements.txt を使うこと。
+# ============================================================
+fastapi>=0.110
+uvicorn[standard]>=0.29
+python-multipart>=0.0.9
+python-dotenv>=1.0
+itsdangerous>=2.1
+
+ollama>=0.3.0
+chromadb>=0.5.0
+
+python-docx>=1.1
+openpyxl>=3.1
+python-pptx>=0.6.23
+reportlab>=4.0

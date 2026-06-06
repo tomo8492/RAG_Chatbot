@@ -11,7 +11,7 @@ LLM 呼び出しは summarize_fn(text, role) として注入できる(テスト�
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Callable, Iterator, Optional
+from typing import Callable, Iterator
 
 import ollama
 

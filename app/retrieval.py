@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import math
 import re
-from typing import Optional
 
 # RRF の定数(大きいほど順位差の影響がなだらか。情報検索で一般的な 60)
 RRF_K = 60
