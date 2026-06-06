@@ -1,16 +1,16 @@
-# Auto モード(画面操作エージェント) 設計書
+# Automa モード(画面操作エージェント) 設計書
 
 ## 0. 命名について
 
 | 項目 | 名称 | 備考 |
 |---|---|---|
-| 機能名(社内呼称) | **Auto モード** / **Auto 操作** | Chat / Code に並ぶ第3モード |
-| UI タブ表記 | **Auto** | 4文字、Chat / Code と統一感 |
-| DB 上の kind 値 | `auto` | `conversations.kind` の新値 |
-| 内部モジュール名 | `app/auto.py` | `agent.py` と並列 |
-| 国際表記(将来) | **Auto Operator** | 説明文・ドキュメント用 |
+| 機能名(社内呼称) | **Automa モード** / **Automa 操作** | Chat / Code に並ぶ第3モード |
+| UI タブ表記 | **Automa** | 4文字、Chat / Code と統一感 |
+| DB 上の kind 値 | `automa` | `conversations.kind` の新値 |
+| 内部モジュール名 | `app/automa.py` | `agent.py` と並列 |
+| 国際表記(将来) | **Automa Operator** | 説明文・ドキュメント用 |
 
-> 当初仮称「Cowork」は廃止し、機能の本質(画面を見て自動操作)が一目で分かる `Auto` に統一する。
+> 当初仮称「Cowork」は廃止し、機能の本質(画面を見て自動操作)が一目で分かる `Automa` に統一する。
 
 ---
 
@@ -68,14 +68,14 @@
   <button class="mode-tab active" data-mode="chat" title="チャット">...</button>
   <button class="mode-tab" data-mode="code" title="コード">...</button>
   <!-- 新規追加 -->
-  <button class="mode-tab" data-mode="auto" title="自動操作(Auto)">
+  <button class="mode-tab" data-mode="automa" title="自動操作(Automa)">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
          stroke-linecap="round" stroke-linejoin="round">
       <rect x="2" y="3" width="20" height="14" rx="2"/>
       <line x1="8" y1="21" x2="16" y2="21"/>
       <line x1="12" y1="17" x2="12" y2="21"/>
     </svg>
-    <span>Auto</span>
+    <span>Automa</span>
   </button>
 </div>
 ```
@@ -86,14 +86,14 @@
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│ [☰] [Chat][Code][Auto*]  会話タイトル                  [🌓] │ ← header
+│ [☰] [Chat][Code][Automa*]  会話タイトル                  [🌓] │ ← header
 ├─────────────────────────────────────────────────────────────┤
-│  📁 URL: [https://...     ][起動][終了]  [■緊急停止]        │ ← auto-bar (新規)
+│  📁 URL: [https://...     ][起動][終了]  [■緊急停止]        │ ← automa-bar (新規)
 │  □ 計画モード   □ 各操作で確認   モデル:[qwen2.5-vl:32b ▼] │
 ├──────────────────────────────┬──────────────────────────────┤
 │                              │                              │
 │   メッセージ表示エリア       │   ライブスクショ表示         │
-│   (既存 #messages 流用)     │   (#auto-screen 新規)       │
+│   (既存 #messages 流用)     │   (#automa-screen 新規)       │
 │                              │                              │
 │   - ユーザ依頼               │   ┌──────────────────────┐  │
 │   - 計画(計画モード)        │   │                      │  │
@@ -112,20 +112,20 @@
 `app/static/css/style.css:331-333` に倣い、表示制御クラスを追加:
 
 ```css
-.only-auto { display: none; }
-body[data-mode="auto"] .only-chat { display: none !important; }
-body[data-mode="auto"] .only-code { display: none !important; }
-body[data-mode="auto"] .only-auto { display: flex; }
-body[data-mode="auto"] .auto-bar.only-auto { display: flex; }
+.only-automa { display: none; }
+body[data-mode="automa"] .only-chat { display: none !important; }
+body[data-mode="automa"] .only-code { display: none !important; }
+body[data-mode="automa"] .only-automa { display: flex; }
+body[data-mode="automa"] .automa-bar.only-automa { display: flex; }
 
 /* ライブスクショペイン */
-body[data-mode="auto"] .messages { width: 60%; }
-.auto-screen { width: 40%; border-left: 1px solid var(--line); ... }
+body[data-mode="automa"] .messages { width: 60%; }
+.automa-screen { width: 40%; border-left: 1px solid var(--line); ... }
 ```
 
 ### 3.4 緊急停止ボタン
-- 赤背景 + 大きめサイズで常時 `auto-bar` の右端に固定
-- クリックで `POST /api/auto/abort` を呼ぶ → サーバ側でブラウザプロセス終了 + 生成ループ打切り
+- 赤背景 + 大きめサイズで常時 `automa-bar` の右端に固定
+- クリックで `POST /api/automa/abort` を呼ぶ → サーバ側でブラウザプロセス終了 + 生成ループ打切り
 
 ---
 
@@ -136,30 +136,30 @@ body[data-mode="auto"] .messages { width: 60%; }
 ```
 ┌───────────────────────────────────────────────────────────────┐
 │ ブラウザ (フロント・既存 app.js を拡張)                        │
-│   - Auto タブ / auto-bar / live screenshot pane                │
+│   - Automa タブ / automa-bar / live screenshot pane                │
 │   - SSE 受信 → メッセージ + スクショ更新                       │
 └─────────────────────────┬─────────────────────────────────────┘
                           │ HTTP / SSE
 ┌─────────────────────────▼─────────────────────────────────────┐
 │ FastAPI (app/main.py に追加するルート)                        │
-│   POST /api/conversations/{cid}/auto    依頼受付・SSE 返却     │
-│   POST /api/auto/approve                操作承認               │
-│   POST /api/auto/answer                 ask_user 回答          │
-│   POST /api/auto/abort                  緊急停止               │
+│   POST /api/conversations/{cid}/automa    依頼受付・SSE 返却     │
+│   POST /api/automa/approve                操作承認               │
+│   POST /api/automa/answer                 ask_user 回答          │
+│   POST /api/automa/abort                  緊急停止               │
 └─────────────────────────┬─────────────────────────────────────┘
                           │ run_stream
 ┌─────────────────────────▼─────────────────────────────────────┐
-│ Auto エージェント (app/auto.py = 新規)                        │
+│ Automa エージェント (app/automa.py = 新規)                        │
 │   - ツールスキーマ定義(screenshot, browser_*)                │
 │   - 実行ループ(agent.py の構造を踏襲)                       │
 │   - ToolResult(text, image_b64) を返せるよう拡張              │
 └─────────────────────────┬─────────────────────────────────────┘
                           │ Playwright API
 ┌─────────────────────────▼─────────────────────────────────────┐
-│ BrowserSession (app/auto_browser.py = 新規)                  │
+│ BrowserSession (app/automa_browser.py = 新規)                  │
 │   - Chromium プロセス管理(会話ごとに1個)                    │
 │   - スクショ取得 / クリック / 入力 / ナビゲート               │
-│   - user-data-dir: data/auto_browser/<conv_id>/              │
+│   - user-data-dir: data/automa_browser/<conv_id>/              │
 └───────────────────────────────────────────────────────────────┘
                           │ chat(messages, images=[...])
 ┌─────────────────────────▼─────────────────────────────────────┐
@@ -172,11 +172,11 @@ body[data-mode="auto"] .messages { width: 60%; }
 
 | 責務 | 既存 | 新規 |
 |---|---|---|
-| ツール呼出しループ全体構造 | `agent.run_stream()` パターン | `auto.run_stream()` で踏襲 |
+| ツール呼出しループ全体構造 | `agent.run_stream()` パターン | `automa.run_stream()` で踏襲 |
 | 承認・ask_user の resolve | `agent.resolve / resolve_answer` | **共通化**して両者で使う |
-| 画像入力(messages.images) | `main.py:399-402` のパターン | `auto.run_stream()` で使う |
-| ブラウザ操作レイヤ | なし | `app/auto_browser.py` 新設 |
-| ツール定義 | `agent.py` のスキーマ集 | `auto.py` で独自に定義 |
+| 画像入力(messages.images) | `main.py:399-402` のパターン | `automa.run_stream()` で使う |
+| ブラウザ操作レイヤ | なし | `app/automa_browser.py` 新設 |
+| ツール定義 | `agent.py` のスキーマ集 | `automa.py` で独自に定義 |
 | プロジェクト指示書読込 | `agent.read_project_instructions` | 流用しない(対象外) |
 
 ---
@@ -184,16 +184,16 @@ body[data-mode="auto"] .messages { width: 60%; }
 ## 5. DB スキーマ
 
 ### 5.1 変更
-**`conversations.kind`** に新値 `"auto"` を追加するのみ。**マイグレーション不要**(TEXT 列のため)。
+**`conversations.kind`** に新値 `"automa"` を追加するのみ。**マイグレーション不要**(TEXT 列のため)。
 
 ### 5.2 `conversations.settings` JSON の拡張
 
-Auto モード会話で使うキーを追加(他モードでは無視):
+Automa モード会話で使うキーを追加(他モードでは無視):
 
 ```json
 {
   "vision_model": "qwen2.5-vl:32b",
-  "auto": {
+  "automa": {
     "start_url": "https://www.google.com",
     "allowed_domains": ["google.com", "example.co.jp"],
     "headless": false,
@@ -223,7 +223,7 @@ Auto モード会話で使うキーを追加(他モードでは無視):
 
 ## 6. 新規ツール仕様
 
-すべて Auto モード固有。`auto.py` で定義する。
+すべて Automa モード固有。`automa.py` で定義する。
 
 ### 6.1 ツール一覧
 
@@ -274,11 +274,11 @@ _T_CLICK = {"type": "function", "function": {
 
 ### 7.1 課題
 既存 `app/agent.py` の `tool_result` イベントは **文字列(text)のみ**。
-Auto モードでは「ツール結果 = スクショ画像」を次の LLM ターンに渡す必要がある。
+Automa モードでは「ツール結果 = スクショ画像」を次の LLM ターンに渡す必要がある。
 
 ### 7.2 解決方針
 
-#### (a) `auto.py` の内部データ構造拡張
+#### (a) `automa.py` の内部データ構造拡張
 ```python
 class ToolResult:
     text: str
@@ -287,7 +287,7 @@ class ToolResult:
     status: str = "ok"                     # ok / error / denied / timeout
 ```
 
-#### (b) Ollama への次ターン投入(`auto.run_stream()` 内)
+#### (b) Ollama への次ターン投入(`automa.run_stream()` 内)
 ```python
 # tool_result を受け取った直後、次の LLM 呼出しに画像を載せる
 messages.append({"role": "tool", "name": tname, "content": tr.text})
@@ -311,14 +311,14 @@ if tr.image_b64:
 
 ### 7.3 イベントスキーマ拡張
 
-`auto.run_stream()` が SSE で吐くイベント:
+`automa.run_stream()` が SSE で吐くイベント:
 
 ```python
 {"type": "tool_call",   "name": "browser_click", "args": {...}}
 {"type": "tool_result", "name": "browser_click", "status": "ok",
  "result": "要素 #login をクリックしました",
  "image_b64": "<縮小スクショ>",        # ★ 新規
- "image_full_url": "/api/auto/...png"}  # ★ ライブ表示用(別エンドポイント)
+ "image_full_url": "/api/automa/...png"}  # ★ ライブ表示用(別エンドポイント)
 {"type": "screenshot",  "image_b64": "..."}  # ★ 画面のみ更新時(明示の screenshot 呼出し)
 {"type": "approval_required", "action_id": "...", "summary": "..."}
 {"type": "ask", "action_id": "...", "question": "...", "options": [...]}
@@ -336,26 +336,26 @@ if tr.image_b64:
 
 ```python
 # app/main.py に追加
-@app.post("/api/conversations/{cid}/auto",
+@app.post("/api/conversations/{cid}/automa",
           dependencies=[Depends(auth.require_auth)])
-def api_auto(cid: str, body: AgentBody) -> Response:
-    """Auto モード実行。SSE で進捗ストリーム。"""
+def api_automa(cid: str, body: AgentBody) -> Response:
+    """Automa モード実行。SSE で進捗ストリーム。"""
 
-@app.post("/api/auto/approve", dependencies=[Depends(auth.require_auth)])
-def api_auto_approve(body: ApproveBody) -> dict:
+@app.post("/api/automa/approve", dependencies=[Depends(auth.require_auth)])
+def api_automa_approve(body: ApproveBody) -> dict:
     """操作承認(Code の approve と同形式)。共通化を検討。"""
 
-@app.post("/api/auto/answer", dependencies=[Depends(auth.require_auth)])
-def api_auto_answer(body: AnswerBody) -> dict:
+@app.post("/api/automa/answer", dependencies=[Depends(auth.require_auth)])
+def api_automa_answer(body: AnswerBody) -> dict:
     """ask_user への回答。"""
 
-@app.post("/api/auto/abort", dependencies=[Depends(auth.require_auth)])
-def api_auto_abort(cid: str = Body(..., embed=True)) -> dict:
+@app.post("/api/automa/abort", dependencies=[Depends(auth.require_auth)])
+def api_automa_abort(cid: str = Body(..., embed=True)) -> dict:
     """緊急停止: ループ中断 + ブラウザ即終了。"""
 
-@app.get("/api/auto/{cid}/live.png",
+@app.get("/api/automa/{cid}/live.png",
          dependencies=[Depends(auth.require_auth)])
-def api_auto_live(cid: str) -> Response:
+def api_automa_live(cid: str) -> Response:
     """ライブスクショ(現在の画面)。ポーリング用。
        Phase 1.5 で WebSocket / SSE プッシュへ移行検討。"""
 ```
@@ -365,20 +365,20 @@ def api_auto_live(cid: str) -> Response:
 `main.py` 既存の Code エージェントに倣い、メモリ保持:
 
 ```python
-_auto_ctx: dict[str, list] = {}                # 会話ごとの会話履歴(messages)
-_auto_sessions: dict[str, BrowserSession] = {} # 会話ごとのブラウザ
-_auto_running: set[str] = set()                # 実行中の会話 ID
-_auto_lock = threading.Lock()
+_automa_ctx: dict[str, list] = {}                # 会話ごとの会話履歴(messages)
+_automa_sessions: dict[str, BrowserSession] = {} # 会話ごとのブラウザ
+_automa_running: set[str] = set()                # 実行中の会話 ID
+_automa_lock = threading.Lock()
 ```
 
 ### 8.3 会話削除時のクリーンアップ
 `api_delete_conversation` で Code と同様の処理を追加:
 ```python
-with _auto_lock:
-    sess = _auto_sessions.pop(cid, None)
+with _automa_lock:
+    sess = _automa_sessions.pop(cid, None)
     if sess: sess.close()
-    _auto_ctx.pop(cid, None)
-    _auto_running.discard(cid)
+    _automa_ctx.pop(cid, None)
+    _automa_running.discard(cid)
 ```
 
 ---
@@ -387,7 +387,7 @@ with _auto_lock:
 
 ### 9.1 操作スコープ(技術的サンドボックス)
 - **専用 Chromium プロセス** を Playwright で起動。ユーザの個人ブラウザと分離
-- `user-data-dir = data/auto_browser/<conv_id>/` に固定 → クッキー・ログイン情報も会話内で完結
+- `user-data-dir = data/automa_browser/<conv_id>/` に固定 → クッキー・ログイン情報も会話内で完結
 - Phase 1 では **デスクトップに触れない** → 暴走しても被害はブラウザ内のみ
 
 ### 9.2 承認フロー
@@ -398,14 +398,14 @@ with _auto_lock:
 | 計画モード OFF + 各操作で確認 OFF | 操作前承認なし。自動実行モード(注意喚起トースト必須) |
 
 ### 9.3 URL ホワイトリスト
-- `settings.auto.allowed_domains` が空でない場合、`browser_open` / `browser_navigate` 実行前に
+- `settings.automa.allowed_domains` が空でない場合、`browser_open` / `browser_navigate` 実行前に
   ドメイン照合(`fnmatch` で `*.example.com` 形式対応)
 - マッチしなければツール側で deny し、エラー結果を LLM に返す
 
 ### 9.4 緊急停止
-- フロント: 赤い「■ 停止」ボタン → `POST /api/auto/abort`
+- フロント: 赤い「■ 停止」ボタン → `POST /api/automa/abort`
 - サーバ:
-  1. `_auto_running` から除外
+  1. `_automa_running` から除外
   2. SSE ストリームの `GeneratorExit` 発火(クライアント切断と同等)
   3. `BrowserSession.close()` を強制実行(Playwright `browser.close()`)
 - LLM 推論中の Ollama リクエストは Ollama 側のキャンセル機構に依存(タイムアウト)
@@ -413,11 +413,11 @@ with _auto_lock:
 ### 9.5 認証・LAN 制限
 - 既存 `auth.require_auth` をそのまま適用
 - `LAN_ONLY` ミドルウェアも自動的に適用される(`main.py:82-93`)
-- README に「Auto モードはサーバ上でブラウザを起動するため、Code と同様に **必ず `CHAT_PASSWORD` 設定**」を追記
+- README に「Automa モードはサーバ上でブラウザを起動するため、Code と同様に **必ず `CHAT_PASSWORD` 設定**」を追記
 
 ### 9.6 ログ
 - 操作前後のスクショ + ツール呼出し引数を構造化ログに出力
-- 監査用に `data/auto_audit/<conv_id>/<timestamp>.json` へ追記(オプション・既定 OFF)
+- 監査用に `data/automa_audit/<conv_id>/<timestamp>.json` へ追記(オプション・既定 OFF)
 
 ---
 
@@ -427,23 +427,23 @@ with _auto_lock:
 
 | ファイル | 内容 | 行数目安 |
 |---|---|---|
-| `app/auto.py` | エージェントループ・ツールスキーマ・承認解決 | ~500 |
-| `app/auto_browser.py` | Playwright ラッパ。BrowserSession クラス | ~300 |
-| `docs/auto_design.md` | 本設計書 | (本ファイル) |
-| `docs/auto_user_guide.md` | エンドユーザ向け使い方(Phase 1 完了時) | ~150 |
+| `app/automa.py` | エージェントループ・ツールスキーマ・承認解決 | ~500 |
+| `app/automa_browser.py` | Playwright ラッパ。BrowserSession クラス | ~300 |
+| `docs/automa_design.md` | 本設計書 | (本ファイル) |
+| `docs/automa_user_guide.md` | エンドユーザ向け使い方(Phase 1 完了時) | ~150 |
 
 ### 10.2 修正ファイル
 
 | ファイル | 修正点 |
 |---|---|
-| `app/main.py` | `/api/conversations/{cid}/auto` 等 5 ルート追加、`_auto_*` 状態、会話削除時クリーンアップ |
-| `app/db.py` | `kind="auto"` を許容(現状でも動くが定数化推奨)。`messages.sources` の解釈はそのまま流用 |
-| `app/agent.py` | 承認 resolve 関数(`resolve`, `resolve_answer`)を `auto.py` から再利用するため公開 API に格上げ。または共通モジュール `app/agent_common.py` を切り出す |
+| `app/main.py` | `/api/conversations/{cid}/automa` 等 5 ルート追加、`_automa_*` 状態、会話削除時クリーンアップ |
+| `app/db.py` | `kind="automa"` を許容(現状でも動くが定数化推奨)。`messages.sources` の解釈はそのまま流用 |
+| `app/agent.py` | 承認 resolve 関数(`resolve`, `resolve_answer`)を `automa.py` から再利用するため公開 API に格上げ。または共通モジュール `app/agent_common.py` を切り出す |
 | `app/safety.py` | `is_url_allowed(url, allowed_domains)` 関数追加 |
 | `app/config.py` | `AUTO_BROWSER_HEADLESS`, `AUTO_BROWSER_VIEWPORT` 等の環境変数読込追加 |
-| `app/static/index.html` | mode-tabs に Auto 追加、`#auto-bar`, `#auto-screen` ペイン追加 |
-| `app/static/css/style.css` | `.only-auto`, `body[data-mode="auto"]`, `.auto-bar`, `.auto-screen` 等 |
-| `app/static/js/app.js` | `setMode("auto")` 対応、Auto バー操作、ライブスクショ更新、緊急停止 |
+| `app/static/index.html` | mode-tabs に Automa 追加、`#automa-bar`, `#automa-screen` ペイン追加 |
+| `app/static/css/style.css` | `.only-automa`, `body[data-mode="automa"]`, `.automa-bar`, `.automa-screen` 等 |
+| `app/static/js/app.js` | `setMode("automa")` 対応、Automa バー操作、ライブスクショ更新、緊急停止 |
 | `requirements.txt` | `playwright>=1.40`, `Pillow>=10`(スクショ圧縮用) |
 | `.env.example` | `AUTO_BROWSER_HEADLESS=false` 等の追加 |
 | `README.md` | 機能紹介セクション、起動手順(`playwright install chromium`)、安全注意 |
@@ -453,12 +453,12 @@ with _auto_lock:
 ## 11. 段階計画
 
 ### Phase 1(本設計の中核 / 推定 5〜7 営業日)
-- [ ] Playwright 統合 (`auto_browser.py`)
+- [ ] Playwright 統合 (`automa_browser.py`)
 - [ ] ツール 10 個実装(`screenshot`, `browser_*`, `ask_user`, `present_plan`, `todo_write`)
 - [ ] 画像伝播(ToolResult, 擬似 user ターン)
-- [ ] `auto.py` のエージェントループ
+- [ ] `automa.py` のエージェントループ
 - [ ] API ルート + 状態管理
-- [ ] UI: Auto タブ、auto-bar、ライブスクショ(ポーリング)、緊急停止
+- [ ] UI: Automa タブ、automa-bar、ライブスクショ(ポーリング)、緊急停止
 - [ ] 承認フロー UI(差分の代わりに操作サマリ表示)
 - [ ] DB 保存(サムネイル化)
 - [ ] 動作確認シナリオ(§13)を通す
@@ -470,7 +470,7 @@ with _auto_lock:
 - [ ] 失敗時の自動リトライ(同じ操作を 2 回まで)
 
 ### Phase 2(デスクトップ拡張 / 推定 3〜5 営業日)
-- [ ] PyAutoGUI 統合(別ツール群 `desktop_*`)
+- [ ] PyAutomaGUI 統合(別ツール群 `desktop_*`)
 - [ ] OS 別の緊急停止ホットキー
 - [ ] アプリ起動ツール
 
@@ -488,12 +488,12 @@ with _auto_lock:
 | R1 | ローカル LLM のツール呼出し精度 | 中 | Vision モデルは `qwen2.5-vl:32b` を既定推奨、設定でいつでも切替可。`gemma3:27b` 等もフォールバック |
 | R2 | 座標クリックの解像度依存ずれ | 中 | セレクタ操作を最優先、座標は最終手段。ビューポート固定(1280×800) |
 | R3 | LLM 無限ループ | 中 | `MAX_STEPS=60`、直近 N ステップで同操作の繰り返しを検出して打切り |
-| R4 | VRAM 競合(Chat + Vision + Embedding 同時常駐) | 中 | Ollama `keep_alive=5m` を `auto` 用ターン中だけ 0 にして他モデル解放。設定で切替 |
+| R4 | VRAM 競合(Chat + Vision + Embedding 同時常駐) | 中 | Ollama `keep_alive=5m` を `automa` 用ターン中だけ 0 にして他モデル解放。設定で切替 |
 | R5 | Playwright 初回 install | 低 | README に `playwright install chromium` を明記。`run.py` 起動時に未インストール検知警告 |
 | R6 | ヘッドレス vs 通常 | 中 | サーバが Linux server で GUI なしの場合 `headless=true` 必須。Windows デスクトップなら好みで選択 |
 | R7 | 機微情報のスクショ保存 | 高 | 履歴サムネイルは既定 ON、設定で OFF 可。ログイン情報は `user-data-dir` 内に閉じる |
-| R8 | 同時アクセス時のセッション衝突 | 低 | 会話単位で `_auto_running` で排他、別会話なら並列可 |
-| R9 | LAN 公開時に他人が誤って操作 | 高 | `CHAT_PASSWORD` 必須化(README で強調)、Auto モードは認証ユーザのみ |
+| R8 | 同時アクセス時のセッション衝突 | 低 | 会話単位で `_automa_running` で排他、別会話なら並列可 |
+| R9 | LAN 公開時に他人が誤って操作 | 高 | `CHAT_PASSWORD` 必須化(README で強調)、Automa モードは認証ユーザのみ |
 | R10 | サイト側の自動化対策(reCAPTCHA 等) | 中 | 対策不可と明記、ask_user で人間に介入を求める動線 |
 
 ---
@@ -508,7 +508,7 @@ with _auto_lock:
 | T4 | 計画承認後、`browser_click` でも逐一承認を求めるよう設定 | 各操作前に承認ダイアログ |
 | T5 | 緊急停止ボタンを押す | ループ即停止、ブラウザ即終了、エラーメッセージ表示 |
 | T6 | `allowed_domains=["example.com"]` で google.com を開かせる | ツール側で deny、エラー結果が LLM に返り別案 |
-| T7 | 会話削除 | ブラウザプロセス終了、`data/auto_browser/<cid>/` クリーンアップ |
+| T7 | 会話削除 | ブラウザプロセス終了、`data/automa_browser/<cid>/` クリーンアップ |
 | T8 | 再起動して同会話を開く | 過去のスクショ・操作履歴が DB から復元表示される |
 | T9 | LLM が同じクリックを 3 回繰り返す | ループ検出で打切り、ユーザにエラー報告 |
 | T10 | ask_user 発火 → ユーザ回答 → 続行 | 期待通り回答が反映される |
@@ -523,7 +523,7 @@ with _auto_lock:
 | Q2 | ライブスクショ更新間隔 | 操作完了ごと(イベント駆動) / 500ms ポーリング / WebSocket |
 | Q3 | デスクトップ操作の Phase 2 着手判断 | Phase 1 の精度評価後に判断 |
 | Q4 | 録画機能の方式(Phase 3) | Playwright トレース機能を利用 / 独自記録 |
-| Q5 | RAG 連携 | 「特定サイトの操作手順書を RAG で参照しながら Auto モードが動く」設計を将来盛り込むか |
+| Q5 | RAG 連携 | 「特定サイトの操作手順書を RAG で参照しながら Automa モードが動く」設計を将来盛り込むか |
 | Q6 | macOS / Linux サポート | Phase 1 は Windows + ヘッドレス Linux 動作確認。macOS は best effort |
 
 ---
@@ -544,15 +544,15 @@ with _auto_lock:
 
 | 既存実装 | 流用先 |
 |---|---|
-| `agent.run_stream()` のループ構造 | `auto.run_stream()` |
+| `agent.run_stream()` のループ構造 | `automa.run_stream()` |
 | `agent.resolve()` / `resolve_answer()` | 承認・ask_user 解決 |
 | `agent.compact_ctx_with_model()` | 文脈圧縮(長期作業時) |
 | `main.py:399-402` の images 投入パターン | スクショ画像の messages 注入 |
-| `main.py:_code_ctx` の状態管理パターン | `_auto_ctx` / `_auto_sessions` |
+| `main.py:_code_ctx` の状態管理パターン | `_automa_ctx` / `_automa_sessions` |
 | `db.add_message` / `list_messages` | メッセージ永続化 |
 | `messages.sources` の構造化ステップ保存 | スクショ + ツール記録 |
 | SSE ヘルパ `sse()` | 進捗ストリーム |
-| 既存 `mode-tab` / `data-mode` の CSS パターン | Auto タブ |
+| 既存 `mode-tab` / `data-mode` の CSS パターン | Automa タブ |
 | `auth.require_auth` 依存 | 全 API |
 
 ---
