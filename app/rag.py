@@ -13,12 +13,12 @@ import uuid
 from pathlib import Path
 from typing import Callable, Optional
 
-from . import db
+from . import db, retrieval
 from .config import settings
 from .embeddings import get_embedder
 from .loaders import SUPPORTED_EXTS, load_file
 from .logging_setup import get_logger
-from .splitter import split_text
+from .splitter import split_structured
 
 log = get_logger("rag")
 
@@ -199,8 +199,10 @@ def build_index(iid: str, paths: list[str],
                     continue
                 pending = []
                 for b in blocks:
-                    for chunk in split_text(b["text"], cs, co):
-                        pending.append((chunk, b["source"], b["loc"], fpath))
+                    for chunk, heading in split_structured(b["text"], cs, co):
+                        doc = f"{heading}\n{chunk}" if heading else chunk     # 見出しを本文・埋め込みに含める
+                        loc = f"{b['loc']} / {heading}" if heading else b["loc"]
+                        pending.append((doc, b["source"], loc, fpath, heading))
                 if not pending:
                     continue
                 for s in range(0, len(pending), _BATCH):
@@ -210,7 +212,8 @@ def build_index(iid: str, paths: list[str],
                         ids=[uuid.uuid4().hex for _ in batch],
                         embeddings=vecs,
                         documents=[c[0] for c in batch],
-                        metadatas=[{"source": c[1], "loc": c[2], "path": c[3], "sig": sig} for c in batch],
+                        metadatas=[{"source": c[1], "loc": c[2], "path": c[3],
+                                    "sig": sig, "heading": c[4]} for c in batch],
                     )
                 total_chunks += len(pending)
                 ok_files += 1
@@ -268,8 +271,10 @@ def add_attachment(cid: str, file_path: Path, original_name: str) -> int:
         return 0
     pending = []
     for b in blocks:
-        for chunk in split_text(b["text"], cs, co):
-            pending.append((chunk, original_name, b["loc"], original_name))
+        for chunk, heading in split_structured(b["text"], cs, co):
+            doc = f"{heading}\n{chunk}" if heading else chunk
+            loc = f"{b['loc']} / {heading}" if heading else b["loc"]
+            pending.append((doc, original_name, loc, original_name, heading))
     if not pending:
         return 0
     for s in range(0, len(pending), _BATCH):
@@ -279,7 +284,8 @@ def add_attachment(cid: str, file_path: Path, original_name: str) -> int:
             ids=[uuid.uuid4().hex for _ in batch],
             embeddings=vecs,
             documents=[c[0] for c in batch],
-            metadatas=[{"source": c[1], "loc": c[2], "path": c[3], "attachment": True} for c in batch],
+            metadatas=[{"source": c[1], "loc": c[2], "path": c[3],
+                        "attachment": True, "heading": c[4]} for c in batch],
         )
     return len(pending)
 
@@ -324,6 +330,9 @@ def retrieve(query: str, index_ids: list[str], conversation_id: Optional[str] = 
     embedder = get_embedder()
     qvec = embedder.embed_query(query)
 
+    # 再ランク(語彙融合)で精度を上げるため、密検索は top_k より広く候補を取る。
+    cand_k = max(top_k * 4, 40)
+
     hits: list[dict] = []
     for name in target:
         try:
@@ -331,7 +340,7 @@ def retrieve(query: str, index_ids: list[str], conversation_id: Optional[str] = 
             n = col.count()
             if n == 0:
                 continue
-            n_results = n if unlimited else min(top_k, n)
+            n_results = n if unlimited else min(cand_k, n)
             res = col.query(query_embeddings=[qvec], n_results=n_results)
             docs = res.get("documents", [[]])[0]
             metas = res.get("metadatas", [[]])[0]
@@ -354,17 +363,9 @@ def retrieve(query: str, index_ids: list[str], conversation_id: Optional[str] = 
             else:
                 log.warning("コレクション検索失敗(%s): %s", name, str(e)[:200])
 
-    hits.sort(key=lambda h: h["distance"])
-    # 1ファイルが結果を独占しないよう、ソース単位の上限で多様化(多ファイル横断に有効)
-    capped: list[dict] = []
-    per: dict[str, int] = {}
-    for h in hits:
-        src = h.get("source", "")
-        if per.get(src, 0) >= MAX_PER_SOURCE:
-            continue
-        per[src] = per.get(src, 0) + 1
-        capped.append(h)
-    return capped if unlimited else capped[:top_k]
+    # 密検索の候補を、語彙スコア(BM25相当)とのRRF融合で再ランク。
+    # 重複除去・ソース多様化・無関係ヒットの足切りもここで行う。
+    return retrieval.rerank(query, hits, top_k, MAX_PER_SOURCE, unlimited)
 
 
 def reset_all() -> None:

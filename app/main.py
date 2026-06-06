@@ -72,6 +72,9 @@ def _ip_allowed(host: str | None) -> bool:
         ip = ipaddress.ip_address(host)
     except ValueError:
         return host == "localhost"
+    mapped = getattr(ip, "ipv4_mapped", None)   # ::ffff:192.168.x.x → 192.168.x.x(スマホ等の誤遮断を防ぐ)
+    if mapped is not None:
+        ip = mapped
     if ip.is_loopback or ip.is_private or ip.is_link_local:
         return True
     for net in settings.allowed_cidrs:  # .env の ALLOWED_CIDRS による追加許可(社内の非標準レンジ等)
@@ -80,17 +83,42 @@ def _ip_allowed(host: str | None) -> bool:
     return False
 
 
+def _denied_page(host: str | None) -> str:
+    """LAN制限で弾いたときの案内HTML(接続元IPと対処を表示。スマホでも読める)。"""
+    ip = (host or "不明").replace("<", "").replace(">", "")
+    hint = ""
+    try:
+        a = ipaddress.ip_address(host)
+        a = getattr(a, "ipv4_mapped", None) or a
+        if a.version == 4:
+            hint = ".".join(str(a).split(".")[:3]) + ".0/24"
+    except Exception:
+        pass
+    cidr = f"<li><code>.env</code> に <code>ALLOWED_CIDRS={hint}</code> を追加</li>" if hint else ""
+    return ("<!doctype html><html lang=ja><head><meta charset=utf-8>"
+            "<meta name=viewport content=\"width=device-width,initial-scale=1\">"
+            "<title>アクセス制限</title><style>"
+            "body{font-family:system-ui,-apple-system,sans-serif;max-width:560px;margin:36px auto;"
+            "padding:0 22px;line-height:1.85;color:#1f2328}code{background:#eef0f3;padding:2px 6px;"
+            "border-radius:5px;font-size:.9em}h1{font-size:20px}li{margin:.4em 0}</style></head><body>"
+            "<h1>このネットワークからはアクセスできません</h1>"
+            f"<p>社内ネットワーク限定(<code>LAN_ONLY</code>)が有効で、接続元IP <code>{ip}</code> が許可範囲外です。"
+            "サーバ管理者は次のいずれかで許可できます。</p><ul>"
+            f"{cidr}"
+            "<li>または <code>LAN_ONLY=false</code>(社外に公開しない環境のみ)</li>"
+            "<li>サーバ <code>HOST=0.0.0.0</code>・同一Wi-Fi接続・PCのファイアウォール(ポート開放)も確認</li>"
+            "</ul></body></html>")
+
+
 @app.middleware("http")
 async def _lan_guard(request, call_next):
     if settings.lan_only:
         client = request.client
         host = client.host if client else None
         if not _ip_allowed(host):
-            log.warning("LAN外からのアクセスを拒否: %s", host)
-            return JSONResponse(
-                {"detail": "このネットワークからはアクセスできません(LAN制限が有効です)"},
-                status_code=403,
-            )
+            log.warning("LAN外からのアクセスを拒否: %s (UA=%s)",
+                        host, request.headers.get("user-agent", "")[:80])
+            return Response(_denied_page(host), status_code=403, media_type="text/html; charset=utf-8")
     return await call_next(request)
 
 
@@ -506,11 +534,21 @@ def api_generate(cid: str, body: GenerateBody) -> Response:
             fb = (content or "画像").strip().splitlines()[0][:30] or "新しい会話"
             db.update_conversation(cid, title=fb)
 
-    # --- RAG 検索 ---
+    # --- RAG 検索(追問は履歴をふまえ独立クエリへ書き換えてから検索) ---
     sources: list[dict] = []
     hits: list[dict] = []
+    search_query = query
     try:
-        hits = rag.retrieve(query, conv.get("active_indexes", []), cid, int(eff["top_k"]))
+        prior = [m for m in db.list_messages(cid) if m["role"] in ("user", "assistant")]
+        if prior and prior[-1]["role"] == "user":
+            prior = prior[:-1]          # 今回の質問を除いた過去のやり取り
+        search_query = llm.rewrite_query(prior, query, eff["model"])
+        if search_query != query:
+            log.info("クエリ書き換え [conv=%s] %s -> %s", cid, query[:40], search_query[:40])
+    except Exception:
+        log.exception("クエリ書き換えに失敗(原文で検索)")
+    try:
+        hits = rag.retrieve(search_query, conv.get("active_indexes", []), cid, int(eff["top_k"]))
     except Exception:
         log.exception("検索失敗(無視して続行)")
     if hits:
@@ -526,7 +564,9 @@ def api_generate(cid: str, body: GenerateBody) -> Response:
     history = db.list_messages(cid)
     # 参照フォルダ(インデックス)を選択している会話は、その資料だけで回答する厳格モード。
     strict_rag = bool(conv.get("active_indexes"))
-    messages = llm.build_messages(eff["system_prompt"], history, hits, strict=strict_rag)
+    # 図を求めていない通常QAでは簡潔な整形ガイドにして根拠提示に集中させる。
+    messages = llm.build_messages(eff["system_prompt"], history, hits,
+                                  strict=strict_rag, diagram_hint=llm.wants_diagram(query))
     use_vision = bool(image_b64s)
     # Vision/OCR モデルは設定(既定値)で選べる。未設定なら .env の VISION_MODEL を使用。
     vision_model = (eff.get("vision_model") or settings.vision_model or "").strip()

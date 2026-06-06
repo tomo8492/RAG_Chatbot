@@ -57,6 +57,11 @@ function toast(msg) {
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => t.classList.add("hidden"), 3200);
 }
+// スクリーンリーダーへ状態を読み上げさせる(視覚的には非表示の live region)
+function srAnnounce(msg) {
+  const e = $("sr-status");
+  if (e) e.textContent = msg || "";
+}
 
 /* ---------------- テーマ(Windows/OSの設定に追従) ----------------
    themeMode: "system"(既定=OSに追従) | "light"(固定) | "dark"(固定) */
@@ -663,7 +668,7 @@ function showSourcePopover(anchor, s) {
   pop._anchor = anchor;
   const head = el("div", "src-pop-head");
   head.appendChild(el("span", "src-pop-title", escapeHtml(`${s.source}${s.loc ? " · " + s.loc : ""}`)));
-  const x = el("button", "src-pop-x", "✕"); x.onclick = () => pop.remove();
+  const x = el("button", "src-pop-x", "✕"); x.setAttribute("aria-label", "閉じる"); x.onclick = () => pop.remove();
   head.appendChild(x);
   pop.appendChild(head);
   const body = el("div", "src-pop-body"); body.textContent = s.text || "(本文なし)";
@@ -1204,6 +1209,9 @@ function setStreaming(on) {
   State.streaming = on;
   $("send-btn").classList.toggle("hidden", on);
   $("stop-btn").classList.toggle("hidden", !on);
+  const msgs = $("messages");
+  if (msgs) msgs.setAttribute("aria-busy", on ? "true" : "false");
+  srAnnounce(on ? "生成中です" : "生成が完了しました");
 }
 function stopGeneration() {
   if (State.controller) State.controller.abort();
@@ -2458,7 +2466,11 @@ function autoResize() {
   t.style.height = Math.min(t.scrollHeight, 220) + "px";
 }
 
-function closeSidebarMobile() { $("sidebar").classList.remove("open"); }
+function closeSidebarMobile() {
+  $("sidebar").classList.remove("open");
+  const t = $("toggle-sidebar");
+  if (t) t.setAttribute("aria-expanded", "false");
+}
 
 /* ============================================================
    イベント束ね
@@ -2471,7 +2483,10 @@ function bindGlobalEvents() {
   $("new-chat").onclick = () => newConversation();
   $("conv-search").addEventListener("input", (e) => onConvSearch(e.target.value));
   $("logout-btn").onclick = async () => { await api("/api/logout", { method: "POST" }); location.reload(); };
-  $("toggle-sidebar").onclick = () => $("sidebar").classList.toggle("open");
+  $("toggle-sidebar").onclick = (e) => {
+    const open = $("sidebar").classList.toggle("open");
+    e.currentTarget.setAttribute("aria-expanded", open ? "true" : "false");
+  };
 
   // Chat / Code タブ
   document.querySelectorAll(".mode-tab").forEach((t) =>

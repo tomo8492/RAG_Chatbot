@@ -8,6 +8,7 @@ Ollama によるチャット生成。
 """
 from __future__ import annotations
 
+import re
 from typing import Iterator, Optional
 
 from .config import settings
@@ -81,6 +82,27 @@ flowchart のノードは種別ごとに次の形・クラスで表す(色は自
   印刷(@media print)に対応・セマンティックHTML。
 
 ここに挙げた記法・図種・ルールは省略・要約しない。"""
+
+# 図の指示が不要な通常QAで付ける短い整形ガイド(コンテキストを節約し、根拠提示に集中させる)。
+MARKDOWN_GUIDE_BRIEF = """【出力フォーマット】
+読みやすさのため適切に Markdown で構造化する: 見出し / 箇条書き・番号付き / 太字 / 表 /
+コードブロック(```言語) / 引用 / 数式(インライン $...$、ブロック $$...$$)。
+単純な答えを無理に箇条書きにしない。処理の流れ・手順・分岐・やり取り・構造・状態遷移・
+関係・工程など「図で示すと明確な内容」は Mermaid 図(```mermaid)で表してよい。"""
+
+# 図・作図・可視化・HTML等を求める意図の検出(これに該当する時だけ詳細な図ガイドを付与)
+_DIAGRAM_HINT = re.compile(
+    r"(図解|作図|可視化|フロー|フローチャート|ダイアグラム|ダイヤグラム|チャート|"
+    r"シーケンス|クラス図|状態遷移|ER図|ガント|工程表|構成図|関係図|ツリー図|"
+    r"mermaid|diagram|flowchart|sequence|gantt|html|スライド|描いて|図示|図にして)",
+    re.IGNORECASE,
+)
+
+
+def wants_diagram(text: str) -> bool:
+    """質問が図・作図・可視化・HTML等を求めているか(詳細な図ガイド付与の判定)。"""
+    return bool(_DIAGRAM_HINT.search(text or ""))
+
 
 # RAG 用の指示(参考資料がある場合に付与)
 RAG_INSTRUCTION = """以下の【参考資料】を最優先の根拠として回答してください。
@@ -231,17 +253,22 @@ def build_context_block(hits: list[dict], max_chars: int = RAG_CONTEXT_CHAR_BUDG
 
 def build_messages(system_prompt: str, history: list[dict], hits: list[dict],
                    strict: bool = False,
-                   max_context_chars: int = RAG_CONTEXT_CHAR_BUDGET) -> list[dict]:
+                   max_context_chars: int = RAG_CONTEXT_CHAR_BUDGET,
+                   diagram_hint: Optional[bool] = None) -> list[dict]:
     """system + 履歴からOllama用messagesを組み立てる。
 
     - strict=True(参照フォルダ選択時): 参考資料の内容だけで回答する厳格指示を必ず付与。
       ヒットが無くても付与し、「資料内に記載なし」と答えさせる(一般知識で答えない)。
     - strict=False: ヒットがあるときだけ通常のRAG指示を付与(一般知識での補完を許容)。
+    - diagram_hint: True=詳細な図ガイド / False=簡潔な整形ガイド / None=従来どおり詳細。
+      図が不要な通常QAでは簡潔ガイドにして根拠提示に集中させ、コンテキストも節約する。
     参考資料・履歴はコンテキスト超過を防ぐため上限でトリムする。
     """
     sys_text = (system_prompt or DEFAULT_SYSTEM_PROMPT).strip()
-    # ペルソナを上書きされてもスタイル補正・出力フォーマット強制は常に効かせる
-    sys_text = sys_text + "\n\n" + STYLE_GUIDE + "\n\n" + MARKDOWN_MERMAID_GUIDE
+    # ペルソナを上書きされてもスタイル補正・出力フォーマットは常に効かせる。
+    # 図ガイドは意図に応じて詳細/簡潔を切り替える(None は後方互換で詳細)。
+    fmt_guide = MARKDOWN_GUIDE_BRIEF if diagram_hint is False else MARKDOWN_MERMAID_GUIDE
+    sys_text = sys_text + "\n\n" + STYLE_GUIDE + "\n\n" + fmt_guide
     if strict:
         context = (build_context_block(hits, max_context_chars) if hits
                    else "(参照フォルダ内に該当する資料が見つかりませんでした)")
@@ -256,6 +283,58 @@ def build_messages(system_prompt: str, history: list[dict], hits: list[dict],
     for m in hist:
         messages.append({"role": m["role"], "content": m["content"]})
     return messages
+
+
+# ============================================================
+#  会話履歴をふまえたクエリ書き換え(多ターン検索の改善)
+# ============================================================
+_FOLLOWUP_HINT = re.compile(
+    r"(それ|その|これ|この|あれ|あの|どれ|そこ|ここ|同じ|前述|上記|先ほど|さっき|"
+    r"続き|もっと|詳しく|具体的|なぜ|理由|つまり|では|じゃあ|他には|以外)")
+
+
+def should_rewrite_query(history: list[dict], query: str) -> bool:
+    """直近に応答があり、かつ追問らしい(短い/指示語を含む)ときだけ書き換える。"""
+    if not any(m.get("role") == "assistant" for m in (history or [])):
+        return False
+    q = (query or "").strip()
+    if len(q) <= 24:
+        return True
+    return bool(_FOLLOWUP_HINT.search(q))
+
+
+def build_rewrite_prompt(history: list[dict], query: str, max_turns: int = 6) -> str:
+    """直近のやり取りを添えて『自立した検索クエリ』を作らせるプロンプト。"""
+    turns = [m for m in (history or []) if m.get("role") in ("user", "assistant")][-max_turns:]
+    lines = []
+    for m in turns:
+        who = "ユーザー" if m.get("role") == "user" else "アシスタント"
+        c = " ".join((m.get("content") or "").split())
+        if c:
+            lines.append(f"{who}: {c[:300]}")
+    convo = "\n".join(lines) or "(なし)"
+    return (
+        "次の会話の流れをふまえ、最後のユーザーの質問を、それだけで意味が通じる"
+        "『検索用の独立した質問』に書き換えてください。指示語(それ・その等)は文脈から"
+        "具体的な語に置き換え、新しい情報は足さないこと。前置き・説明・引用符は書かず、"
+        "書き換え後の質問文だけを1行で出力してください。\n\n"
+        f"会話:\n{convo}\n\n最後の質問: {query}\n\n書き換え後の質問:"
+    )
+
+
+def rewrite_query(history: list[dict], query: str, model: str) -> str:
+    """追問を、履歴をふまえた独立クエリに書き換える。対象外/失敗時は元のクエリを返す。"""
+    if not model or not should_rewrite_query(history, query):
+        return query
+    try:
+        out = complete_text(build_rewrite_prompt(history, query), model,
+                            num_predict=80, temperature=0.0)
+    except Exception:
+        return query
+    out = " ".join((out or "").split()).strip(' 　"\'「」『』')
+    if not out or len(out) > 200:
+        return query
+    return out
 
 
 def _extract(part, key: str) -> Optional[str]:
