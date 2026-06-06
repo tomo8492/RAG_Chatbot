@@ -147,4 +147,7 @@ def split_structured(text: str, chunk_size: int = 800, overlap: int = 120
     for path, body in segments:
         for chunk in split_text(body, chunk_size, overlap):
             out.append((chunk, path))
+    if not out:
+        # 見出しのみで本文が無い等。索引から取りこぼさないよう全体を素直に分割する。
+        return [(c, "") for c in split_text(text, chunk_size, overlap)]
     return out
