@@ -174,6 +174,8 @@ async function setMode(mode) {
     return;
   }
   State.mode = mode;
+  State.searchQuery = ""; State.searchResults = [];        // モード切替で検索リセット
+  if ($("conv-search")) $("conv-search").value = "";
   document.body.dataset.mode = mode;
   document.querySelectorAll(".mode-tab").forEach((t) =>
     t.classList.toggle("active", t.dataset.mode === mode));
@@ -231,10 +233,30 @@ async function loadConversations() {
   renderConversationList();
 }
 
+let _convSearchTimer = null;
+function onConvSearch(q) {
+  State.searchQuery = q;
+  clearTimeout(_convSearchTimer);
+  if (!q.trim()) { State.searchResults = []; renderConversationList(); return; }
+  _convSearchTimer = setTimeout(async () => {
+    try {
+      State.searchResults = await api(
+        `/api/conversations?kind=${encodeURIComponent(State.mode)}&q=${encodeURIComponent(q.trim())}`);
+    } catch (_) { State.searchResults = []; }
+    renderConversationList();
+  }, 250);
+}
+
 function renderConversationList() {
   const list = $("conv-list");
   list.innerHTML = "";
-  convsOfMode().forEach((c) => {
+  const searching = !!(State.searchQuery && State.searchQuery.trim());
+  const items = searching ? (State.searchResults || []) : convsOfMode();
+  if (searching && !items.length) {
+    list.appendChild(el("div", "conv-empty", "一致する会話がありません"));
+    return;
+  }
+  items.forEach((c) => {
     const item = el("div", "conv-item" + (State.current && c.id === State.current.id ? " active" : ""));
     item.appendChild(el("span", "title", escapeHtml(c.title || "新しい会話")));
     const del = el("span", "del", "🗑");
@@ -433,6 +455,7 @@ function renderMessage(m, isLastAssistant) {
       bubble.appendChild(att);
     }
     row.appendChild(bubble);
+    if (m.id) row.appendChild(buildUserActions(m, row, bubble));   // 編集/削除
     return row;
   }
   // assistant — Codeの会話で保存済みステップ(計画/ツール/差分/TODO)があれば再現
@@ -446,7 +469,7 @@ function renderMessage(m, isLastAssistant) {
   renderMarkdown(refs.md, m.content, true);
   refs.row.dataset.raw = m.content;
   if (m.sources && m.sources.length) renderSources(refs.src, m.sources);
-  buildAssistantActions(refs, isLastAssistant);
+  buildAssistantActions(refs, isLastAssistant, m);
   return row;
 }
 
@@ -472,7 +495,7 @@ function createAssistantRow() {
   return { row, refs };
 }
 
-function buildAssistantActions(refs, isLast) {
+function buildAssistantActions(refs, isLast, m) {
   refs.actions.innerHTML = "";
   const copy = el("button", null, "📋 コピー");
   copy.onclick = () => {
@@ -485,6 +508,68 @@ function buildAssistantActions(refs, isLast) {
     regen.onclick = () => regenerate();
     refs.actions.appendChild(regen);
   }
+  if (m && m.id) {
+    const del = el("button", null, "🗑 削除");
+    del.onclick = () => deleteMessage(m, refs.row);
+    refs.actions.appendChild(del);
+  }
+}
+
+/* ---------- メッセージの編集 / 削除 ---------- */
+async function reloadCurrentMessages() {
+  if (!State.current) return;
+  const conv = await api(`/api/conversations/${State.current.id}`);
+  State.current = conv;
+  renderMessages(conv.messages || []);
+}
+
+async function deleteMessage(m, row) {
+  if (State.streaming) { toast("生成中は操作できません"); return; }
+  if (!m.id || !State.current) return;
+  if (!confirm("このメッセージを削除しますか?")) return;
+  try {
+    await api(`/api/conversations/${State.current.id}/messages/${m.id}`, { method: "DELETE" });
+    row.remove();
+  } catch (e) { toast("削除に失敗: " + e.message); }
+}
+
+function buildUserActions(m, row, bubble) {
+  const actions = el("div", "msg-actions user-actions");
+  if (m.id && State.mode !== "code") {       // 編集→再生成はチャットのみ
+    const edit = el("button", null, "✎ 編集");
+    edit.onclick = () => startEditUserMessage(m, row, bubble);
+    actions.appendChild(edit);
+  }
+  if (m.id) {
+    const del = el("button", null, "🗑 削除");
+    del.onclick = () => deleteMessage(m, row);
+    actions.appendChild(del);
+  }
+  return actions;
+}
+
+function startEditUserMessage(m, row, bubble) {
+  if (State.streaming) { toast("生成中は編集できません"); return; }
+  const ta = el("textarea", "edit-area"); ta.value = m.content;
+  const bar = el("div", "edit-bar");
+  const save = el("button", "btn primary", "保存して再生成");
+  const cancel = el("button", "btn", "キャンセル");
+  bar.appendChild(save); bar.appendChild(cancel);
+  row.innerHTML = ""; row.appendChild(ta); row.appendChild(bar);
+  ta.focus(); ta.style.height = Math.min(ta.scrollHeight + 4, 300) + "px";
+  cancel.onclick = () => reloadCurrentMessages();
+  save.onclick = async () => {
+    const txt = ta.value.trim();
+    if (!txt) { toast("空にはできません"); return; }
+    save.disabled = cancel.disabled = true;
+    try {
+      await api(`/api/conversations/${State.current.id}/messages/${m.id}`,
+        { method: "PATCH", body: JSON.stringify({ content: txt, truncate_after: true }) });
+      await reloadCurrentMessages();           // 編集を反映(以降は削除済み)
+      await streamAssistant({ mode: "regenerate" });   // 編集後の依頼で再生成
+      await loadConversations();
+    } catch (e) { toast("編集に失敗: " + e.message); save.disabled = cancel.disabled = false; }
+  };
 }
 
 /* ---------- 保存(ファイル出力) ---------- */
@@ -2384,6 +2469,7 @@ function bindGlobalEvents() {
 
   $("theme-toggle").onclick = toggleTheme;
   $("new-chat").onclick = () => newConversation();
+  $("conv-search").addEventListener("input", (e) => onConvSearch(e.target.value));
   $("logout-btn").onclick = async () => { await api("/api/logout", { method: "POST" }); location.reload(); };
   $("toggle-sidebar").onclick = () => $("sidebar").classList.toggle("open");
 

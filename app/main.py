@@ -282,7 +282,9 @@ class ConvUpdate(BaseModel):
 
 
 @app.get("/api/conversations", dependencies=[Depends(auth.require_auth)])
-def api_list_conversations(kind: Optional[str] = None) -> list:
+def api_list_conversations(kind: Optional[str] = None, q: Optional[str] = None) -> list:
+    if q and q.strip():
+        return db.search_conversations(q.strip(), kind=kind)   # タイトル+本文を検索
     return db.list_conversations(kind=kind)
 
 
@@ -341,6 +343,31 @@ def api_delete_conversation(cid: str) -> dict:
     with _code_ctx_lock:
         _code_ctx.pop(cid, None)
         _code_running.discard(cid)
+    return {"ok": True}
+
+
+class MsgEditBody(BaseModel):
+    content: str
+    truncate_after: bool = False   # True=このメッセージ以降を削除(編集して再送する用)
+
+
+@app.patch("/api/conversations/{cid}/messages/{mid}", dependencies=[Depends(auth.require_auth)])
+def api_edit_message(cid: str, mid: str, body: MsgEditBody) -> dict:
+    m = db.get_message(mid)
+    if not m or m.get("conversation_id") != cid:
+        raise HTTPException(404, "メッセージが見つかりません")
+    db.update_message(mid, body.content)
+    if body.truncate_after:
+        db.delete_messages_from(cid, int(m["seq"]) + 1)   # 以降を削除(再生成で続けられる)
+    return {"ok": True}
+
+
+@app.delete("/api/conversations/{cid}/messages/{mid}", dependencies=[Depends(auth.require_auth)])
+def api_delete_message(cid: str, mid: str) -> dict:
+    m = db.get_message(mid)
+    if not m or m.get("conversation_id") != cid:
+        raise HTTPException(404, "メッセージが見つかりません")
+    db.delete_message(mid)
     return {"ok": True}
 
 
