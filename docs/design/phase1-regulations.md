@@ -10,6 +10,37 @@
 
 ---
 
+## 0. 実測検証(設計の裏取り)
+
+代表的な就業規則サンプル(章/条/項/号・漢数字・別表・附則・前条/別表参照)を、
+現状の `split_structured` に通して設計の前提を**実チャンクで確認**した。
+
+### 成立した前提(そのまま採用)
+- 章・条の見出し検出は機能(`第2章 人事 > 第12条(休職)` の見出しパスを生成)。
+- 漢数字の条(`第十三条`)も検出 → `kanji_to_int` は必須。
+- 定義条は見出しの「定義」で判定可(`第2条(定義)`)。
+- 参照は**チャンク本文に出現**し抽出可能(`前条` / `前項` / `別表第2` / `第15条`)。
+
+### 崩れた前提(設計を修正)
+- **附則・別表が直前の条に飲み込まれる。** `附則` も `別表第1` も行頭が「第」で始まらず
+  見出し未検出となり、`第十三条` のチャンク本文に混入した(実測):
+  ```
+  PATH: '第十三条(復職)'
+  BODY: '前条の…復職を命ずる。\n\n附則\n1 …施行する。\n…\n別表第1(第3条関係)\n| 書類 | … |'
+  ```
+  → このままでは「別表第2参照」を突合する**別表チャンクが存在せず**、附則(改訂履歴)も
+  最後の条に紛れる。
+- **前項/次項は同一条内**にあり、チャンク跨ぎの展開は不要(同じチャンクに含まれる)。
+
+### 設計への反映(以降の章に織り込み済み)
+1. `splitter._heading` に **附則 / 別表(第N)/ 様式(第N)/ 別記 / 別紙** を見出しとして追加。
+   → 別表が独立チャンク化し、附則も分離(Phase 3 の改訂履歴抽出も容易になる)。
+2. メタに **`appendix_label`(別表第1 等)** を追加し、別表参照を突合可能に。
+3. 参照展開の対象は **第N条 / 別表第N / 前条 / 次条** とし、**前項/次項は除外**(条内)。
+4. 長い条は複数チャンク化するため、参照取得は同一 `article_label` を**まとめて**返す。
+
+---
+
 ## 1. スコープ
 
 | 含む(Phase 1) | 含まない(Phase 2/3) |
@@ -37,6 +68,7 @@
 |---|---|---|---|
 | `article_no` | int | `12` | 並べ替え・相対参照の解決(前条/次条) |
 | `article_label` | str | `"第12条"` | 絶対参照の突合キー・出典表示 |
+| `appendix_label` | str | `"別表第1"` | 別表/様式参照(別表第N)の突合キー(§0で判明) |
 | `is_definition` | bool | `true` | 定義条のピン留め対象 |
 
 - 既存: `source, loc, path, sig, heading, attachment`(維持)。
@@ -91,7 +123,8 @@ def collect_targets(hits: list[dict], *, max_refs: int) -> list[tuple[str, str]]
 | ファイル | 変更 |
 |---|---|
 | `app/refs.py` | 新規(上記) |
-| `app/rag.py` | `build_index`/`add_attachment`: `refs.parse_article(heading)` の結果をメタに追加。`retrieve`: 参照展開・定義ピン留めの後処理(下記フロー)。引数 `expand_refs: bool=False, pin_definitions: bool=False` を追加 |
+| `app/splitter.py` | **(§0で判明)** `_heading` の規則に **附則 / 別表(第N)/ 様式(第N)/ 別記 / 別紙** を追加。別表を独立チャンク化し、附則を直前の条から分離する。`split_structured` の戻り値に別表ラベルを載せられるよう拡張(または `refs.parse_article` 側で見出しから判定) |
+| `app/rag.py` | `build_index`/`add_attachment`: `refs.parse_article(heading)` の結果(`article_no/label`・`appendix_label`・`is_definition`)をメタに追加。`retrieve`: 参照展開・定義ピン留めの後処理(下記フロー)。引数 `expand_refs: bool=False, pin_definitions: bool=False` を追加 |
 | `app/config.py` | `REGULATION_MODE` 他フラグを追加 |
 | `app/defaults.py` | `base_defaults` に `regulation_mode`、`effective_for` でマージ |
 | `app/main.py` | `api_generate`: 会話設定 `regulation_mode` を読み、`rag.retrieve(..., expand_refs=, pin_definitions=)` に反映。出典(`sources`)に `article_label` と「参照展開/定義」の別を載せる |
@@ -132,7 +165,10 @@ if pin_definitions:
 return hits + _dedup_against(hits, _budget(extra, REG_EXPAND_BUDGET))
 ```
 - `_fetch_by_article`: `col.get(where={"$and":[{"source":source},{"article_label":label}]})`。
+- 別表参照は `appendix_label` で突合: `where={"$and":[{"source":source},{"appendix_label":label}]}`。
 - `_fetch_definitions`: `where={"$and":[{"source":source},{"is_definition":True}]}`。
+- **前項/次項は展開しない**(同一条チャンク内にあるため。§0)。展開対象は 第N条 / 別表第N / 前条 / 次条。
+- 長い条は複数チャンクに分かれるため `limit` は 1 ではなく数件とし、同一 `article_label` を**まとめて**返す。
 - 取得結果は hit 互換の dict（`text/source/loc/...`）へ整形し、`loc` に `note` を反映(例 `第3条(参照)`)。
 - **予算管理**: `extra` は合計 `REG_EXPAND_BUDGET` 文字まで。`build_context_block` の全体上限(12000字)とは別の内枠。
 
@@ -159,23 +195,26 @@ return hits + _dedup_against(hits, _budget(extra, REG_EXPAND_BUDGET))
 | 前条/次条が境界外(第1条の前条) | `resolve_relative` が None を返しスキップ |
 | 参照の連鎖(第3条→第2条…) | Phase 1 は**1ホップのみ**(展開結果からの再展開はしない) |
 | 過剰展開(多数の条を引用) | `REG_MAX_EXPAND` と文字予算で上限 |
-| 別表参照(別表第2) | `loc` の「表N」と突合。PDF はラベルが不安定 → 取れた分のみベスト・エフォート |
+| 前項/次項 | 同一条チャンク内のため**展開しない**(§0 実測) |
+| 別表参照(別表第2) | `splitter` で別表を独立チャンク化し `appendix_label` で突合(§0)。PDF はラベルが不安定 → 取れた分のみベスト・エフォート |
+| 附則が条に混入 | `splitter._heading` に 附則 を追加して分離(§0)。Phase 3 の改訂履歴抽出の前提にもなる |
 | 定義の誤検出 | 本文ではなく**見出し**に 定義/用語 を含むかで判定 |
 | 性能(参照ごとの Chroma 取得) | 件数を上限化。必要なら per-request で `source` 単位のラベル→ids を1回だけキャッシュ |
 | 漢数字/全角(第十二条/第１２条) | `kanji_to_int` で正規化 |
 
 ---
 
-## 7. テスト計画(`tests/test_refs.py`、外部依存なし)
+## 7. テスト計画(`tests/test_refs.py` ＋ `tests/test_splitter.py` 拡張、外部依存なし)
 - `kanji_to_int`: 「十二」→12 / 「１２」→12 / 「3」→3。
 - `parse_article`: 「… > 第12条 基本給」→ 12 / "第12条" / is_def=False。「… > 第2条 定義」→ is_def=True。
 - `is_definition_heading`: 「第2条 用語の定義」True / 「第3条 給与」False。
 - `find_references`: 「第3条に定める」→ article 第3条 / 「別表第2」→ appendix / 「前項のとおり」→ relative。
 - `resolve_relative`: 前条@第3条→第2条 / 次条@第3条→第4条 / 前条@第1条→None。
-- `collect_targets`: 相対参照を hit の `article_no` で解決し、same-source の `(source,label)` を重複なく返す。第1条の前条は除外。
+- `collect_targets`: 相対参照を hit の `article_no` で解決し、same-source の `(source,label)` を重複なく返す。第1条の前条は除外。前項/次項は対象外。
+- **`split_structured`(§0回帰)**: 附則・別表第N が**独立チャンク**になり、直前の条に混入しない。別表チャンクから `appendix_label` を取得できる。
 - 統合(モック lookup): 参照展開が既出を除外し予算内に収まる。
 
-> retrieve 実体(Chroma/埋め込み)は本コンテナで実行不可のため、純粋ロジックを単体테스트し、実検索は手元で `evalkit/run_eval.py` で確認する。
+> retrieve 実体(Chroma/埋め込み)は本コンテナで実行不可のため、純粋ロジックを単体テストし、実検索は手元で `evalkit/run_eval.py` で確認する。
 
 ---
 
