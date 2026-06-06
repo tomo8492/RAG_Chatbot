@@ -4,6 +4,7 @@ HTTP ルート層。ドメインごとに `*_routes.py` へ分割していく(od
 main.py は `from .routes import routers` で受け取り、各 router を include する。
 新しいドメインを切り出したら、その router を下の `routers` に追加するだけでよい。
 """
+from .conversation_routes import router as conversation_router
 from .index_routes import router as index_router
 
-routers = [index_router]
+routers = [conversation_router, index_router]

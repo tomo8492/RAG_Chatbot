@@ -291,78 +291,9 @@ def api_ocr(body: OcrBody,
 
 
 # ============================================================
-#  会話
+#  会話 — 削除のみ(他の CRUD は routes/conversation_routes.py に分離。
+#  削除は Code エージェント実行時状態の掃除を伴うため main.py に残置)
 # ============================================================
-class ConvCreate(BaseModel):
-    title: Optional[str] = None
-    model: Optional[str] = None
-    system_prompt: Optional[str] = None
-    active_indexes: Optional[list] = None
-    settings: Optional[dict] = None
-    kind: Optional[str] = None       # chat | code
-
-
-class ConvUpdate(BaseModel):
-    title: Optional[str] = None
-    model: Optional[str] = None
-    system_prompt: Optional[str] = None
-    active_indexes: Optional[list] = None
-    settings: Optional[dict] = None
-
-
-@app.get("/api/conversations", dependencies=[Depends(auth.require_auth)])
-def api_list_conversations(kind: Optional[str] = None, q: Optional[str] = None) -> list:
-    if q and q.strip():
-        return db.search_conversations(q.strip(), kind=kind)   # タイトル+本文を検索
-    return db.list_conversations(kind=kind)
-
-
-@app.post("/api/conversations", dependencies=[Depends(auth.require_auth)])
-def api_create_conversation(body: ConvCreate) -> dict:
-    d = get_defaults()
-    kind = body.kind or "chat"
-    conv = db.create_conversation(
-        title=body.title or ("新しいコード" if kind == "code" else "新しい会話"),
-        model=body.model or d["model"],
-        system_prompt=body.system_prompt,
-        settings_json=body.settings or {},
-        active_indexes=body.active_indexes or [],
-        kind=kind,
-    )
-    return _conv_with_effective(conv)
-
-
-@app.get("/api/conversations/{cid}", dependencies=[Depends(auth.require_auth)])
-def api_get_conversation(cid: str) -> dict:
-    conv = db.get_conversation(cid)
-    if not conv:
-        raise HTTPException(404, "会話が見つかりません")
-    out = _conv_with_effective(conv)
-    out["messages"] = db.list_messages(cid)
-    return out
-
-
-@app.patch("/api/conversations/{cid}", dependencies=[Depends(auth.require_auth)])
-def api_update_conversation(cid: str, body: ConvUpdate) -> dict:
-    conv = db.get_conversation(cid)
-    if not conv:
-        raise HTTPException(404, "会話が見つかりません")
-    fields = {k: v for k, v in body.dict().items() if v is not None}
-    # settings は部分マージ
-    if "settings" in fields:
-        # Code の作業フォルダは安全なフォルダのみ許可(OS/システム等は不可)
-        ws = (fields["settings"] or {}).get("workspace")
-        if ws:
-            ok, reason = safety.check_workspace(ws)
-            if not ok:
-                raise HTTPException(400, f"このフォルダは作業フォルダに設定できません: {reason}")
-        merged = dict(conv.get("settings") or {})
-        merged.update(fields["settings"])
-        fields["settings"] = merged
-    conv = db.update_conversation(cid, **fields)
-    return _conv_with_effective(conv)
-
-
 @app.delete("/api/conversations/{cid}", dependencies=[Depends(auth.require_auth)])
 def api_delete_conversation(cid: str) -> dict:
     if not db.get_conversation(cid):
@@ -373,37 +304,6 @@ def api_delete_conversation(cid: str) -> dict:
         _code_ctx.pop(cid, None)
         _code_running.discard(cid)
     return {"ok": True}
-
-
-class MsgEditBody(BaseModel):
-    content: str
-    truncate_after: bool = False   # True=このメッセージ以降を削除(編集して再送する用)
-
-
-@app.patch("/api/conversations/{cid}/messages/{mid}", dependencies=[Depends(auth.require_auth)])
-def api_edit_message(cid: str, mid: str, body: MsgEditBody) -> dict:
-    m = db.get_message(mid)
-    if not m or m.get("conversation_id") != cid:
-        raise HTTPException(404, "メッセージが見つかりません")
-    db.update_message(mid, body.content)
-    if body.truncate_after:
-        db.delete_messages_from(cid, int(m["seq"]) + 1)   # 以降を削除(再生成で続けられる)
-    return {"ok": True}
-
-
-@app.delete("/api/conversations/{cid}/messages/{mid}", dependencies=[Depends(auth.require_auth)])
-def api_delete_message(cid: str, mid: str) -> dict:
-    m = db.get_message(mid)
-    if not m or m.get("conversation_id") != cid:
-        raise HTTPException(404, "メッセージが見つかりません")
-    db.delete_message(mid)
-    return {"ok": True}
-
-
-def _conv_with_effective(conv: dict) -> dict:
-    out = dict(conv)
-    out["effective"] = effective_for(conv)
-    return out
 
 
 # ============================================================
