@@ -7,7 +7,6 @@ from __future__ import annotations
 import base64
 import hmac
 import ipaddress
-import json
 import re
 import threading
 import time
@@ -22,11 +21,13 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import agent, auth, db, export, llm, postprocess, rag, safety, summarize
+from . import agent, auth, db, export, llm, postprocess, rag, safety
 from .config import settings
 from .defaults import effective_for, get_defaults, set_defaults
 from .fsbrowse import count_supported_recursive, get_roots, list_dir
 from .logging_setup import get_logger, setup_logging
+from .routes import routers as _routers
+from .sse import sse
 
 setup_logging()
 log = get_logger("main")
@@ -58,6 +59,10 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title=settings.app_title, lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+# ドメイン別ルータ(routes/ 配下)を取り込む。main.py からの段階的分割の受け口。
+for _r in _routers:
+    app.include_router(_r)
 
 
 def _ip_allowed(host: str | None) -> bool:
@@ -125,10 +130,6 @@ async def _lan_guard(request, call_next):
 # ============================================================
 #  SSE ヘルパ
 # ============================================================
-def sse(obj: dict) -> str:
-    return f"data: {json.dumps(obj, ensure_ascii=False)}\n\n"
-
-
 def _make_title(content: str, model: str) -> str:
     """最初のユーザーメッセージから、短い日本語タイトルをLLMで生成(失敗時 '')。"""
     src = (content or "").strip()
@@ -928,217 +929,6 @@ def api_code_file(cid: str, path: str) -> dict:
     text = data.decode("utf-8", errors="replace")
     return {"path": rel, "content": text, "size": size,
             "lines": text.count("\n") + 1, "lang": fp.suffix.lstrip(".").lower()}
-
-
-# ============================================================
-#  インデックス(ナレッジベース)
-# ============================================================
-class IndexCreate(BaseModel):
-    name: Optional[str] = None
-    paths: list[str]
-
-
-def _build_async(iid: str, paths: list[str]) -> None:
-    threading.Thread(target=rag.build_index, args=(iid, paths), daemon=True).start()
-
-
-@app.get("/api/indexes", dependencies=[Depends(auth.require_auth)])
-def api_list_indexes() -> list:
-    items = db.list_indexes()
-    for it in items:
-        st = db.get_kv(f"summary:{it['id']}") or {}
-        it["summary"] = {
-            "status": st.get("status", "none"),
-            "msg": st.get("msg", ""),
-            "has_result": bool(st.get("result")),
-            "finished_at": st.get("finished_at"),
-        }
-        it["bg_threshold"] = SUMMARY_BG_THRESHOLD
-    return items
-
-
-@app.post("/api/indexes", dependencies=[Depends(auth.require_auth)])
-def api_create_index(body: IndexCreate) -> dict:
-    if not body.paths:
-        raise HTTPException(400, "フォルダが指定されていません")
-    # OS/システムやアプリのデータ領域(secret.key 等)を資料として取り込ませない
-    for p in body.paths:
-        if safety.is_within_protected(p):
-            raise HTTPException(400, "OS・システムやアプリのデータ領域は資料に取り込めません")
-    name = body.name or (Path(body.paths[0]).name or body.paths[0])
-    idx = db.create_index(name, body.paths)
-    _build_async(idx["id"], body.paths)
-    log.info("インデックス作成開始: %s (%s)", name, body.paths)
-    return idx
-
-
-@app.get("/api/indexes/{iid}", dependencies=[Depends(auth.require_auth)])
-def api_get_index(iid: str) -> dict:
-    idx = db.get_index(iid)
-    if not idx:
-        raise HTTPException(404, "インデックスが見つかりません")
-    return idx
-
-
-@app.post("/api/indexes/{iid}/rebuild", dependencies=[Depends(auth.require_auth)])
-def api_rebuild_index(iid: str) -> dict:
-    idx = db.get_index(iid)
-    if not idx:
-        raise HTTPException(404, "インデックスが見つかりません")
-    db.update_index(iid, status="building", error=None)
-    db.set_kv(f"summary:{iid}", {"status": "none"})   # 内容が変わるため古い要約は破棄
-    _build_async(iid, idx["paths"])
-    return db.get_index(iid)
-
-
-class SummarizeBody(BaseModel):
-    instruction: str = ""
-    model: Optional[str] = None
-    map_model: Optional[str] = None
-    categories: list[str] = []
-
-
-@app.post("/api/indexes/{iid}/summarize", dependencies=[Depends(auth.require_auth)])
-def api_index_summarize(iid: str, body: SummarizeBody) -> Response:
-    """資料フォルダ配下の全ファイルを map-reduce で一括要約(進捗をSSEで配信)。"""
-    idx = db.get_index(iid)
-    if not idx:
-        raise HTTPException(404, "資料が見つかりません")
-    files = rag.scan_files(idx.get("paths") or [])
-    defs = get_defaults()
-    model = body.model or defs["model"]
-    map_model = (body.map_model or defs.get("summarize_map_model") or "").strip() or None
-    if map_model == model:
-        map_model = None
-    instruction = (body.instruction or "").strip()
-    categories = [c.strip() for c in (body.categories or []) if c and c.strip()]
-
-    def gen():
-        if not files:
-            yield sse({"type": "error", "error": "対象ファイルがありません"})
-            return
-        if not model:
-            yield sse({"type": "error", "error": "モデルが選択されていません"})
-            return
-        if not llm.is_ollama_available():
-            yield sse({"type": "error",
-                       "error": f"Ollama に接続できません({settings.ollama_host})。"})
-            return
-        yield sse({"type": "start", "files": len(files), "model": model, "map_model": map_model})
-        log.info("一括要約 開始 [idx=%s files=%d model=%s map=%s] 観点=%s cats=%d",
-                 iid, len(files), model, map_model, instruction[:40], len(categories))
-        fn = summarize.model_summarize_fn(model, instruction, map_model=map_model, categories=categories)
-        try:
-            for ev in summarize.stream_summarize(files, instruction, fn):
-                yield sse(ev)
-        except GeneratorExit:
-            log.info("一括要約 停止(クライアント切断)[idx=%s]", iid)
-            raise
-        except Exception as e:
-            log.exception("一括要約エラー")
-            yield sse({"type": "error", "error": str(e)})
-
-    headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"}
-    return StreamingResponse(gen(), media_type="text/event-stream", headers=headers)
-
-
-# --- バックグラウンド一括要約(参照ファイルが多いとき。ウィンドウを出さず裏で実行) ---
-SUMMARY_BG_THRESHOLD = 100   # この件数以上はフロントが裏(バックグラウンド)実行を選ぶ
-_summary_cancel: set[str] = set()
-_summary_lock = threading.Lock()
-
-
-def _summary_set(iid: str, **fields) -> dict:
-    st = db.get_kv(f"summary:{iid}", {}) or {}
-    st.update(fields)
-    db.set_kv(f"summary:{iid}", st)
-    return st
-
-
-def _summarize_worker(iid: str, files, instruction: str, categories: list,
-                      model: str, map_model) -> None:
-    db.set_kv(f"summary:{iid}", {
-        "status": "running", "files": len(files), "msg": "準備中…",
-        "instruction": instruction, "categories": categories, "map_model": map_model,
-        "result": None, "error": None, "started_at": time.time(), "finished_at": None})
-    log.info("一括要約(裏) 開始 [idx=%s files=%d model=%s map=%s]", iid, len(files), model, map_model)
-    fn = summarize.model_summarize_fn(model, instruction, map_model=map_model, categories=categories)
-    gen = summarize.stream_summarize(files, instruction, fn)
-    try:
-        for ev in gen:
-            with _summary_lock:
-                canceled = iid in _summary_cancel
-            if canceled:
-                gen.close()
-                _summary_set(iid, status="canceled", msg="中止しました", finished_at=time.time())
-                log.info("一括要約(裏) 中止 [idx=%s]", iid)
-                break
-            t = ev.get("type")
-            if t == "progress":
-                _summary_set(iid, msg=ev.get("msg", ""))
-            elif t == "result":
-                _summary_set(iid, status="done", result=ev.get("text", ""),
-                             msg="完了", finished_at=time.time())
-                log.info("一括要約(裏) 完了 [idx=%s]", iid)
-            elif t == "error":
-                _summary_set(iid, status="error", error=ev.get("error", ""),
-                             msg="エラー", finished_at=time.time())
-    except Exception as e:
-        log.exception("一括要約(裏) 失敗 [idx=%s]", iid)
-        _summary_set(iid, status="error", error=str(e), msg="エラー", finished_at=time.time())
-    finally:
-        with _summary_lock:
-            _summary_cancel.discard(iid)
-
-
-@app.post("/api/indexes/{iid}/summarize/start", dependencies=[Depends(auth.require_auth)])
-def api_summarize_start(iid: str, body: SummarizeBody) -> dict:
-    """裏(バックグラウンド)で一括要約を開始する。進捗は GET /summary でポーリング。"""
-    idx = db.get_index(iid)
-    if not idx:
-        raise HTTPException(404, "資料が見つかりません")
-    cur = db.get_kv(f"summary:{iid}")
-    if cur and cur.get("status") == "running":
-        return {"status": "running", "files": cur.get("files")}
-    files = rag.scan_files(idx.get("paths") or [])
-    if not files:
-        raise HTTPException(400, "対象ファイルがありません")
-    if not llm.is_ollama_available():
-        raise HTTPException(503, f"Ollama に接続できません({settings.ollama_host})。")
-    defs = get_defaults()
-    model = body.model or defs["model"]
-    map_model = (body.map_model or defs.get("summarize_map_model") or "").strip() or None
-    if map_model == model:
-        map_model = None
-    instruction = (body.instruction or "").strip()
-    categories = [c.strip() for c in (body.categories or []) if c and c.strip()]
-    with _summary_lock:
-        _summary_cancel.discard(iid)
-    threading.Thread(target=_summarize_worker,
-                     args=(iid, files, instruction, categories, model, map_model),
-                     daemon=True).start()
-    return {"status": "running", "files": len(files)}
-
-
-@app.get("/api/indexes/{iid}/summary", dependencies=[Depends(auth.require_auth)])
-def api_summary_status(iid: str) -> dict:
-    return db.get_kv(f"summary:{iid}", {"status": "none"}) or {"status": "none"}
-
-
-@app.post("/api/indexes/{iid}/summary/cancel", dependencies=[Depends(auth.require_auth)])
-def api_summary_cancel(iid: str) -> dict:
-    with _summary_lock:
-        _summary_cancel.add(iid)
-    return {"ok": True}
-
-
-@app.delete("/api/indexes/{iid}", dependencies=[Depends(auth.require_auth)])
-def api_delete_index(iid: str) -> dict:
-    if not db.get_index(iid):
-        raise HTTPException(404, "インデックスが見つかりません")
-    rag.delete_index_collection(iid)
-    db.delete_index(iid)
-    return {"ok": True}
 
 
 # ============================================================
