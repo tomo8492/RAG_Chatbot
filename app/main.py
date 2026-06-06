@@ -5,7 +5,6 @@ FastAPI 本体。API ルートと SSE ストリーミング生成。
 from __future__ import annotations
 
 import base64
-import hmac
 import ipaddress
 import re
 import threading
@@ -14,17 +13,15 @@ import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
-from urllib.parse import quote
 
-from fastapi import Body, Cookie, Depends, FastAPI, File, Header, HTTPException, UploadFile
-from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
+from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import agent, auth, db, export, llm, postprocess, rag, safety
+from . import agent, auth, db, llm, postprocess, rag, safety
 from .config import settings
-from .defaults import effective_for, get_defaults, set_defaults
-from .fsbrowse import count_supported_recursive, get_roots, list_dir
+from .defaults import effective_for
 from .logging_setup import get_logger, setup_logging
 from .routes import routers as _routers
 from .sse import sse
@@ -142,152 +139,6 @@ def _make_title(content: str, model: str) -> str:
     raw = postprocess.strip_think(raw or "").strip()
     line = (raw.splitlines() or [""])[0]
     return line.strip("\"'「」『』 　。．、\n")[:30]
-
-
-# ============================================================
-#  認証
-# ============================================================
-class LoginBody(BaseModel):
-    password: str = ""
-
-
-@app.get("/api/config")
-def api_config(rag_session: Optional[str] = Cookie(default=None)) -> dict:
-    return {
-        "app_title": settings.app_title,
-        "auth_enabled": settings.auth_enabled,
-        "authenticated": auth.is_authenticated(rag_session),
-        "ollama_available": llm.is_ollama_available(),
-        "embed_backend": settings.embed_backend,
-        "embed_model": settings.embed_model,
-    }
-
-
-@app.post("/api/login")
-def api_login(body: LoginBody) -> Response:
-    if not settings.auth_enabled:
-        return JSONResponse({"ok": True})
-    if not auth.verify_password(body.password):
-        raise HTTPException(status_code=401, detail="パスワードが違います")
-    token = auth.make_session_token()
-    resp = JSONResponse({"ok": True})
-    resp.set_cookie(auth.COOKIE_NAME, token, httponly=True, samesite="lax",
-                    max_age=60 * 60 * 24 * 14)
-    return resp
-
-
-@app.post("/api/logout")
-def api_logout() -> Response:
-    resp = JSONResponse({"ok": True})
-    resp.delete_cookie(auth.COOKIE_NAME)
-    return resp
-
-
-# ============================================================
-#  設定(グローバル既定値)
-# ============================================================
-@app.get("/api/settings", dependencies=[Depends(auth.require_auth)])
-def api_get_settings() -> dict:
-    return get_defaults()
-
-
-@app.patch("/api/settings", dependencies=[Depends(auth.require_auth)])
-def api_patch_settings(patch: dict = Body(...)) -> dict:
-    return set_defaults(patch)
-
-
-@app.get("/api/models", dependencies=[Depends(auth.require_auth)])
-def api_models() -> dict:
-    return {"available": llm.is_ollama_available(), "models": llm.list_models()}
-
-
-# ============================================================
-#  OCR API (VBA / Python など外部から呼ぶ用)
-#    画像パス(または base64)+ 指示文 を受け取り、Vision モデルの応答を返す。
-#    例) {"path": "C:/work/伝票.png", "instruction": "購入数量を数字だけで返信"}
-# ============================================================
-DEFAULT_OCR_INSTRUCTION = (
-    "この画像に書かれている文字をすべて正確に読み取り、本文だけを出力してください。"
-    "前置き・説明・注釈は不要です。"
-)
-_OCR_IMG_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff"}
-
-
-class OcrBody(BaseModel):
-    path: str = ""                  # サーバ上の画像ファイルパス
-    image_b64: str = ""             # path の代わりに base64 / data URL を直接渡す場合
-    instruction: str = ""           # 読み取り後の指示(空なら全文OCR)
-    model: str = ""                 # 使用モデル(空なら設定のVisionモデル)
-    num_predict: int = 512          # 応答の最大トークン
-    temperature: float = 0.1
-
-
-def _check_ocr_auth(x_api_key: Optional[str], rag_session: Optional[str]) -> None:
-    """OCR API の認証。認証無効時は素通り。有効時は API キー か セッションCookie を要求。"""
-    if not settings.auth_enabled:
-        return
-    if (settings.ocr_api_key and x_api_key
-            and hmac.compare_digest(x_api_key, settings.ocr_api_key)):
-        return
-    if auth.is_authenticated(rag_session):
-        return
-    raise HTTPException(401, "認証が必要です(X-API-Key ヘッダ、またはログインセッションが必要)")
-
-
-@app.post("/api/ocr")
-def api_ocr(body: OcrBody,
-            x_api_key: Optional[str] = Header(default=None, alias="X-API-Key"),
-            rag_session: Optional[str] = Cookie(default=None)) -> dict:
-    _check_ocr_auth(x_api_key, rag_session)
-
-    # --- 画像の取得(base64 優先、無ければパスから読込) ---
-    if body.image_b64.strip():
-        b64 = body.image_b64.strip()
-        if b64.startswith("data:"):
-            try:
-                b64 = b64.split(",", 1)[1]
-            except IndexError:
-                raise HTTPException(400, "data URL の形式が不正です")
-    elif body.path.strip():
-        p = Path(body.path.strip())
-        if not p.is_file():
-            raise HTTPException(404, f"ファイルが見つかりません: {p}")
-        if p.suffix.lower() not in _OCR_IMG_SUFFIXES:
-            raise HTTPException(400, f"対応していない画像形式です: {p.suffix}")
-        data = p.read_bytes()
-        if len(data) > settings.max_upload_mb * 1024 * 1024:
-            raise HTTPException(413, f"画像が大きすぎます(上限 {settings.max_upload_mb}MB)")
-        b64 = base64.b64encode(data).decode("ascii")
-    else:
-        raise HTTPException(400, "path か image_b64 のどちらかを指定してください")
-
-    # --- モデル確認 ---
-    model = llm.resolve_installed((body.model or settings.vision_model or "").strip())
-    if not model:
-        raise HTTPException(400, "Vision モデルが未設定です(model 指定か VISION_MODEL 設定が必要)")
-    if not llm.is_ollama_available():
-        raise HTTPException(503, f"Ollama に接続できません({settings.ollama_host})")
-    if not llm.is_model_installed(model):
-        raise HTTPException(400, f"モデル『{model}』が見つかりません。`ollama pull {model}` を実行してください。")
-
-    instruction = body.instruction.strip() or DEFAULT_OCR_INSTRUCTION
-    log.info("OCR要求 [model=%s src=%s] instruction=%s",
-             model, (body.path or "(base64)")[:80], instruction[:60])
-    try:
-        text = llm.vision_complete([b64], instruction, model,
-                                   temperature=float(body.temperature),
-                                   num_predict=int(body.num_predict))
-    except Exception as e:
-        msg = str(e)
-        if "image input is not supported" in msg.lower():
-            raise HTTPException(
-                400,
-                f"モデル『{model}』は画像入力に対応していません(Vision/mmproj 非対応)。"
-                "qwen2.5vl など画像対応モデルを model に指定するか VISION_MODEL に設定してください。")
-        log.exception("OCR失敗")
-        raise HTTPException(500, f"OCR処理に失敗しました: {msg}")
-
-    return {"ok": True, "model": model, "result": (text or "").strip()}
 
 
 # ============================================================
@@ -829,72 +680,6 @@ def api_code_file(cid: str, path: str) -> dict:
     text = data.decode("utf-8", errors="replace")
     return {"path": rel, "content": text, "size": size,
             "lines": text.count("\n") + 1, "lang": fp.suffix.lstrip(".").lower()}
-
-
-# ============================================================
-#  ファイルシステム閲覧(フォルダ選択)
-# ============================================================
-@app.get("/api/fs/roots", dependencies=[Depends(auth.require_auth)])
-def api_fs_roots() -> dict:
-    return {"roots": get_roots()}
-
-
-@app.get("/api/fs", dependencies=[Depends(auth.require_auth)])
-def api_fs(path: Optional[str] = None) -> dict:
-    try:
-        return list_dir(path)
-    except FileNotFoundError as e:
-        raise HTTPException(404, str(e))
-    except PermissionError as e:
-        raise HTTPException(403, str(e))
-    except Exception as e:
-        log.exception("フォルダ一覧取得失敗: %s", path)
-        raise HTTPException(400, f"このフォルダは開けません: {e}")
-
-
-@app.post("/api/fs/estimate", dependencies=[Depends(auth.require_auth)])
-def api_fs_estimate(paths: list[str] = Body(..., embed=True)) -> dict:
-    count, capped = count_supported_recursive(paths)
-    return {"count": count, "capped": capped}
-
-
-# ============================================================
-#  ファイル出力(回答の保存)
-# ============================================================
-class ExportBody(BaseModel):
-    content: str
-    format: str = "md"        # md|txt|html|pdf|docx|xlsx|csv|pptx|code
-    ext: Optional[str] = None  # format=code のときの拡張子(例: bas)
-    title: Optional[str] = "回答"
-    images: Optional[list] = None   # PDF用: Mermaid図のPNG(順序対応) [{data(base64), w, h}]
-
-
-def _safe_stem(title: str) -> str:
-    stem = re.sub(r"[\\/:*?\"<>|\n\r\t]", "", (title or "回答")).strip()
-    return (stem[:40] or "回答")
-
-
-@app.post("/api/export", dependencies=[Depends(auth.require_auth)])
-def api_export(body: ExportBody) -> Response:
-    try:
-        data, mime, ext = export.export_content(body.content, body.format, body.ext,
-                                                body.title or "回答", images=body.images)
-    except ValueError as e:
-        raise HTTPException(400, str(e))
-    except ImportError as e:
-        raise HTTPException(500, f"変換に必要なライブラリが未導入です: {e}")
-    except Exception as e:
-        log.exception("エクスポート失敗")
-        raise HTTPException(500, f"変換に失敗しました: {e}")
-
-    fname = f"{_safe_stem(body.title or '回答')}.{ext}"
-    log.info("エクスポート: format=%s -> %s (%d bytes)", body.format, fname, len(data))
-    headers = {
-        "Content-Disposition": f"attachment; filename=\"export.{ext}\"; filename*=UTF-8''{quote(fname)}",
-        "X-Filename": quote(fname),
-        "Access-Control-Expose-Headers": "X-Filename",
-    }
-    return Response(content=data, media_type=mime, headers=headers)
 
 
 # ============================================================
