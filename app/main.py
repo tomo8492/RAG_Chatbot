@@ -15,14 +15,14 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import FileResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import agent, auth, db, llm, postprocess, rag, safety
 from .config import settings
 from .defaults import effective_for
-from .logging_setup import get_logger, setup_logging
+from .logging_setup import get_logger, set_request_id, setup_logging
 from .routes import routers as _routers
 from .sse import sse
 
@@ -122,6 +122,30 @@ async def _lan_guard(request, call_next):
                         host, request.headers.get("user-agent", "")[:80])
             return Response(_denied_page(host), status_code=403, media_type="text/html; charset=utf-8")
     return await call_next(request)
+
+
+@app.middleware("http")
+async def _observability(request, call_next):
+    """リクエストID付与・アクセスログ・未処理例外のログ。
+
+    失敗が必ず痕跡を残すようにし(サイレント握りつぶしを表に出す)、相関ID(req)で
+    同時アクセス時でも1操作のログを追跡できるようにする。_lan_guard より外側で動く。
+    """
+    rid = uuid.uuid4().hex[:8]
+    set_request_id(rid)
+    t0 = time.time()
+    try:
+        resp = await call_next(request)
+    except Exception:
+        log.exception("未処理の例外: %s %s", request.method, request.url.path)
+        resp = JSONResponse(
+            {"error": "サーバ内部でエラーが発生しました", "request_id": rid},
+            status_code=500,
+        )
+    resp.headers["X-Request-ID"] = rid
+    log.info("%s %s -> %d (%dms)", request.method, request.url.path,
+             resp.status_code, int((time.time() - t0) * 1000))
+    return resp
 
 
 # ============================================================
