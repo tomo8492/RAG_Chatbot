@@ -10,6 +10,7 @@ import base64
 import html as _html
 import io
 import re
+import unicodedata
 from datetime import datetime
 
 from .logging_setup import get_logger
@@ -961,6 +962,75 @@ def to_csv(md: str, title: str = "回答") -> bytes:
 
 
 # ============================================================
+#  プレーンテキスト(.txt)
+# ============================================================
+def _wcwidth(s: str) -> int:
+    """文字列の表示幅(全角=2 / 半角=1)。等幅前提の桁そろえ用。"""
+    return sum(2 if unicodedata.east_asian_width(c) in ("W", "F") else 1 for c in s)
+
+
+def _table_to_txt(header: list[str], rows: list[list[str]]) -> str:
+    """表を桁そろえしたプレーンテキストにする(データ欠落を防ぐ。全角幅も考慮)。"""
+    table = [header] + rows
+    ncol = max((len(r) for r in table), default=0)
+    if ncol == 0:
+        return ""
+    norm = [[_strip_inline(r[j]) if j < len(r) else "" for j in range(ncol)] for r in table]
+    widths = [max((_wcwidth(row[j]) for row in norm), default=0) for j in range(ncol)]
+
+    def pad(cell: str, w: int) -> str:
+        return cell + " " * max(0, w - _wcwidth(cell))
+
+    def fmt(row: list[str]) -> str:
+        return " | ".join(pad(row[j], widths[j]) for j in range(ncol)).rstrip()
+
+    out = [fmt(norm[0]), "-+-".join("-" * w for w in widths)]
+    out += [fmt(r) for r in norm[1:]]
+    return "\n".join(out)
+
+
+def _list_to_txt(items: list[dict]) -> str:
+    """リストをネスト・番号・タスクを保ったプレーンテキストにする。"""
+    lines: list[str] = []
+    counters: dict[int, int] = {}
+    for it in items:
+        lvl = _item_level(it)
+        for d in [k for k in counters if k > lvl]:   # 深い階層の番号はリセット
+            del counters[d]
+        if it.get("ordered"):
+            counters[lvl] = counters.get(lvl, 0) + 1
+            marker = f"{counters[lvl]}. "
+        else:
+            counters[lvl] = 0                         # 後続の番号付きが1から始まるように
+            marker = "・"
+        lines.append("    " * lvl + marker + _strip_inline(_item_plain(it)))
+    return "\n".join(lines)
+
+
+def to_txt(md: str, title: str = "回答") -> bytes:
+    """Markdown を読みやすいプレーンテキストへ整形する。
+
+    ブロック間を空行で区切り、見出し・段落・リスト(ネスト/番号/タスク)・表・コード・
+    引用をすべて保持する(旧実装は表が欠落し、ブロックが詰まって読みにくかった)。
+    """
+    parts: list[str] = []
+    for b in parse_blocks(md):
+        t = b["type"]
+        if t in ("heading", "paragraph"):
+            parts.append(_strip_inline(b["text"]))
+        elif t == "quote":
+            parts.append("\n".join("> " + _strip_inline(ln) for ln in b["text"].split("\n")))
+        elif t == "code":
+            parts.append(b.get("text", ""))
+        elif t == "list":
+            parts.append(_list_to_txt(b["items"]))
+        elif t == "table":
+            parts.append(_table_to_txt(b.get("header", []), b.get("rows", [])))
+    text = "\n\n".join(p for p in parts if p.strip() != "")
+    return (text or (md or "")).encode("utf-8")
+
+
+# ============================================================
 #  ディスパッチ
 # ============================================================
 def export_content(content: str, fmt: str, ext: str | None = None,
@@ -972,11 +1042,7 @@ def export_content(content: str, fmt: str, ext: str | None = None,
     if fmt == "md":
         return content.encode("utf-8"), MIME["md"], "md"
     if fmt == "txt":
-        # 記法を軽く落としたプレーンテキスト
-        plain = "\n".join(_strip_inline(b["text"]) if b["type"] in ("paragraph", "heading", "quote")
-                          else ("\n".join("・" + _strip_inline(_item_plain(x)) for x in b["items"]) if b["type"] == "list"
-                                else b.get("text", "")) for b in parse_blocks(content))
-        return (plain or content).encode("utf-8"), MIME["txt"], "txt"
+        return to_txt(content, title), MIME["txt"], "txt"
     if fmt == "code":
         safe_ext = re.sub(r"[^A-Za-z0-9]", "", (ext or "txt")) or "txt"
         return content.encode("utf-8"), MIME["code"], safe_ext

@@ -52,6 +52,36 @@ def test_csv_contains_table_cells():
     assert "名前" in csv and "数量" in csv
 
 
+# ---------------- プレーンテキスト(.txt) ----------------
+def test_txt_preserves_table_cells():
+    s = export.export_content(TABLE_MD, "txt")[0].decode("utf-8")
+    assert "りんご" in s and "みかん" in s and "名前" in s and "数量" in s   # 表が欠落しない
+
+
+def test_txt_separates_blocks_with_blank_line():
+    s = export.export_content("# 見出し\n\n本文だよ", "txt")[0].decode("utf-8")
+    assert "見出し" in s and "本文だよ" in s
+    assert "\n\n" in s                       # ブロック間に空行
+
+
+def test_txt_list_keeps_number_and_nesting():
+    s = export.export_content("1. 一\n2. 二\n   - ネスト", "txt")[0].decode("utf-8")
+    assert "1. 一" in s and "2. 二" in s     # 番号を保持
+    assert "    ・ネスト" in s                # 下位はインデント+箇条書き
+
+
+def test_txt_task_checkbox_preserved():
+    s = export.export_content("- [x] 完了\n- [ ] 未了", "txt")[0].decode("utf-8")
+    assert "[x] 完了" in s and "[ ] 未了" in s
+
+
+def test_txt_strips_emphasis_and_sets_mime():
+    data, mime, ext = export.export_content("**太字** と `code`", "txt")
+    s = data.decode("utf-8")
+    assert "太字" in s and "code" in s and "**" not in s and "`" not in s
+    assert ext == "txt" and mime.startswith("text/plain")
+
+
 # ---------------- export_content のディスパッチ ----------------
 def test_export_content_pdf():
     data, mime, ext = export.export_content(MD, "pdf")
