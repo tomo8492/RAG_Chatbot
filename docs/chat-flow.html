@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>チャット送信→出力フロー | 社内文書アシスタント</title>
+<style>
+  :root{
+    --ink:#1f2328; --muted:#5b6570; --line:#e3e6ec; --bg:#f6f8fb; --paper:#fff;
+    --front:#3b5bdb; --front-bg:#eef2ff;
+    --mw:#7048e8; --mw-bg:#f3effe;
+    --srv:#2f9e44; --srv-bg:#ebfbee;
+    --ext:#e8590c; --ext-bg:#fff4e6;
+    --err:#e03131; --err-bg:#fff5f5;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:"Yu Gothic UI","Hiragino Kaku Gothic ProN",Meiryo,system-ui,-apple-system,"Segoe UI",sans-serif;
+    line-height:1.7;padding:28px 16px 60px}
+  .wrap{max-width:920px;margin:0 auto}
+  h1{font-size:22px;margin:0 0 4px}
+  .sub{color:var(--muted);margin:0 0 18px;font-size:14px}
+  .legend{display:flex;flex-wrap:wrap;gap:10px;margin:0 0 22px;font-size:13px}
+  .legend span{display:inline-flex;align-items:center;gap:6px;background:var(--paper);
+    border:1px solid var(--line);border-radius:999px;padding:4px 11px}
+  .dot{width:11px;height:11px;border-radius:3px;display:inline-block}
+  .flow{display:flex;flex-direction:column;align-items:stretch;gap:0}
+  .step{background:var(--paper);border:1px solid var(--line);border-left:5px solid var(--c,#999);
+    border-radius:11px;padding:11px 15px;box-shadow:0 1px 2px rgba(20,30,60,.05);display:flex;gap:13px}
+  .num{flex:0 0 auto;width:27px;height:27px;border-radius:50%;background:var(--c,#999);color:#fff;
+    font-weight:700;font-size:13px;display:flex;align-items:center;justify-content:center}
+  .body{flex:1;min-width:0}
+  .ttl{font-weight:700;font-size:15px}
+  .ttl .tag{font-size:11px;font-weight:700;color:var(--c);background:var(--cbg,#eee);
+    border-radius:6px;padding:1px 7px;margin-left:8px;vertical-align:middle}
+  .meta{font-size:12.5px;color:var(--muted);margin-top:1px}
+  .meta code{background:var(--bg);border:1px solid var(--line);border-radius:5px;padding:0 5px;font-size:11.5px}
+  .desc{font-size:13.5px;margin-top:3px}
+  .arrow{align-self:center;color:#aab1bd;font-size:18px;line-height:1;margin:5px 0}
+  .arrow small{font-size:11px;color:var(--muted);background:var(--paper);border:1px solid var(--line);
+    border-radius:999px;padding:1px 9px;margin-left:6px;vertical-align:middle}
+  .front{--c:var(--front);--cbg:var(--front-bg)}
+  .mw{--c:var(--mw);--cbg:var(--mw-bg)}
+  .srv{--c:var(--srv);--cbg:var(--srv-bg)}
+  .ext{--c:var(--ext);--cbg:var(--ext-bg)}
+  .callout{border:1px dashed var(--err);background:var(--err-bg);border-radius:11px;
+    padding:11px 15px;margin-top:18px;font-size:13.5px}
+  .callout.note{border-color:var(--ext);background:var(--ext-bg)}
+  .callout b{color:var(--err)}
+  .callout.note b{color:var(--ext)}
+  .notes{margin-top:26px;background:var(--paper);border:1px solid var(--line);border-radius:11px;padding:6px 20px}
+  .notes h2{font-size:15px;margin:14px 0 4px}
+  .notes li{font-size:13.5px;margin:3px 0}
+  .notes code{background:var(--bg);border:1px solid var(--line);border-radius:5px;padding:0 5px;font-size:12px}
+  footer{color:var(--muted);font-size:12px;text-align:center;margin-top:24px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>チャット送信 → 出力までのフロー</h1>
+  <p class="sub">社内文書アシスタント(RAG Chatbot)。実コードに基づく。送受信は <b>SSE ストリーミング</b>で、回答は1文字ずつ届きます。</p>
+
+  <div class="legend">
+    <span><i class="dot" style="background:var(--front)"></i>🖥 ブラウザ(フロント)</span>
+    <span><i class="dot" style="background:var(--mw)"></i>🛡 ミドルウェア</span>
+    <span><i class="dot" style="background:var(--srv)"></i>⚙ サーバ(api_generate)</span>
+    <span><i class="dot" style="background:var(--ext)"></i>🤖 外部: Ollama / ChromaDB</span>
+  </div>
+
+  <div class="flow">
+
+    <div class="step front"><div class="num">1</div><div class="body">
+      <div class="ttl">入力して送信<span class="tag">フロント</span></div>
+      <div class="meta"><code>static/js/chat.js</code> · sendMessage</div>
+      <div class="desc">本文・添付ファイル・貼付画像をまとめてリクエストを準備。</div>
+    </div></div>
+    <div class="arrow">↓<small>POST(ストリーミング fetch)</small></div>
+
+    <div class="step front"><div class="num">2</div><div class="body">
+      <div class="ttl">/api/conversations/{cid}/generate を呼ぶ<span class="tag">フロント</span></div>
+      <div class="meta"><code>fetch</code> + <code>ReadableStream</code>(AbortController で停止可)</div>
+      <div class="desc">応答を待たず、届いた断片を逐次読み取る。</div>
+    </div></div>
+    <div class="arrow">↓</div>
+
+    <div class="step mw"><div class="num">3</div><div class="body">
+      <div class="ttl">相関ID採番 + アクセスログ<span class="tag">ミドルウェア</span></div>
+      <div class="meta"><code>main.py</code> · _observability(Phase3)</div>
+      <div class="desc">リクエストごとに <code>request_id</code> を付与(全ログ行 & <code>X-Request-ID</code> ヘッダに)。</div>
+    </div></div>
+    <div class="arrow">↓</div>
+
+    <div class="step mw"><div class="num">4</div><div class="body">
+      <div class="ttl">接続元チェック(社内LAN限定)<span class="tag">ミドルウェア</span></div>
+      <div class="meta"><code>_lan_guard</code> · LAN_ONLY</div>
+      <div class="desc">許可範囲外のIPは 403。社外からのアクセスを遮断。</div>
+    </div></div>
+    <div class="arrow">↓</div>
+
+    <div class="step srv"><div class="num">5</div><div class="body">
+      <div class="ttl">認証<span class="tag">サーバ</span></div>
+      <div class="meta"><code>auth.require_auth</code>(署名Cookie)</div>
+      <div class="desc">パスワード設定時、未認証は 401 → フロントはログイン表示。</div>
+    </div></div>
+    <div class="arrow">↓</div>
+
+    <div class="step srv"><div class="num">6</div><div class="body">
+      <div class="ttl">ユーザー発言を保存<span class="tag">サーバ</span></div>
+      <div class="meta"><code>db.add_message</code>(SQLite)</div>
+      <div class="desc">会話履歴に今回の質問を追加。初回なら自動タイトルも生成(<code>llm.complete_text</code>)。</div>
+    </div></div>
+    <div class="arrow">↓</div>
+
+    <div class="step srv"><div class="num">7</div><div class="body">
+      <div class="ttl">クエリ書き換え(追問対応)<span class="tag">サーバ→LLM</span></div>
+      <div class="meta"><code>llm.rewrite_query</code></div>
+      <div class="desc">「その金額は?」のような追問を、履歴から自立した検索クエリへ書き換える。</div>
+    </div></div>
+    <div class="arrow">↓</div>
+
+    <div class="step ext"><div class="num">8</div><div class="body">
+      <div class="ttl">ハイブリッド検索(RAG)<span class="tag">外部</span></div>
+      <div class="meta"><code>rag.retrieve</code> → 埋め込み(e5)+ <b>ChromaDB</b> + <code>retrieval.rerank</code></div>
+      <div class="desc">密ベクトル検索に語彙検索を RRF 融合。型番・条番号も取りこぼさない。出典(該当チャンク)を作成。</div>
+    </div></div>
+    <div class="arrow">↓<small>SSE: user_saved / sources</small></div>
+
+    <div class="step srv"><div class="num">9</div><div class="body">
+      <div class="ttl">出典を先に送信<span class="tag">サーバ→フロント</span></div>
+      <div class="meta"><code>sse</code> · type=&quot;sources&quot;</div>
+      <div class="desc">参照した資料・場所を提示。参照フォルダ選択済みで該当なしなら「関連箇所なし」を明示(Phase4 ④B)。</div>
+    </div></div>
+    <div class="arrow">↓</div>
+
+    <div class="step srv"><div class="num">10</div><div class="body">
+      <div class="ttl">文脈の組み立て<span class="tag">サーバ</span></div>
+      <div class="meta"><code>defaults.effective_for</code> + システムプロンプト + 履歴 + RAG文脈 + 添付/画像</div>
+      <div class="desc">会話ごとの実効設定(モデル/温度/工数等)をマージし、上限内に収める。</div>
+    </div></div>
+    <div class="arrow">↓</div>
+
+    <div class="step ext"><div class="num">11</div><div class="body">
+      <div class="ttl">ローカルLLMで生成(ストリーム)<span class="tag">外部</span></div>
+      <div class="meta"><code>llm</code> → <b>Ollama</b>(社外送信なし)</div>
+      <div class="desc">トークンを逐次生成。推論モデルは思考(thinking)も出す。</div>
+    </div></div>
+    <div class="arrow">↓<small>SSE: thinking / content(逐次)</small></div>
+
+    <div class="step front"><div class="num">12</div><div class="body">
+      <div class="ttl">逐次描画<span class="tag">フロント</span></div>
+      <div class="meta"><code>render.js</code> · renderMarkdown / renderSources</div>
+      <div class="desc">届いた本文を Markdown 整形して即表示(表・コード・Mermaid図)。思考は折りたたみ表示。</div>
+    </div></div>
+    <div class="arrow">↓</div>
+
+    <div class="step srv"><div class="num">13</div><div class="body">
+      <div class="ttl">後処理して保存<span class="tag">サーバ</span></div>
+      <div class="meta"><code>postprocess.clean</code> → <code>db.add_message</code>(出典つき)</div>
+      <div class="desc">整形した最終本文と出典を会話に保存。</div>
+    </div></div>
+    <div class="arrow">↓<small>SSE: done(+ title)</small></div>
+
+    <div class="step front"><div class="num">14</div><div class="body">
+      <div class="ttl">完了表示<span class="tag">フロント</span></div>
+      <div class="meta"><code>chat.js</code> · handleStreamEvent(done)</div>
+      <div class="desc">最終描画に差し替え、コピー/ファイル出力ボタンを表示。サイドバーのタイトル更新。</div>
+    </div></div>
+
+  </div>
+
+  <div class="callout note">⏹ <b>停止</b>:送信中に停止すると <code>AbortController</code> で中断し、<b>途中までの内容を保持</b>します。</div>
+  <div class="callout">⚠ <b>エラー時</b>:サーバは <code>log.exception</code> で必ず記録(Phase3)。フロントは「⚠ エラー: … <b>(req: xxxx)</b>」と表示(Phase4 ④A)。この <code>req</code> をサーバログと突合して原因を特定できます。</div>
+
+  <div class="notes">
+    <h2>補足:押さえどころ</h2>
+    <ul>
+      <li><b>ストリーミング(SSE)</b>:1回の POST で接続を張り続け、<code>user_saved → sources → thinking/content → done</code> の順にイベントが流れます。だから回答が1文字ずつ出ます。</li>
+      <li><b>RAG(検索拡張)</b>:質問そのものでなく「書き換えたクエリ」で検索 → 密+語彙のハイブリッド → 上位チャンクを文脈に同梱。<b>資料内のみで回答</b>モードでは、無い情報は「記載が見つかりませんでした」と返します。</li>
+      <li><b>完全ローカル</b>:生成は Ollama、検索の埋め込み/ベクトルストアは e5 + ChromaDB。いずれも社内で完結し、<b>社外送信はありません</b>。</li>
+      <li><b>相関ID(<code>request_id</code>)</b>:1回の操作に付くIDで、複数人が同時に使ってもログを1操作分だけ追えます。エラー表示の <code>req</code> がこれです。</li>
+      <li><b>レイヤ</b>:<code>routes/</code>(薄い受け口)→ <code>services/</code> → エンジン(<code>rag</code>/<code>llm</code>/<code>db</code>)。チャット生成は中核のため現状 <code>main.py</code> に集約。</li>
+    </ul>
+  </div>
+
+  <footer>社内文書アシスタント — チャット生成フロー(docs/chat-flow.html)</footer>
+</div>
+</body>
+</html>
