@@ -27,6 +27,7 @@ import ollama
 from ..config import settings
 from ..logging_setup import get_logger
 from .constants import (
+    CTX_CHAR_LIMIT,
     CONFIRM_IN_EXEC,
     EXEC_PHASE_TOOLS,
     MAX_STEPS,
@@ -40,6 +41,7 @@ from .constants import (
 )
 from .tools import dispatch, _safe_path
 from .approvals import new_pending, wait, wait_answer, wait_decision
+from .context import _ctx_chars, compact_ctx
 
 log = get_logger("agent")
 
@@ -228,7 +230,6 @@ def _action_detail(ws: Path, name: str, args: dict) -> dict:
 # ============================================================
 #  コンテキスト自動圧縮(長くなったら古い履歴を要約に置換)
 # ============================================================
-CTX_CHAR_LIMIT = 60000   # 文脈の合計文字数がこれを超えたら圧縮
 
 # コーディング向け生成パラメータ(安定性重視・ツール呼び出し優先で think は付けない)
 AGENT_TEMPERATURE = 0.2
@@ -247,53 +248,6 @@ def _gen_options(num_ctx: Optional[int] = None) -> dict:
     if num_ctx:
         opt["num_ctx"] = int(num_ctx)
     return opt
-
-
-def _text_of(m) -> str:
-    if isinstance(m, dict):
-        return str(m.get("content") or "")
-    return str(getattr(m, "content", "") or "")
-
-
-def _role_of(m) -> str:
-    return m.get("role") if isinstance(m, dict) else getattr(m, "role", "")
-
-
-def _ctx_chars(messages: list) -> int:
-    return sum(len(_text_of(m)) for m in messages)
-
-
-def _head_len(messages: list) -> int:
-    """先頭の設定メッセージ(system+作業フォルダ+CLAUDE.md+ack)までの数。"""
-    for i, m in enumerate(messages):
-        if _role_of(m) == "assistant":
-            return i + 1
-    return min(len(messages), 1)
-
-
-def compact_ctx(messages: list, summarizer) -> bool:
-    """文脈が大きければ、設定以降を要約1件に置き換える。置換したら True。
-    summarizer(transcript:str)->str。構造を壊さないよう設定部分は保持する。"""
-    if _ctx_chars(messages) <= CTX_CHAR_LIMIT:
-        return False
-    head = _head_len(messages)
-    rest = messages[head:]
-    if len(rest) <= 4:
-        return False
-    lines = []
-    for m in rest:
-        txt = _text_of(m)
-        if txt:
-            lines.append(f"{_role_of(m)}: {txt}")
-    transcript = "\n".join(lines)[-40000:]
-    try:
-        summary = (summarizer(transcript) or "").strip()
-    except Exception:
-        return False
-    if not summary:
-        return False
-    messages[head:] = [{"role": "user", "content": "【これまでの作業の要約(自動圧縮)】\n" + summary}]
-    return True
 
 
 def compact_ctx_with_model(model: str, messages: list, num_ctx: Optional[int] = None) -> bool:

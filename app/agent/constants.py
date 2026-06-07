@@ -11,6 +11,7 @@ CONFIRM_TIMEOUT = 600     # 承認待ちの最大秒数
 MAX_GREP_FILE = 2_000_000  # grep で読むファイルの上限(2MB)
 READ_DEFAULT_LINES = 800   # read_file の既定の読み取り行数
 READ_CHAR_CAP = 20000      # read_file 1回の最大文字数(安全上限)
+CTX_CHAR_LIMIT = 60000     # 文脈の合計文字数がこれを超えたら圧縮
 # read_file がテキスト以外も読めるように(Claude の Read 相当)
 _DOC_EXTS = {".pdf", ".docx", ".xlsx", ".pptx"}   # loaders で本文抽出
 _IMG_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff"}
