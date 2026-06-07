@@ -27,7 +27,19 @@ import ollama
 
 from ..config import settings
 from ..logging_setup import get_logger
-from .constants import *  # 定数は constants へ集約(暫定star。submodule化で解消)
+from .constants import (
+    CONFIRM_IN_EXEC,
+    CONFIRM_TIMEOUT,
+    EXEC_PHASE_TOOLS,
+    MAX_STEPS,
+    META,
+    MUTATING,
+    PLAN_PHASE_TOOLS,
+    PROJECT_FILES,
+    READONLY,
+    _APPLY_NUDGE,
+    _CHANGE_INTENT,
+)
 from .tools import dispatch, _safe_path
 
 log = get_logger("agent")

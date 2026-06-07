@@ -29,9 +29,6 @@ ignore = ["E702"]
 # テスト/ツールは sys.path 調整後に import するため、E402 を許容(各所 noqa 済みだが明示)。
 "tests/*" = ["E402"]
 "evalkit/*" = ["E402"]
-# agent パッケージの暫定アグリゲータ。constants を star import するため F403/F405 を許容
-# (今後 tools/approvals/preview/context/loop へ分割し star を解消する際に外す)。
-"app/agent/_impl.py" = ["F403", "F405"]
 
 [tool.ruff.format]
 quote-style = "double"
