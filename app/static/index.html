@@ -344,6 +344,14 @@
   <script src="/static/vendor/purify.min.js"></script>
   <script src="/static/vendor/highlight.min.js"></script>
   <script src="/static/vendor/mermaid.min.js"></script>
-  <script src="/static/js/app.js"></script>
+  <!-- フロントエンド(app.js を関心事ごとに分割。読み込み順を保持=従来と同一挙動) -->
+  <script src="/static/js/core.js"></script>
+  <script src="/static/js/startup.js"></script>
+  <script src="/static/js/conversations.js"></script>
+  <script src="/static/js/render.js"></script>
+  <script src="/static/js/chat.js"></script>
+  <script src="/static/js/code_agent.js"></script>
+  <script src="/static/js/panels.js"></script>
+  <script src="/static/js/events.js"></script>
 </body>
 </html>
