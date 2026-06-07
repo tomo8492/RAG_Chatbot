@@ -67,6 +67,7 @@ async function streamAssistant(payload) {
     });
   };
 
+  let reqId = "";
   try {
     const res = await fetch(`/api/conversations/${State.current.id}/generate`, {
       method: "POST",
@@ -74,10 +75,11 @@ async function streamAssistant(payload) {
       body: JSON.stringify(payload),
       signal: State.controller.signal,
     });
+    reqId = res.headers.get("X-Request-ID") || "";
     if (res.status === 401) { showLogin(); throw new Error("認証が必要です"); }
     if (!res.ok) {
       let d = res.statusText; try { d = (await res.json()).detail || d; } catch (_) {}
-      throw new Error(d);
+      throw new Error(d + reqSuffix(reqId));
     }
 
     const reader = res.body.getReader();
@@ -116,8 +118,9 @@ async function streamAssistant(payload) {
     if (e.name === "AbortError") {
       renderMarkdown(refs.md, acc || "*(停止しました)*", true);  // 部分内容は保持
     } else {
-      renderMarkdown(refs.md, (acc ? acc + "\n\n" : "") + `⚠️ **エラー:** ${escapeHtml(e.message)}`, true);
-      toast("エラー: " + e.message);
+      const msg = e.message + (e.message.includes("(req:") ? "" : reqSuffix(reqId));
+      renderMarkdown(refs.md, (acc ? acc + "\n\n" : "") + `⚠️ **エラー:** ${escapeHtml(msg)}`, true);
+      toast("エラー: " + msg);
     }
   } finally {
     finished = true;

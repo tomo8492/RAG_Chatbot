@@ -208,13 +208,15 @@ async function streamAgent(payload) {
     scrollToBottom();
   };
 
+  let reqId = "";
   try {
     const res = await fetch(`/api/conversations/${State.current.id}/agent`, {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload), signal: State.controller.signal,
     });
+    reqId = res.headers.get("X-Request-ID") || "";
     if (res.status === 401) { showLogin(); throw new Error("認証が必要です"); }
-    if (!res.ok) { let d = res.statusText; try { d = (await res.json()).detail || d; } catch (_) {} throw new Error(d); }
+    if (!res.ok) { let d = res.statusText; try { d = (await res.json()).detail || d; } catch (_) {} throw new Error(d + reqSuffix(reqId)); }
 
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
@@ -245,7 +247,7 @@ async function streamAgent(payload) {
           case "plan": curText = null; curFill = null; curBody = null; collapseThink(); logBox.appendChild(buildPlanCard(ev)); scrollToBottom(); break;
           case "todos": curText = null; collapseThink(); todoEl = renderTodos(logBox, ev.todos || [], todoEl); scrollToBottom(); break;
           case "ask": curText = null; curFill = null; curBody = null; collapseThink(); logBox.appendChild(buildAskCard(ev)); scrollToBottom(); break;
-          case "error": addStepResult("rejected", "⚠ " + (ev.error || "エラー")); toast("エラー: " + (ev.error || "")); break;
+          case "error": { const m = (ev.error || "エラー") + reqSuffix(reqId); addStepResult("rejected", "⚠ " + m); toast("エラー: " + m); break; }
           case "max_steps": addStepResult("blocked", "最大ステップ数に達しました。続けるには再度指示してください。"); break;
           case "done": case "user_saved": break;
         }
@@ -254,7 +256,7 @@ async function streamAgent(payload) {
   } catch (e) {
     rejectOpenConfirms(logBox);   // 停止/切断時はサーバ側の承認待ちを解放する
     if (e.name === "AbortError") addStepResult("rejected", "停止しました");
-    else { addStepResult("rejected", "⚠ " + e.message); toast("エラー: " + e.message); }
+    else { const m = e.message + (e.message.includes("(req:") ? "" : reqSuffix(reqId)); addStepResult("rejected", "⚠ " + m); toast("エラー: " + m); }
   } finally {
     finishConfirmCards(logBox);
     if (avatar) avatar.classList.remove("thinking");   // 完了/停止/エラーでアニメ停止

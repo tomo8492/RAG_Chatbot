@@ -29,6 +29,9 @@ const State = {
 };
 
 /* ---------------- API ---------------- */
+// エラー文に相関ID(req)を付与。利用者が管理者へ報告しやすく、サーバログと突合できる。
+function reqSuffix(rid) { return rid ? ` (req: ${rid})` : ""; }
+
 async function api(path, opts = {}) {
   const res = await fetch(path, {
     headers: { "Content-Type": "application/json" },
@@ -41,7 +44,7 @@ async function api(path, opts = {}) {
   if (!res.ok) {
     let detail = res.statusText;
     try { detail = (await res.json()).detail || detail; } catch (_) {}
-    throw new Error(detail);
+    throw new Error(detail + reqSuffix(res.headers.get("X-Request-ID")));
   }
   if (res.status === 204) return null;
   const ct = res.headers.get("content-type") || "";
