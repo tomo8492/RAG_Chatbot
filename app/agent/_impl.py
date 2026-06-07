@@ -18,7 +18,6 @@ from __future__ import annotations
 import difflib
 import json
 import subprocess
-import threading
 import uuid
 from pathlib import Path
 from typing import Iterator, Optional
@@ -29,7 +28,6 @@ from ..config import settings
 from ..logging_setup import get_logger
 from .constants import (
     CONFIRM_IN_EXEC,
-    CONFIRM_TIMEOUT,
     EXEC_PHASE_TOOLS,
     MAX_STEPS,
     META,
@@ -41,6 +39,7 @@ from .constants import (
     _CHANGE_INTENT,
 )
 from .tools import dispatch, _safe_path
+from .approvals import new_pending, wait, wait_answer, wait_decision
 
 log = get_logger("agent")
 
@@ -165,90 +164,6 @@ def _format_ask_result(questions: list, ans) -> str:
         lines.append(f"- {head}: " + " / ".join(parts))
     return "\n".join(lines)
 
-
-# ============================================================
-#  ツール実装(すべて作業フォルダ内に限定)
-# ============================================================
-# ============================================================
-_pending: dict[str, dict] = {}
-_pending_lock = threading.Lock()
-
-
-def new_pending() -> str:
-    aid = uuid.uuid4().hex
-    with _pending_lock:
-        _pending[aid] = {"event": threading.Event(), "approved": False,
-                         "answer": None, "scope": None, "reason": None}
-    return aid
-
-
-def resolve(action_id: str, approved: bool, scope: Optional[str] = None,
-            reason: Optional[str] = None) -> bool:
-    """承認/拒否を記録。scope='always' なら以後このセッションの編集を自動適用する。
-    reason は拒否理由(任意)で、モデルに「どう直すか」を伝えるために使う。"""
-    with _pending_lock:
-        p = _pending.get(action_id)
-    if not p:
-        return False
-    p["approved"] = bool(approved)
-    p["scope"] = scope
-    p["reason"] = reason
-    p["event"].set()
-    return True
-
-
-def resolve_answer(action_id: str, answer: str) -> bool:
-    """ask_user への回答(自由記述/選択肢)を記録して待機側を起こす。"""
-    with _pending_lock:
-        p = _pending.get(action_id)
-    if not p:
-        return False
-    p["answer"] = answer
-    p["event"].set()
-    return True
-
-
-def wait_answer(action_id: str, timeout: float = CONFIRM_TIMEOUT) -> Optional[str]:
-    """ask_user の回答待ち。回答文字列 / None(タイムアウト)。"""
-    with _pending_lock:
-        p = _pending.get(action_id)
-    if not p:
-        return None
-    ok = p["event"].wait(timeout)
-    with _pending_lock:
-        p = _pending.pop(action_id, None)
-    if not ok or p is None:
-        return None
-    return p.get("answer")
-
-
-def wait(action_id: str, timeout: float = CONFIRM_TIMEOUT) -> Optional[bool]:
-    """承認待ち。True=承認 / False=拒否 / None=タイムアウト。"""
-    with _pending_lock:
-        p = _pending.get(action_id)
-    if not p:
-        return None
-    ok = p["event"].wait(timeout)
-    with _pending_lock:
-        p = _pending.pop(action_id, None)
-    if not ok or p is None:
-        return None
-    return p["approved"]
-
-
-def wait_decision(action_id: str, timeout: float = CONFIRM_TIMEOUT):
-    """承認待ち。(approved, scope, reason) を返す。approved: True/False/None、
-    scope: 'always' なら以後自動適用、reason: 拒否理由(任意)。"""
-    with _pending_lock:
-        p = _pending.get(action_id)
-    if not p:
-        return (None, None, None)
-    ok = p["event"].wait(timeout)
-    with _pending_lock:
-        p = _pending.pop(action_id, None)
-    if not ok or p is None:
-        return (None, None, None)
-    return (p["approved"], p.get("scope"), p.get("reason"))
 
 
 # ============================================================
