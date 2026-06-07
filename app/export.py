@@ -1031,8 +1031,26 @@ def to_txt(md: str, title: str = "回答") -> bytes:
 
 
 # ============================================================
-#  ディスパッチ
+#  ファイル名 / ディスパッチ
 # ============================================================
+_RESERVED_NAMES = {"CON", "PRN", "AUX", "NUL",
+                   *(f"COM{i}" for i in range(1, 10)),
+                   *(f"LPT{i}" for i in range(1, 10))}
+
+
+def safe_stem(title: str, limit: int = 40) -> str:
+    """ダウンロードファイル名(拡張子なし)に使える安全な語幹を返す。
+
+    OS の禁止文字・制御文字を除去し、Windows で問題になる末尾のドット/空白・
+    予約デバイス名(CON/PRN/NUL 等)も回避する。空になる場合は「回答」を返す。
+    """
+    s = re.sub(r'[\\/:*?"<>|\x00-\x1f]', "", title or "回答")
+    s = s.strip()[:limit].strip().rstrip(" .")
+    if not s or s.upper() in _RESERVED_NAMES:
+        return "回答"
+    return s
+
+
 def export_content(content: str, fmt: str, ext: str | None = None,
                    title: str = "回答", images: list | None = None) -> tuple[bytes, str, str]:
     """(bytes, mime, 拡張子) を返す。"""

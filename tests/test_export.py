@@ -82,6 +82,30 @@ def test_txt_strips_emphasis_and_sets_mime():
     assert ext == "txt" and mime.startswith("text/plain")
 
 
+# ---------------- ファイル名(safe_stem) ----------------
+def test_safe_stem_removes_forbidden_chars():
+    assert export.safe_stem('a/b:c*?"<>|d') == "abcd"
+
+
+def test_safe_stem_trims_trailing_dot_and_space():
+    assert export.safe_stem("報告書. ") == "報告書"        # Windows: 末尾のドット/空白は不可
+    assert not export.safe_stem("名前 ").endswith(" ")
+
+
+def test_safe_stem_avoids_reserved_names():
+    assert export.safe_stem("CON") == "回答"
+    assert export.safe_stem("nul") == "回答"               # 大文字小文字を問わず
+
+
+def test_safe_stem_falls_back_when_empty():
+    assert export.safe_stem("///") == "回答"
+    assert export.safe_stem("") == "回答"
+
+
+def test_safe_stem_truncates_length():
+    assert len(export.safe_stem("あ" * 100)) <= 40
+
+
 # ---------------- export_content のディスパッチ ----------------
 def test_export_content_pdf():
     data, mime, ext = export.export_content(MD, "pdf")

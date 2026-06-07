@@ -4,7 +4,6 @@
 """
 from __future__ import annotations
 
-import re
 from typing import Optional
 from urllib.parse import quote
 
@@ -28,11 +27,6 @@ class ExportBody(BaseModel):
     images: Optional[list] = None   # PDF用: Mermaid図のPNG(順序対応) [{data(base64), w, h}]
 
 
-def _safe_stem(title: str) -> str:
-    stem = re.sub(r"[\\/:*?\"<>|\n\r\t]", "", (title or "回答")).strip()
-    return (stem[:40] or "回答")
-
-
 @router.post("/api/export")
 def api_export(body: ExportBody) -> Response:
     try:
@@ -46,7 +40,7 @@ def api_export(body: ExportBody) -> Response:
         log.exception("エクスポート失敗")
         raise HTTPException(500, f"変換に失敗しました: {e}")
 
-    fname = f"{_safe_stem(body.title or '回答')}.{ext}"
+    fname = f"{export.safe_stem(body.title or '回答')}.{ext}"
     log.info("エクスポート: format=%s -> %s (%d bytes)", body.format, fname, len(data))
     headers = {
         "Content-Disposition": f"attachment; filename=\"export.{ext}\"; filename*=UTF-8''{quote(fname)}",
