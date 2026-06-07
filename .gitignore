@@ -22,3 +22,7 @@ Thumbs.db
 
 # RAG評価の出力
 evalkit/results/
+
+# ESLint 用の一時バンドル / node
+_eslint_bundle.js
+node_modules/

@@ -11,13 +11,19 @@
 
 ## 開発ワークフロー(コミット前に実行)
 ```bash
-ruff check app/ tests/ evalkit/        # lint(必須・CIブロッキング)
+ruff check app/ tests/ evalkit/        # Python lint(必須・CIブロッキング)
 python tests/run_all.py                 # テスト(必須・CIブロッキング)
 mypy app/                               # 型(情報。CIは非ブロッキング)
+# フロント(任意・CIでも実行): 8つのJSは「共有グローバルスコープ」なので結合して検査
+cat $(grep -oE '/static/js/[a-z_]+\.js' app/static/index.html | sed 's#/static#app/static#') > _eslint_bundle.js
+npx eslint@9 _eslint_bundle.js          # no-undef(未定義参照/タイプミス検出)
 ```
 - テストは **pytest 非依存の独自ランナー**。各 `tests/test_*.py` は `__main__` で単体実行でき、
   `tests/run_all.py` が全ファイルをサブプロセスで回す。新規テストも同じ形式に合わせる。
-- CI(`.github/workflows/ci.yml`)が push/PR で ruff + テストを自動実行する。
+- フロントは現状 **クラシック script を順に読み込む**(`app/static/js/*.js`)。JS を追加したら
+  `index.html` の `<script>` にも順序を意識して追加する(結合 ESLint がその順序を使う)。
+- CI(`.github/workflows/ci.yml`)が push/PR で **ruff・テスト・ESLint(no-undef)** を自動実行する
+  (mypy は情報)。
 
 ## コーディング規約
 - **オフライン厳守**: 社外送信を増やさない(`LAN_ONLY` / Ollama ローカル)。新規の外部通信は入れない。

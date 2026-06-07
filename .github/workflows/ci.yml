@@ -45,3 +45,18 @@ jobs:
           pip install mypy==1.19.1
       - name: Mypy
         run: mypy app/
+
+  frontend-lint:
+    name: Frontend lint (ESLint no-undef)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Build JS bundle (classic scripts share one global scope)
+        run: |
+          files=$(grep -oE '/static/js/[a-z_]+\.js' app/static/index.html | sed 's#/static#app/static#')
+          cat $files > _eslint_bundle.js
+      - name: ESLint (no-undef)
+        run: npx --yes eslint@9 _eslint_bundle.js
