@@ -588,3 +588,6 @@ summary.step-head:hover { background: rgba(127,127,127,.06); }
 .confirm-status { font-weight: 700; font-size: 13px; }
 .confirm-status.ok { color: var(--green); }
 .confirm-status.no { color: var(--stop); }
+
+/* 参照資料に該当が無いときの注記(strict-RAG の透明性) */
+.src-empty { opacity: .7; font-style: italic; }

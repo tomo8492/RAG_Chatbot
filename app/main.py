@@ -377,6 +377,10 @@ def api_generate(cid: str, body: GenerateBody) -> Response:
                 return
         if sources:
             yield sse({"type": "sources", "sources": sources})
+        elif conv.get("active_indexes"):
+            # 参照フォルダは選択済みだが関連箇所が無い場合は明示(strict-RAG の透明性)
+            yield sse({"type": "sources", "sources": [],
+                       "note": "参照資料の中に関連する箇所は見つかりませんでした"})
 
         acc_content, acc_thinking = "", ""
         saved = False

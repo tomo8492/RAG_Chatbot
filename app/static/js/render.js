@@ -234,8 +234,13 @@ async function exportContent(content, fmt, ext, title) {
   } catch (e) { toast("保存失敗: " + e.message); }
 }
 
-function renderSources(container, sources) {
+function renderSources(container, sources, note) {
   container.innerHTML = "";
+  if (!sources || !sources.length) {
+    // 参照フォルダは選択済みだが該当が無いとき等の明示(strict-RAG の透明性)
+    if (note) container.appendChild(el("span", "src-title src-empty", "🔍 " + note));
+    return;
+  }
   const title = el("span", "src-title", "📎 参照: ");
   container.appendChild(title);
   sources.forEach((s) => {

@@ -137,7 +137,7 @@ function handleStreamEvent(ev, refs, cb) {
   switch (ev.type) {
     case "thinking": cb.onThink(ev.delta); break;
     case "content": cb.onContent(ev.delta); break;
-    case "sources": if (ev.sources && ev.sources.length) renderSources(refs.src, ev.sources); break;
+    case "sources": renderSources(refs.src, ev.sources, ev.note); break;
     case "done":
       if (cb.onDone) cb.onDone(ev.message);
       if (ev.message && ev.message.sources && ev.message.sources.length)
