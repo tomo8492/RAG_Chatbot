@@ -209,6 +209,7 @@ def get_kv(key: str, default: Any = None) -> Any:
     try:
         return json.loads(row["value"])
     except (json.JSONDecodeError, TypeError):
+        log.debug("get_kv: 例外を無視して継続", exc_info=True)
         return default
 
 
@@ -230,6 +231,7 @@ def get_all_kv() -> dict:
         try:
             out[r["key"]] = json.loads(r["value"])
         except (json.JSONDecodeError, TypeError):
+            log.debug("get_all_kv: 例外を無視して継続", exc_info=True)
             out[r["key"]] = r["value"]
     return out
 

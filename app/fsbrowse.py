@@ -46,8 +46,10 @@ def _count_supported(dir_path: Path) -> int:
                     if e.is_file() and Path(e.name).suffix.lower() in SUPPORTED_EXTS:
                         n += 1
                 except OSError:
+                    log.debug("_count_supported: 例外を無視して継続", exc_info=True)
                     continue
     except (PermissionError, OSError):
+        log.debug("_count_supported: 例外を無視して継続", exc_info=True)
         return 0
     return n
 
@@ -60,6 +62,7 @@ def list_dir(path: str | None) -> dict:
     try:
         p = p.resolve()
     except OSError:
+        log.debug("list_dir: 例外を無視して継続", exc_info=True)
         pass
 
     if not p.exists() or not p.is_dir():
@@ -78,6 +81,7 @@ def list_dir(path: str | None) -> dict:
                     elif e.is_file() and Path(e.name).suffix.lower() in SUPPORTED_EXTS:
                         files.append({"name": e.name, "path": str(Path(e.path))})
                 except OSError:
+                    log.debug("list_dir: 例外を無視して継続", exc_info=True)
                     continue
     except PermissionError:
         raise PermissionError(f"アクセス権がありません: {path}")

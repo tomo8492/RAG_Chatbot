@@ -10,6 +10,10 @@ from pathlib import Path
 from typing import Optional
 
 from .constants import PROJECT_FILES
+from ..logging_setup import get_logger
+
+log = get_logger("agent.helpers")
+
 
 __all__ = [
     "read_project_instructions",
@@ -27,6 +31,7 @@ def read_project_instructions(ws: Path, limit: int = 8000) -> Optional[str]:
                 if text:
                     return text[:limit] + ("\n...(省略)" if len(text) > limit else "")
         except Exception:
+            log.debug("read_project_instructions: 例外を無視して継続", exc_info=True)
             continue
     return None
 
@@ -54,6 +59,7 @@ def _norm_options(raw) -> list:
         try:
             raw = json.loads(raw)
         except Exception:
+            log.debug("_norm_options: 例外を無視して継続", exc_info=True)
             return []
     if isinstance(raw, dict):                     # 単一選択肢をオブジェクトのまま渡す場合
         raw = [raw]
@@ -87,6 +93,7 @@ def _norm_questions(args: dict) -> list:
         try:
             raw = json.loads(raw)
         except Exception:
+            log.debug("_norm_questions: 例外を無視して継続", exc_info=True)
             raw = None
     if isinstance(raw, dict):
         raw = [raw]

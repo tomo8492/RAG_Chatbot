@@ -7,6 +7,10 @@
 from __future__ import annotations
 
 from .constants import CTX_CHAR_LIMIT
+from ..logging_setup import get_logger
+
+log = get_logger("agent.context")
+
 
 __all__ = ["_text_of", "_role_of", "_ctx_chars", "_head_len", "compact_ctx"]
 
@@ -51,6 +55,7 @@ def compact_ctx(messages: list, summarizer) -> bool:
     try:
         summary = (summarizer(transcript) or "").strip()
     except Exception:
+        log.debug("compact_ctx: 例外を無視して継続", exc_info=True)
         return False
     if not summary:
         return False

@@ -78,6 +78,7 @@ def ocr_available() -> tuple[bool, str]:
             pytesseract.get_tesseract_version()
             return True, f"tesseract(lang={settings.ocr_lang})"
         except Exception as e:
+            log.debug("ocr_available: 例外を無視して継続", exc_info=True)
             return False, f"tesseract未導入: {str(e)[:120]}"
     # vlm
     try:
@@ -89,4 +90,5 @@ def ocr_available() -> tuple[bool, str]:
         ok = llm.is_model_installed(model)
         return ok, f"vlm:{model}" if ok else f"VLモデル未導入: {model}(ollama pull が必要)"
     except Exception as e:
+        log.debug("ocr_available: 例外を無視して継続", exc_info=True)
         return False, f"vlm確認失敗: {str(e)[:120]}"

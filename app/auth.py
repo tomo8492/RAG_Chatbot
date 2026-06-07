@@ -38,6 +38,7 @@ def _token_valid(token: str | None) -> bool:
         _signer.unsign(token, max_age=_MAX_AGE)
         return True
     except (BadSignature, SignatureExpired):
+        log.debug("_token_valid: 例外を無視して継続", exc_info=True)
         return False
 
 

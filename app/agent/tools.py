@@ -23,6 +23,10 @@ from .constants import (
     _DOC_EXTS,
     _IMG_EXTS,
 )
+from ..logging_setup import get_logger
+
+log = get_logger("agent.tools")
+
 
 __all__ = [
     "dispatch", "_safe_path", "_rel_ok",
@@ -46,6 +50,7 @@ def _rel_ok(ws: Path, p: Path) -> bool:
     try:
         rel = p.relative_to(ws)
     except ValueError:
+        log.debug("_rel_ok: 例外を無視して継続", exc_info=True)
         return False
     return not any(part in IGNORE_DIRS for part in rel.parts)
 
@@ -65,6 +70,7 @@ def t_read_file(ws: Path, path: str, offset: int = 0, limit: Optional[int] = Non
     try:
         p = _safe_path(ws, path)
     except ValueError as e:
+        log.debug("t_read_file: 例外を無視して継続", exc_info=True)
         return f"[エラー] {e}"
     if not p.exists() or not p.is_file():
         return f"[エラー] ファイルが存在しません: {path}"
@@ -77,6 +83,7 @@ def t_read_file(ws: Path, path: str, offset: int = 0, limit: Optional[int] = Non
             from .. import loaders
             text = "\n\n".join(d.get("text", "") for d in loaders.load_file(p))
         except Exception as e:
+            log.debug("t_read_file: 例外を無視して継続", exc_info=True)
             return f"[エラー] {ext} の読み取りに失敗: {e}"
         if not text.strip():
             return f"[{ext} から本文を抽出できませんでした(スキャンPDF等。OCRを有効化すると読めます)]"
@@ -84,18 +91,21 @@ def t_read_file(ws: Path, path: str, offset: int = 0, limit: Optional[int] = Non
         try:
             text = p.read_text(encoding="utf-8", errors="replace")
         except Exception as e:
+            log.debug("t_read_file: 例外を無視して継続", exc_info=True)
             return f"[エラー] 読み取り失敗: {e}"
     lines = text.splitlines()
     total = len(lines)
     try:
         start = max(int(offset or 0), 0)
     except (TypeError, ValueError):
+        log.debug("t_read_file: 例外を無視して継続", exc_info=True)
         start = 0
     if start > 0:        # offset は1始まりの行番号(0/1=先頭)
         start -= 1
     try:
         n = int(limit) if limit else READ_DEFAULT_LINES
     except (TypeError, ValueError):
+        log.debug("t_read_file: 例外を無視して継続", exc_info=True)
         n = READ_DEFAULT_LINES
     n = max(n, 1)
     if total and start >= total:
@@ -128,6 +138,7 @@ def t_glob(ws: Path, pattern: str) -> str:
                     return "\n".join(sorted(out)) + "\n...(500件で省略)"
         return "\n".join(sorted(out)) if out else "(一致なし)"
     except Exception as e:
+        log.debug("t_glob: 例外を無視して継続", exc_info=True)
         return f"[エラー] glob失敗: {e}"
 
 
@@ -135,10 +146,12 @@ def t_grep(ws: Path, pattern: str, path_glob: Optional[str] = None, max_matches:
     try:
         rx = re.compile(pattern)
     except re.error as e:
+        log.debug("t_grep: 例外を無視して継続", exc_info=True)
         return f"[エラー] 正規表現が不正です: {e}"
     try:
         it = ws.glob(path_glob) if path_glob else ws.rglob("*")
     except Exception as e:
+        log.debug("t_grep: 例外を無視して継続", exc_info=True)
         return f"[エラー] {e}"
     out: list[str] = []
     n = 0
@@ -150,6 +163,7 @@ def t_grep(ws: Path, pattern: str, path_glob: Optional[str] = None, max_matches:
                 continue
             text = p.read_text(encoding="utf-8", errors="ignore")
         except Exception:
+            log.debug("t_grep: 例外を無視して継続", exc_info=True)
             continue
         rel = p.relative_to(ws).as_posix()
         for i, line in enumerate(text.splitlines(), 1):
@@ -165,6 +179,7 @@ def t_write_file(ws: Path, path: str, content: str) -> str:
     try:
         p = _safe_path(ws, path)
     except ValueError as e:
+        log.debug("t_write_file: 例外を無視して継続", exc_info=True)
         return f"[エラー] {e}"
     existed = p.exists()
     try:
@@ -172,6 +187,7 @@ def t_write_file(ws: Path, path: str, content: str) -> str:
         p.write_text(content, encoding="utf-8")
         return f"[OK] {'上書き' if existed else '作成'}しました: {path} ({len(content)}文字)"
     except Exception as e:
+        log.debug("t_write_file: 例外を無視して継続", exc_info=True)
         return f"[エラー] 書き込み失敗: {e}"
 
 
@@ -179,6 +195,7 @@ def t_edit_file(ws: Path, path: str, old_string: str, new_string: str, replace_a
     try:
         p = _safe_path(ws, path)
     except ValueError as e:
+        log.debug("t_edit_file: 例外を無視して継続", exc_info=True)
         return f"[エラー] {e}"
     if not p.exists() or not p.is_file():
         return f"[エラー] ファイルが存在しません: {path}"
@@ -189,6 +206,7 @@ def t_edit_file(ws: Path, path: str, old_string: str, new_string: str, replace_a
     try:
         text = p.read_text(encoding="utf-8", errors="replace")
     except Exception as e:
+        log.debug("t_edit_file: 例外を無視して継続", exc_info=True)
         return f"[エラー] 読み取り失敗: {e}"
     cnt = text.count(old_string)
     if cnt == 0:
@@ -199,6 +217,7 @@ def t_edit_file(ws: Path, path: str, old_string: str, new_string: str, replace_a
     try:
         p.write_text(new_text, encoding="utf-8")
     except Exception as e:
+        log.debug("t_edit_file: 例外を無視して継続", exc_info=True)
         return f"[エラー] 書き込み失敗: {e}"
     return f"[OK] 編集しました: {path} ({cnt if replace_all else 1}箇所)"
 
@@ -211,8 +230,10 @@ def t_run_command(ws: Path, command: str) -> str:
         out = out[:8000] + ("\n...(出力省略)" if len(out) > 8000 else "")
         return f"[終了コード {r.returncode}]\n{out or '(出力なし)'}"
     except subprocess.TimeoutExpired:
+        log.debug("t_run_command: 例外を無視して継続", exc_info=True)
         return f"[エラー] タイムアウト({CMD_TIMEOUT}秒)しました"
     except Exception as e:
+        log.debug("t_run_command: 例外を無視して継続", exc_info=True)
         return f"[エラー] 実行失敗: {e}"
 
 
@@ -232,6 +253,7 @@ def _bg_reader(job_id: str, proc: "subprocess.Popen") -> None:
                     break
                 j["output"] = (j["output"] + line)[-BG_OUTPUT_CAP:]
     except Exception:
+        log.debug("_bg_reader: 例外を無視して継続", exc_info=True)
         pass
     finally:
         rc = proc.wait()
@@ -251,6 +273,7 @@ def t_run_background(ws: Path, command: str) -> str:
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                 text=True, bufsize=1)
     except Exception as e:
+        log.debug("t_run_background: 例外を無視して継続", exc_info=True)
         return f"[エラー] 起動失敗: {e}"
     job_id = uuid.uuid4().hex[:8]
     with _bg_lock:
@@ -286,9 +309,11 @@ def t_stop_command(job_id: str) -> str:
         try:
             rc = proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
+            log.debug("t_stop_command: 例外を無視して継続", exc_info=True)
             proc.kill()
             rc = proc.wait()
     except Exception as e:
+        log.debug("t_stop_command: 例外を無視して継続", exc_info=True)
         return f"[エラー] 停止失敗: {e}"
     with _bg_lock:                       # 停止直後に状態を確定(リーダースレッド待ちにしない)
         j = _bg_jobs.get(job_id)
@@ -345,6 +370,7 @@ def t_remember(ws: Path, note: str) -> str:
         p.write_text(text, encoding="utf-8")
         return f"CLAUDE.md に記録しました: {note}"
     except Exception as e:
+        log.debug("t_remember: 例外を無視して継続", exc_info=True)
         return f"[エラー] 記録に失敗: {e}"
 
 

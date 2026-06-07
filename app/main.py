@@ -73,6 +73,7 @@ def _ip_allowed(host: str | None) -> bool:
     try:
         ip = ipaddress.ip_address(host)
     except ValueError:
+        log.debug("_ip_allowed: 例外を無視して継続", exc_info=True)
         return host == "localhost"
     mapped = getattr(ip, "ipv4_mapped", None)   # ::ffff:192.168.x.x → 192.168.x.x(スマホ等の誤遮断を防ぐ)
     if mapped is not None:
@@ -95,6 +96,7 @@ def _denied_page(host: str | None) -> str:
         if a.version == 4:
             hint = ".".join(str(a).split(".")[:3]) + ".0/24"
     except Exception:
+        log.debug("_denied_page: 例外を無視して継続", exc_info=True)
         pass
     cidr = f"<li><code>.env</code> に <code>ALLOWED_CIDRS={hint}</code> を追加</li>" if hint else ""
     return ("<!doctype html><html lang=ja><head><meta charset=utf-8>"
@@ -243,10 +245,12 @@ def _save_b64_image(raw: str) -> Optional[tuple[str, str]]:
             mime = header[5:].split(";")[0].strip().lower()
             ext = _IMG_EXT.get(mime, "png")
         except ValueError:
+            log.debug("_save_b64_image: 例外を無視して継続", exc_info=True)
             return None
     try:
         data = base64.b64decode(b64, validate=False)
     except Exception:
+        log.debug("_save_b64_image: 例外を無視して継続", exc_info=True)
         return None
     if not data or len(data) > 16 * 1024 * 1024:   # 16MB 上限
         return None
@@ -288,6 +292,7 @@ def api_generate(cid: str, body: GenerateBody) -> Response:
                     data = (settings.upload_dir / a["file"]).read_bytes()
                     image_b64s.append(base64.b64encode(data).decode("ascii"))
                 except Exception:
+                    log.debug("api_generate: 例外を無視して継続", exc_info=True)
                     pass
     else:
         content = (body.content or "").strip()
@@ -454,12 +459,14 @@ def _resolve_mentions(ws: Path, content: str) -> str:
         try:
             p = agent._safe_path(ws, rel)
         except Exception:
+            log.debug("_resolve_mentions: 例外を無視して継続", exc_info=True)
             continue
         if not p.is_file():
             continue
         try:
             txt = p.read_text(encoding="utf-8", errors="replace")[:6000]
         except Exception:
+            log.debug("_resolve_mentions: 例外を無視して継続", exc_info=True)
             continue
         blocks.append(f"【指定ファイル: {rel}】\n```\n{txt}\n```")
         total += len(txt)

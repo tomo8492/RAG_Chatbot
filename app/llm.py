@@ -195,6 +195,7 @@ def is_ollama_available() -> bool:
         _client(timeout=5).list()
         return True
     except Exception:
+        log.debug("is_ollama_available: 例外を無視して継続", exc_info=True)
         return False
 
 
@@ -330,6 +331,7 @@ def rewrite_query(history: list[dict], query: str, model: str) -> str:
         out = complete_text(build_rewrite_prompt(history, query), model,
                             num_predict=80, temperature=0.0)
     except Exception:
+        log.debug("rewrite_query: 例外を無視して継続", exc_info=True)
         return query
     out = " ".join((out or "").split()).strip(' 　"\'「」『』')
     if not out or len(out) > 200:
@@ -390,6 +392,7 @@ def chat_stream(messages: list[dict], model: str, *,
             stream = _run(think)
         except TypeError:
             # 古い ollama-python は think 未対応
+            log.debug("chat_stream: 例外を無視して継続", exc_info=True)
             stream = _run(None)
 
         for part in stream:
@@ -446,6 +449,7 @@ def complete_text(prompt: str, model: str, *, system: str = "",
         try:
             resp = _client(timeout=60).chat(model=model, messages=msgs, stream=False, think=False, options=opts)
         except TypeError:                       # 古い ollama-python は think 未対応
+            log.debug("complete_text: 例外を無視して継続", exc_info=True)
             resp = _client(timeout=60).chat(model=model, messages=msgs, stream=False, options=opts)
         return (_extract(resp, "content") or "").strip()
     except Exception as e:

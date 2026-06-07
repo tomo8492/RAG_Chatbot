@@ -570,6 +570,7 @@ def to_docx(md: str, title: str = "回答", images: list | None = None) -> bytes
                     try:
                         p.paragraph_format.left_indent = Inches(0.25 * _item_level(it))
                     except Exception:
+                        log.debug("to_docx: 例外を無視して継続", exc_info=True)
                         pass
                 _add_runs(p, _item_plain(it))
         elif t == "code":
@@ -585,6 +586,7 @@ def to_docx(md: str, title: str = "回答", images: list | None = None) -> bytes
                     doc.paragraphs[-1].alignment = WD_ALIGN_PARAGRAPH.CENTER
                     continue
                 except Exception:
+                    log.debug("to_docx: 例外を無視して継続", exc_info=True)
                     pass
             for ln in b["text"].split("\n"):
                 p = doc.add_paragraph()
@@ -600,6 +602,7 @@ def to_docx(md: str, title: str = "回答", images: list | None = None) -> bytes
             try:
                 table.style = "Light Grid Accent 1"
             except Exception:
+                log.debug("to_docx: 例外を無視して継続", exc_info=True)
                 pass
             for j, c in enumerate(b["header"]):
                 if j < cols:
@@ -800,6 +803,7 @@ def to_pdf(md: str, title: str = "回答", images: list | None = None) -> bytes:
         try:
             pdfmetrics.registerFont(UnicodeCIDFont(f))
         except Exception:
+            log.debug("to_pdf: 例外を無視して継続", exc_info=True)
             pass
 
     ACCENT = colors.HexColor("#3b5bdb"); INK = colors.HexColor("#1f2328")
@@ -907,6 +911,7 @@ def to_pdf(md: str, title: str = "回答", images: list | None = None) -> bytes:
                     story.append(Spacer(1, 8))
                     embedded = True
                 except Exception:
+                    log.debug("to_pdf: 例外を無視して継続", exc_info=True)
                     embedded = False
             if not embedded:
                 story.append(Preformatted(b["text"], code_st))   # 画像が無い図はコード枠で表示

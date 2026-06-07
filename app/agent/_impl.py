@@ -78,6 +78,7 @@ def _change_preview(ws: Path, name: str, args: dict) -> dict:
             exists = True
             old = p.read_text(encoding="utf-8", errors="replace")
     except Exception:
+        log.debug("_change_preview: 例外を無視して継続", exc_info=True)
         pass
     if name == "write_file":
         new = args.get("content", "") or ""
@@ -141,6 +142,7 @@ def compact_ctx_with_model(model: str, messages: list, num_ctx: Optional[int] = 
                 {"role": "user", "content": text}], options=opt)
             return getattr(r.message, "content", "") or ""
         except Exception:
+            log.debug("summarizer: 例外を無視して継続", exc_info=True)
             return ""
     return compact_ctx(messages, summarizer)
 
@@ -209,8 +211,10 @@ def _syntax_check(ws: Path, rel: str) -> Optional[str]:
         if r.returncode != 0:
             return ((r.stderr or "") + (r.stdout or "")).strip()[:1500] or "構文エラー"
     except FileNotFoundError:
+        log.debug("_syntax_check: 例外を無視して継続", exc_info=True)
         return None                  # node 等が無ければスキップ
     except Exception:
+        log.debug("_syntax_check: 例外を無視して継続", exc_info=True)
         return None
     return None
 
@@ -226,6 +230,7 @@ def _apply_change(ws: Path, name: str, args: dict, detail: dict):
             before = p.read_text(encoding="utf-8", errors="replace") if p.is_file() else None
             captured = True
         except Exception:
+            log.debug("_apply_change: 例外を無視して継続", exc_info=True)
             captured = False
     result = dispatch(ws, name, args)
     status = _result_status(result)
@@ -262,6 +267,7 @@ def undo(undo_id: str) -> str:
         p.write_text(info["before"], encoding="utf-8")
         return f"変更を取り消しました(復元): {info['rel']}"
     except Exception as e:
+        log.debug("undo: 例外を無視して継続", exc_info=True)
         return f"[エラー] 取り消しに失敗: {e}"
 
 
@@ -367,6 +373,7 @@ def run_stream(model: str, messages: list, workspace: str,
                 try:
                     args = json.loads(args)
                 except Exception:
+                    log.debug("run_stream: 例外を無視して継続", exc_info=True)
                     args = {}
             args = args or {}
             if name in READONLY or name == "summarize_path":
@@ -454,6 +461,7 @@ def run_stream(model: str, messages: list, workspace: str,
                         fn = _summ.model_summarize_fn(model, instr, map_model=mm)
                         result = _summ.run_summarize(sfiles, instr, fn) or "(要約できませんでした)"
                 except Exception as e:
+                    log.debug("run_stream: 例外を無視して継続", exc_info=True)
                     result = f"[エラー] {e}"
                 yield {"type": "tool_result", "name": name,
                        "status": _result_status(result), "result": result}

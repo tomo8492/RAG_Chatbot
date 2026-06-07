@@ -10,6 +10,10 @@ import secrets
 from pathlib import Path
 
 from dotenv import load_dotenv
+from .logging_setup import get_logger
+
+log = get_logger("config")
+
 
 # プロジェクトルート( app/ の1つ上 )
 ROOT_DIR = Path(__file__).resolve().parent.parent
@@ -29,6 +33,7 @@ def _int(name: str, default: int) -> int:
     try:
         return int(os.getenv(name, "").strip())
     except (ValueError, AttributeError):
+        log.debug("_int: 例外を無視して継続", exc_info=True)
         return default
 
 
@@ -115,6 +120,7 @@ class Settings:
             try:
                 nets.append(ipaddress.ip_network(part, strict=False))
             except ValueError:
+                log.debug("_parse_cidrs: 例外を無視して継続", exc_info=True)
                 pass
         return nets
 

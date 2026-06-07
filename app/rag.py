@@ -88,6 +88,7 @@ def _file_sig(f: Path) -> str:
         st = f.stat()
         return f"{int(st.st_mtime)}:{st.st_size}"
     except Exception:
+        log.debug("_file_sig: 例外を無視して継続", exc_info=True)
         return ""
 
 
@@ -119,6 +120,7 @@ def build_index(iid: str, paths: list[str],
             try:
                 progress(msg)
             except Exception:
+                log.debug("emit: 例外を無視して継続", exc_info=True)
                 pass
 
     try:
@@ -192,6 +194,7 @@ def build_index(iid: str, paths: list[str],
                     try:
                         col.delete(ids=path_ids[fpath])
                     except Exception:
+                        log.debug("build_index: 例外を無視して継続", exc_info=True)
                         pass
                 blocks = load_file(f)
                 if not blocks:
@@ -229,6 +232,7 @@ def build_index(iid: str, paths: list[str],
             try:
                 col.delete(ids=path_ids[p])
             except Exception:
+                log.debug("build_index: 例外を無視して継続", exc_info=True)
                 pass
         if removed:
             emit(f"削除されたファイル {len(removed)} 件のデータを除去しました")
@@ -254,6 +258,7 @@ def delete_index_collection(iid: str) -> None:
     try:
         _get_client().delete_collection(_index_collection_name(iid))
     except Exception:
+        log.debug("delete_index_collection: 例外を無視して継続", exc_info=True)
         pass
 
 
@@ -294,6 +299,7 @@ def delete_conv_collection(cid: str) -> None:
     try:
         _get_client().delete_collection(_conv_collection_name(cid))
     except Exception:
+        log.debug("delete_conv_collection: 例外を無視して継続", exc_info=True)
         pass
 
 
@@ -373,4 +379,5 @@ def reset_all() -> None:
     try:
         shutil.rmtree(settings.chroma_dir, ignore_errors=True)
     except Exception:
+        log.debug("reset_all: 例外を無視して継続", exc_info=True)
         pass
