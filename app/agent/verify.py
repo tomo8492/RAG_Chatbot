@@ -66,3 +66,27 @@ def run_verify(ws: Path, cmd: str, timeout: int = CMD_TIMEOUT) -> tuple[bool, st
     except Exception as e:
         log.debug("run_verify: 例外", exc_info=True)
         return False, f"[エラー] 検証の実行に失敗: {e}"
+
+
+def resolve_verify_cmds(ws: Path, verify_cmd: str) -> list[str]:
+    """実行する検証コマンド一覧を決める。設定(verify_cmd・改行区切りで複数可)を優先し、
+    空なら作業フォルダから自動検出した1件。見つからなければ空リスト。"""
+    cmds = [c.strip() for c in (verify_cmd or "").splitlines() if c.strip()]
+    if cmds:
+        return cmds
+    auto = detect_verify_cmd(ws)
+    return [auto] if auto else []
+
+
+def run_checks(ws: Path, cmds: list[str]) -> tuple[bool, str]:
+    """複数の検証コマンドを順に実行し、(すべて成功か, 連結した出力) を返す。"""
+    if not cmds:
+        return False, "[エラー] 実行する検証コマンドがありません"
+    all_ok = True
+    blocks: list[str] = []
+    for c in cmds:
+        ok, out = run_verify(ws, c)
+        blocks.append(f"$ {c}\n{out}")
+        if not ok:
+            all_ok = False
+    return all_ok, "\n\n".join(blocks)

@@ -74,6 +74,43 @@ def test_run_verify_failure_reports_exit_code():
         assert ok is False and "終了コード 3" in out
 
 
+# ---------------- resolve_verify_cmds / run_checks(検証手段の自由化・複数チェック)----------------
+def test_resolve_verify_cmds_uses_setting_multiline():
+    with workspace() as ws:
+        cmds = verify.resolve_verify_cmds(ws, "pytest -q\n ruff check \n")
+        assert cmds == ["pytest -q", "ruff check"]   # 設定優先・改行で複数・空行は除去
+
+
+def test_resolve_verify_cmds_autodetects_when_empty():
+    with workspace() as ws:
+        (ws / "pyproject.toml").write_text("[project]\nname='x'\n", encoding="utf-8")
+        assert verify.resolve_verify_cmds(ws, "") == ["pytest -q"]
+
+
+def test_resolve_verify_cmds_empty_when_nothing():
+    with workspace() as ws:
+        assert verify.resolve_verify_cmds(ws, "   ") == []
+
+
+def test_run_checks_all_pass():
+    with workspace() as ws:
+        ok, out = verify.run_checks(ws, [f'"{sys.executable}" -c "pass"'])
+        assert ok is True and "[検証OK]" in out
+
+
+def test_run_checks_one_fails_overall_fail():
+    with workspace() as ws:
+        ok, out = verify.run_checks(ws, [f'"{sys.executable}" -c "pass"',
+                                         f'"{sys.executable}" -c "import sys; sys.exit(1)"'])
+        assert ok is False and "終了コード 1" in out
+
+
+def test_run_checks_empty():
+    with workspace() as ws:
+        ok, out = verify.run_checks(ws, [])
+        assert ok is False and out.startswith("[エラー]")
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     passed = 0

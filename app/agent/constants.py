@@ -281,6 +281,13 @@ _T_EXPLORE = {"type": "function", "function": {
         "task": {"type": "string", "description": "調査してほしい内容(具体的に)"}},
         "required": ["task"]}}}
 
+_T_VERIFY = {"type": "function", "function": {
+    "name": "verify",
+    "description": "設定済み(または自動検出した)検証コマンド(テスト/ビルド/型/lint)を実行し、"
+                   "合否と出力を得る。変更後に自分で動作確認したいときに使う"
+                   "(任意のコマンドを実行したい場合は run_command を使う)。",
+    "parameters": {"type": "object", "properties": {}, "required": []}}}
+
 READ_TOOLS = [_T_LIST, _T_READ, _T_GLOB, _T_GREP, _T_SUMM]
 WRITE_TOOLS = [_T_WRITE, _T_EDIT, _T_CMD, _T_BG]
 META_TOOLS = [_T_BGOUT, _T_BGSTOP, _T_REMEMBER]   # 確認不要のメタ操作(job出力/停止・メモ追記)

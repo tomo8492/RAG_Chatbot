@@ -40,11 +40,12 @@ from .constants import (
     SUBAGENT_MAX_STEPS,
     SUBAGENT_SYSTEM,
     SUBAGENT_TOOLS,
+    _T_VERIFY,
     _APPLY_NUDGE,
     _CHANGE_INTENT,
 )
 from .tools import dispatch, _safe_path
-from .verify import detect_verify_cmd, run_verify
+from .verify import resolve_verify_cmds, run_checks
 from .approvals import new_pending, wait, wait_answer, wait_decision
 from .context import _ctx_chars, compact_ctx
 from .helpers import _norm_todos, _norm_questions, _format_ask_result
@@ -399,6 +400,8 @@ def run_stream(model: str, messages: list, workspace: str,
         except Exception:
             log.exception("実行中の文脈圧縮に失敗(無視して続行)")
         tools = PLAN_PHASE_TOOLS if phase == "plan" else EXEC_PHASE_TOOLS
+        if auto_verify:
+            tools = tools + [_T_VERIFY]   # 検証ループ有効時はモデルが任意に検証できる
         # --- 1ステップ生成(逐次ストリーミング。失敗時は非ストリームにフォールバック) ---
         content_parts: list[str] = []
         tool_calls: list = []
@@ -459,22 +462,22 @@ def run_stream(model: str, messages: list, workspace: str,
                 apply_nudged = True
                 messages.append({"role": "user", "content": _APPLY_NUDGE})
                 continue
-            # --- 自律検証ループ(Claude Code 風): 変更したのに未検証なら、検証コマンドを
+            # --- 自律検証ループ(Claude Code 風): 変更したのに未検証なら、検証コマンド(複数可)を
             #     自動実行して、失敗ならモデルに差し戻して直させる(最大 MAX_VERIFY_ROUNDS 回)。
             #     表示は通常のツール(verify)として流すので、フロントは既存のツール表示で描ける。
             if (auto_verify and applied_change and not verify_passed
                     and verify_rounds < MAX_VERIFY_ROUNDS):
-                vcmd = (verify_cmd or detect_verify_cmd(ws)).strip()
-                if vcmd:
+                cmds = resolve_verify_cmds(ws, verify_cmd)
+                if cmds:
                     verify_rounds += 1
                     yield {"type": "tool_call", "name": "verify",
-                           "args": {"command": vcmd, "round": f"{verify_rounds}/{MAX_VERIFY_ROUNDS}"}}
-                    passed, vout = run_verify(ws, vcmd)
+                           "args": {"command": " / ".join(cmds), "round": f"{verify_rounds}/{MAX_VERIFY_ROUNDS}"}}
+                    passed, vout = run_checks(ws, cmds)
                     yield {"type": "tool_result", "name": "verify",
                            "status": "ok" if passed else "error", "result": vout}
                     if not passed:
                         messages.append({"role": "user", "content": (
-                            f"[自動検証] `{vcmd}` が失敗しました(試行 {verify_rounds}/{MAX_VERIFY_ROUNDS})。"
+                            f"[自動検証] 検証に失敗しました(試行 {verify_rounds}/{MAX_VERIFY_ROUNDS})。"
                             "出力を読んで原因のファイルを特定し、修正してください。"
                             f"修正後に自動で再検証します。\n{vout}")})
                         continue
@@ -592,6 +595,20 @@ def run_stream(model: str, messages: list, workspace: str,
                 messages.append({"role": "tool", "content": str(result), "tool_name": name})
                 continue
 
+            # --- モデルが任意に呼べる検証(設定/自動検出のチェックを実行・確認不要)---
+            if name == "verify":
+                cmds = resolve_verify_cmds(ws, verify_cmd)
+                if cmds:
+                    passed, result = run_checks(ws, cmds)
+                else:
+                    passed, result = False, "[検証] 実行する検証コマンドがありません(設定・自動検出で見つからず)"
+                if passed:
+                    verify_passed = True
+                yield {"type": "tool_result", "name": name,
+                       "status": "ok" if passed else "error", "result": result}
+                messages.append({"role": "tool", "content": str(result), "tool_name": name})
+                continue
+
             if name in MUTATING:
                 did_attempt_change = True   # 変更を試みた(=安全網の催促は不要)
                 gate = _require_read_first(ws, name, args, read_files)
@@ -639,6 +656,7 @@ def run_stream(model: str, messages: list, workspace: str,
             if name in ("write_file", "edit_file") and _result_status(result) != "error":
                 _mark_read(ws, args.get("path", ""), read_files)
                 applied_change = True   # 自律検証ループの起動条件
+                verify_passed = False   # コードが変わったので再検証が必要
             messages.append({"role": "tool", "content": str(result), "tool_name": name})
 
     yield {"type": "max_steps"}

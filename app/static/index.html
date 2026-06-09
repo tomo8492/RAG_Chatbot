@@ -97,9 +97,9 @@
           <input type="checkbox" id="cb-verify" checked />
           <span>検証ループ</span>
         </label>
-        <input type="text" id="cb-verify-cmd" class="cb-verify-cmd"
-               placeholder="検証コマンド(空=自動検出)"
-               title="検証ループで実行するコマンド。空なら作業フォルダから自動検出(pytest -q / npm test 等)" />
+        <textarea id="cb-verify-cmd" class="cb-verify-cmd" rows="1"
+               placeholder="検証コマンド(空=自動検出。複数は改行)"
+               title="検証ループ/verifyツールで実行するコマンド。空なら自動検出。複数行=複数チェック(全て実行)"></textarea>
       </div>
 
       <div id="messages" class="messages">
