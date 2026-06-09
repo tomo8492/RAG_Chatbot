@@ -348,7 +348,7 @@ def _llm_rerank_scores(query: str, texts: list[str], model: str) -> list[float]:
     解析不能・失敗時は [](=並べ替えなし=融合順を維持)を返す。"""
     if not texts or not model:
         return []
-    lines = [f"[{i}] " + " ".join((t or "").split())[:300] for i, t in enumerate(texts)]
+    lines = [f"[{i}] " + " ".join((t or "").split())[:600] for i, t in enumerate(texts)]
     prompt = (
         f"質問: {query}\n\n"
         "次の各文章が、この質問に答える根拠としてどれだけ関連するかを 0〜10 で採点してください"
@@ -359,7 +359,10 @@ def _llm_rerank_scores(query: str, texts: list[str], model: str) -> list[float]:
         import json as _json
         import re as _re
         from . import llm
-        out = llm.complete_text(prompt, model, num_predict=400, temperature=0.0)
+        # 採点プロンプトは候補×600字で長くなるため、リランクモデルのコンテキストを十分に確保して
+        # 先頭(質問・前半候補)の暗黙切り捨て=採点崩れを防ぐ。
+        need_ctx = min(32768, max(8192, int(len(prompt) * 1.2) + 1024))
+        out = llm.complete_text(prompt, model, num_predict=400, temperature=0.0, num_ctx=need_ctx)
         m = _re.search(r"\{.*\}", out or "", _re.S)
         if not m:
             return []

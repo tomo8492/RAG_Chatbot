@@ -94,6 +94,9 @@ class Settings:
         self.rag_top_k: int = _int("RAG_TOP_K", 15)
         self.chunk_size: int = _int("CHUNK_SIZE", 800)
         self.chunk_overlap: int = _int("CHUNK_OVERLAP", 120)
+        # 既定のコンテキスト長(トークン)。0=モデル既定。Ollama の既定(多くは4096)では参考資料や
+        # システム指示が静かに切り捨てられて精度が落ちるため、十分な既定にしておく(メモリと相談で調整可)。
+        self.num_ctx: int = _int("NUM_CTX", 8192)
         # 文脈付き埋め込み(Contextual Embeddings の局所版)。各文書の主題をLLMで1〜2文生成し、
         # チャンクの埋め込みテキストに前置きして検索精度を上げる(作成は遅くなる。既定OFF)。
         self.contextual_embeddings: bool = _bool("CONTEXTUAL_EMBEDDINGS", False)

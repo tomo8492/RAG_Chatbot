@@ -91,6 +91,33 @@ def test_rewrite_query_passthrough_when_model_empty():
     assert llm.rewrite_query(hist, "その件", "") == "その件"
 
 
+# ---------------- context_char_budget / trim_history(num_ctx 連動) ----------------
+def test_context_char_budget_fallback_when_unknown():
+    assert llm.context_char_budget(0) == llm.RAG_CONTEXT_CHAR_BUDGET
+    assert llm.context_char_budget(-5) == llm.RAG_CONTEXT_CHAR_BUDGET
+
+
+def test_context_char_budget_scales_and_caps():
+    small = llm.context_char_budget(8192, 1024)
+    large = llm.context_char_budget(32768, 1024)
+    assert 1500 <= small < large <= llm.RAG_CONTEXT_CHAR_BUDGET   # num_ctx大→予算大・上限あり
+
+
+def test_trim_history_count_and_chars():
+    hist = [{"role": "user", "content": "x" * 100} for _ in range(50)]
+    assert len(llm.trim_history(hist, max_messages=30, max_chars=0)) == 30   # 件数のみ
+    out = llm.trim_history(hist, max_messages=30, max_chars=250)             # 文字数でも制限
+    assert 1 <= len(out) <= 3 and sum(len(m["content"]) for m in out) <= 250
+
+
+def test_build_messages_history_trimmed_by_small_num_ctx():
+    hist = [{"role": "user", "content": "あ" * 500},
+            {"role": "assistant", "content": "い" * 500}] * 10        # 20件×500字
+    body = [m for m in llm.build_messages("", hist, [], num_ctx=8192, num_predict=1024)
+            if m["role"] in ("user", "assistant")]
+    assert 0 < len(body) < len(hist)        # 小さい num_ctx では直近一部だけ残す
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     passed = 0

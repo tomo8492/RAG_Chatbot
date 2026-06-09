@@ -25,7 +25,7 @@ def base_defaults() -> dict:
         "temperature": 0.3,
         "top_p": 0.9,
         "num_predict": 1024,      # 回答の最大トークン(長さ)
-        "num_ctx": 0,             # 0 = モデル既定のコンテキスト長
+        "num_ctx": settings.num_ctx,   # コンテキスト長(0=モデル既定)。溢れによる先頭切り捨てを防ぐ既定
         "effort": "medium",       # 工数(思考の深さ)
         "top_k": settings.rag_top_k,
         "system_prompt": DEFAULT_SYSTEM_PROMPT,
@@ -76,6 +76,13 @@ def effective_for(conv: dict) -> dict:
     for k in ("temperature", "top_p", "num_predict", "num_ctx", "effort", "top_k"):
         if k in s and s[k] is not None:
             d[k] = s[k]
+    # num_ctx=0(自動)は、溢れやすいモデル既定(多くは4096)ではなく安全な既定へ解決する。
+    # これで「設定保存済みで num_ctx=0 のまま」の既存ユーザーにも改善が届く。
+    try:
+        if int(d.get("num_ctx") or 0) <= 0:
+            d["num_ctx"] = settings.num_ctx
+    except (TypeError, ValueError):
+        d["num_ctx"] = settings.num_ctx
     return d
 
 

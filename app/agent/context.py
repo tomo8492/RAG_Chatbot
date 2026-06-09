@@ -37,10 +37,11 @@ def _head_len(messages: list) -> int:
     return min(len(messages), 1)
 
 
-def compact_ctx(messages: list, summarizer) -> bool:
+def compact_ctx(messages: list, summarizer, char_limit: int = CTX_CHAR_LIMIT) -> bool:
     """文脈が大きければ、設定以降を要約1件に置き換える。置換したら True。
-    summarizer(transcript:str)->str。構造を壊さないよう設定部分は保持する。"""
-    if _ctx_chars(messages) <= CTX_CHAR_LIMIT:
+    summarizer(transcript:str)->str。構造を壊さないよう設定部分は保持する。
+    char_limit は圧縮を起動する合計文字数のしきい値(呼び出し側が num_ctx から算出して渡す)。"""
+    if _ctx_chars(messages) <= char_limit:
         return False
     head = _head_len(messages)
     rest = messages[head:]

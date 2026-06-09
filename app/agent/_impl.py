@@ -138,10 +138,27 @@ def _gen_options(num_ctx: Optional[int] = None) -> dict:
     return opt
 
 
+def _compact_threshold(num_ctx: Optional[int]) -> int:
+    """文脈圧縮を起動する合計文字数のしきい値を num_ctx から算出する。
+
+    エージェントは system + ツール定義(messages 外で毎回送る ~4000トークン相当)の固定オーバー
+    ヘッドが大きい。num_ctx<=0(不明)のときは従来の固定値 CTX_CHAR_LIMIT。
+    """
+    try:
+        n = int(num_ctx) if num_ctx else 0
+    except (TypeError, ValueError):
+        n = 0
+    if n <= 0:
+        return CTX_CHAR_LIMIT
+    return max(6000, n - 5000)   # ツール定義+回答ぶんを残して、溢れる前に圧縮する
+
+
 def compact_ctx_with_model(model: str, messages: list, num_ctx: Optional[int] = None) -> bool:
     """モデルを使って文脈を圧縮(必要時のみ)。num_ctx を渡すと要約対象の取りこぼしを防ぐ。"""
     def summarizer(text: str) -> str:
-        opt = {"num_predict": 400}
+        # 作業ログの要約は、変更ファイル・結果・残タスクを落とさないよう十分な長さを確保する
+        # (短すぎると後続の edit_file の不一致や重複作業を招く)。
+        opt = {"num_predict": 1024}
         if num_ctx:
             opt["num_ctx"] = int(num_ctx)
         try:
@@ -153,7 +170,7 @@ def compact_ctx_with_model(model: str, messages: list, num_ctx: Optional[int] = 
         except Exception:
             log.debug("summarizer: 例外を無視して継続", exc_info=True)
             return ""
-    return compact_ctx(messages, summarizer)
+    return compact_ctx(messages, summarizer, _compact_threshold(num_ctx))
 
 
 def _change_action(name: str, plan_mode: bool, phase: str, allow_changes: bool,
@@ -395,7 +412,8 @@ def run_stream(model: str, messages: list, workspace: str,
     for _ in range(MAX_STEPS):
         # 実行の途中でも文脈が大きくなったら自動圧縮(溢れ防止。Claude同様)
         try:
-            if _ctx_chars(messages) > CTX_CHAR_LIMIT and compact_ctx_with_model(model, messages, num_ctx):
+            if (_ctx_chars(messages) > _compact_threshold(num_ctx)
+                    and compact_ctx_with_model(model, messages, num_ctx)):
                 log.info("文脈を自動圧縮しました(実行中)")
         except Exception:
             log.exception("実行中の文脈圧縮に失敗(無視して続行)")

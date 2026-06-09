@@ -330,6 +330,11 @@ def api_generate(cid: str, body: GenerateBody) -> Response:
         log.exception("クエリ書き換えに失敗(原文で検索)")
     try:
         hits = rag.retrieve(search_query, conv.get("active_indexes", []), cid, int(eff["top_k"]))
+        # 書き換えクエリで0件なら、元の質問でも検索して取りこぼしを防ぐ(書き換えの誤りに対する保険)。
+        if not hits and search_query != query:
+            hits = rag.retrieve(query, conv.get("active_indexes", []), cid, int(eff["top_k"]))
+            if hits:
+                log.info("書き換えで0件 → 原文で再検索しヒット [conv=%s]", cid)
     except Exception:
         log.exception("検索失敗(無視して続行)")
     if hits:
@@ -347,7 +352,8 @@ def api_generate(cid: str, body: GenerateBody) -> Response:
     strict_rag = bool(conv.get("active_indexes"))
     # 図を求めていない通常QAでは簡潔な整形ガイドにして根拠提示に集中させる。
     messages = llm.build_messages(eff["system_prompt"], history, hits,
-                                  strict=strict_rag, diagram_hint=llm.wants_diagram(query))
+                                  strict=strict_rag, diagram_hint=llm.wants_diagram(query),
+                                  num_ctx=int(eff["num_ctx"]) or 0, num_predict=int(eff["num_predict"]))
     use_vision = bool(image_b64s)
     # Vision/OCR モデルは設定(既定値)で選べる。未設定なら .env の VISION_MODEL を使用。
     vision_model = (eff.get("vision_model") or settings.vision_model or "").strip()
