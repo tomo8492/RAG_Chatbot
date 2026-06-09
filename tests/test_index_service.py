@@ -152,6 +152,17 @@ def test_request_cancel_marks_id():
         index_service._summary_cancel.discard("idX")   # 後始末
 
 
+# ---------------- build_async の並行ガード(同一indexの二重ビルド防止)----------------
+def test_build_guard_blocks_concurrent_same_index():
+    assert index_service._acquire_build("idA") is True
+    assert index_service._acquire_build("idA") is False   # 構築中は二重起動をスキップ
+    assert index_service._acquire_build("idB") is True     # 別indexは並行OK
+    index_service._release_build("idA")
+    assert index_service._acquire_build("idA") is True      # 解放後は再取得できる
+    index_service._release_build("idA")
+    index_service._release_build("idB")
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     passed = 0

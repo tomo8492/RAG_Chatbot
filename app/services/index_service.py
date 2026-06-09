@@ -26,13 +26,45 @@ SUMMARY_BG_THRESHOLD = 100
 _summary_cancel: set[str] = set()
 _summary_lock = threading.Lock()
 
+_building: set[str] = set()           # 構築中のインデックスID(同一indexの並行ビルドを防ぐ)
+_build_lock = threading.Lock()
+
 
 # --------------------------------------------------------------------------
 #  インデックス CRUD / 構築
 # --------------------------------------------------------------------------
+def _acquire_build(iid: str) -> bool:
+    """このインデックスのビルド権を取得。既に構築中なら False(=二重起動を防ぐ)。"""
+    with _build_lock:
+        if iid in _building:
+            return False
+        _building.add(iid)
+        return True
+
+
+def _release_build(iid: str) -> None:
+    with _build_lock:
+        _building.discard(iid)
+
+
 def build_async(iid: str, paths: list[str]) -> None:
-    """インデックス構築をバックグラウンドスレッドで開始する。"""
-    threading.Thread(target=rag.build_index, args=(iid, paths), daemon=True).start()
+    """インデックス構築をバックグラウンドスレッドで開始する。
+
+    同一インデックスが既に構築中なら、二重起動せずスキップする(作成要求の二重送信や
+    作成+再構築の競合で同じindexを並行ビルドし、Chromaコレクションへ重複処理・競合が
+    起きるのを防ぐ。単一プロセス前提・メモリ内ロックで保護)。
+    """
+    if not _acquire_build(iid):
+        log.info("インデックス %s は既に構築中のため、二重起動をスキップしました", iid)
+        return
+
+    def _run() -> None:
+        try:
+            rag.build_index(iid, paths)
+        finally:
+            _release_build(iid)
+
+    threading.Thread(target=_run, daemon=True).start()
 
 
 def list_indexes() -> list:
