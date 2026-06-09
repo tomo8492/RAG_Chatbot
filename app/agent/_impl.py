@@ -18,6 +18,7 @@ from __future__ import annotations
 import difflib
 import json
 import subprocess
+import sys
 import uuid
 from pathlib import Path
 from typing import Iterator, Optional
@@ -172,6 +173,37 @@ def _result_status(result: str) -> str:
     return "error" if str(result or "").lstrip().startswith("[エラー]") else "ok"
 
 
+def _mark_read(ws: Path, rel: str, read_files: set) -> None:
+    """read_file 済み・変更成功したファイルを記録(編集前 read のゲート判定に使う)。"""
+    try:
+        read_files.add(str(_safe_path(ws, rel)))
+    except Exception:
+        log.debug("_mark_read: 例外を無視して継続", exc_info=True)
+
+
+def _require_read_first(ws: Path, name: str, args: dict, read_files: set) -> Optional[str]:
+    """編集前に read_file を要求するゲート。未読で読むべきなら理由文字列、OKなら None。
+    - edit_file: 既存ファイルの部分置換 → 必ず事前 read を要求(盲目編集での行重複/インデント崩れを防ぐ)
+    - write_file: 既存ファイルの全文上書きのときだけ要求(新規作成は不要)
+    """
+    rel = (args.get("path") or "").strip()
+    if not rel:
+        return None
+    try:
+        p = _safe_path(ws, rel)
+    except Exception:
+        return None  # パス不正は各ツール側で本来のエラーにさせる
+    if str(p) in read_files or not p.is_file():
+        return None  # 既読、または新規作成(存在しない)は通す
+    if name == "edit_file":
+        return (f"[要 read_file] {rel} をまだ読んでいません。edit_file の前に read_file で"
+                "現在の内容を確認してください(古い記憶や推測での編集は行の重複・インデント崩れの原因になります)。")
+    if name == "write_file":
+        return (f"[要 read_file] {rel} は既存ファイルです。全文上書きの前に read_file で"
+                "現在の内容を確認してください(誤上書き防止)。")
+    return None
+
+
 # ============================================================
 #  エージェントループ(イベントを yield)
 # ============================================================
@@ -194,9 +226,11 @@ _UNDO: dict[str, dict] = {}          # undo_id -> {path(abs), before(str|None), 
 
 # 拡張子ごとの「構文だけ」を確かめるコマンド(.pyc を作らない・副作用なし)
 _SYNTAX_CMD = {
-    ".py": ["python", "-c", "import ast,sys; ast.parse(open(sys.argv[1],encoding='utf-8').read())"],
+    # .py/.json は実行中のインタプリタ(sys.executable)で検査する。Windows で PATH に
+    # "python" が無くてもスキップされず、構文エラーを確実に検出してモデルへ差し戻せる。
+    ".py": [sys.executable, "-c", "import ast,sys; ast.parse(open(sys.argv[1],encoding='utf-8').read())"],
     ".js": ["node", "--check"], ".mjs": ["node", "--check"], ".cjs": ["node", "--check"],
-    ".json": ["python", "-c", "import json,sys; json.load(open(sys.argv[1],encoding='utf-8'))"],
+    ".json": [sys.executable, "-c", "import json,sys; json.load(open(sys.argv[1],encoding='utf-8'))"],
 }
 
 
@@ -294,6 +328,7 @@ def run_stream(model: str, messages: list, workspace: str,
     wants_change = bool(_CHANGE_INTENT.search(
         next((str(m.get("content") or "") for m in reversed(messages)
               if m.get("role") == "user"), "")))
+    read_files: set[str] = set()   # この依頼で read_file 済みのファイル(編集前 read の強制に使う)
 
     for _ in range(MAX_STEPS):
         # 実行の途中でも文脈が大きくなったら自動圧縮(溢れ防止。Claude同様)
@@ -470,6 +505,11 @@ def run_stream(model: str, messages: list, workspace: str,
 
             if name in MUTATING:
                 did_attempt_change = True   # 変更を試みた(=安全網の催促は不要)
+                gate = _require_read_first(ws, name, args, read_files)
+                if gate:   # 未読ファイルの盲目編集を防ぐ(まず read_file させる)
+                    yield {"type": "tool_result", "name": name, "status": "error", "result": gate}
+                    messages.append({"role": "tool", "content": gate, "tool_name": name})
+                    continue
                 action = _change_action(name, plan_mode, phase, allow_changes, auto_accept_edits)
                 if action == "block":
                     result = ("[変更は許可されていません。画面の『変更を許可』をオンにすると、"
@@ -501,9 +541,14 @@ def run_stream(model: str, messages: list, workspace: str,
                     yield ev
             else:
                 result = dispatch(ws, name, args)
+                if name == "read_file" and _result_status(result) != "error":
+                    _mark_read(ws, args.get("path", ""), read_files)   # 読了を記録(編集ゲート用)
                 yield {"type": "tool_result", "name": name,
                        "status": _result_status(result), "result": result}
 
+            # 変更が成功したファイルは「読んだ」とみなす(以後の同一ファイル編集はゲートを通す)
+            if name in ("write_file", "edit_file") and _result_status(result) != "error":
+                _mark_read(ws, args.get("path", ""), read_files)
             messages.append({"role": "tool", "content": str(result), "tool_name": name})
 
     yield {"type": "max_steps"}

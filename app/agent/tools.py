@@ -210,7 +210,8 @@ def t_edit_file(ws: Path, path: str, old_string: str, new_string: str, replace_a
         return f"[エラー] 読み取り失敗: {e}"
     cnt = text.count(old_string)
     if cnt == 0:
-        return "[エラー] old_string が見つかりません(文脈を増やして再指定してください)"
+        return ("[エラー] old_string が見つかりません。まず read_file で現在の内容を確認し、"
+                "実在する文字列を十分な文脈つきで指定してください")
     if cnt > 1 and not replace_all:
         return f"[エラー] old_string が {cnt} 箇所に一致します。文脈を増やすか replace_all=true を指定してください"
     new_text = text.replace(old_string, new_string) if replace_all else text.replace(old_string, new_string, 1)
