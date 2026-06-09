@@ -69,44 +69,57 @@ def cmd_run(args) -> int:
         print("--generate にはモデルが必要です(--model か eval_set.model)。", file=sys.stderr)
         return 2
 
-    rows: list[dict] = []
-    for q in cfg.get("questions", []):
-        question = q["question"]
-        expected = q.get("expected_files", [])
-        hits = rag.retrieve(question, index_ids, top_k=top_k)
-        sources = [h.get("source", "") for h in hits]
-        row = {
-            "id": q.get("id"),
-            "question": question,
-            "expected_files": expected,
-            "hits": [{"source": h.get("source"), "loc": h.get("loc"),
-                      "score": round(float(h.get("score", 0)), 3)} for h in hits],
-            "file_hit": metrics.file_hit(expected, sources),
-            "first_rank": metrics.first_hit_rank(expected, sources),
-        }
-        if args.generate:
-            msgs = llm.build_messages("", [{"role": "user", "content": question}], hits, strict=True)
-            ans = "".join(ev.get("text", "") for ev in llm.chat_stream(msgs, model, num_predict=1024)
-                          if ev.get("type") == "content")
-            ans = postprocess.clean(ans)
-            row["answer"] = ans
-            needles = q.get("expected_answer_contains")
-            row["answer_match"] = metrics.answer_contains(ans, needles) if needles else None
-        rows.append(row)
-        print(f"[{'OK ' if row['file_hit'] else 'MISS'}] {q.get('id', '?')}: "
-              f"rank={row['first_rank']}  {question[:42]}")
+    # ② リランクの効果測定: この実行だけ rerank_enabled を強制(終了時に必ず復元)
+    rr_prev = None
+    if args.rerank:
+        from app.defaults import get_defaults as _gd, set_defaults as _sd
+        rr_prev = bool(_gd().get("rerank_enabled"))
+        _sd({"rerank_enabled": args.rerank == "on"})
+        print(f"[config] rerank_enabled = {args.rerank == 'on'}(この実行のみ)")
+    try:
+        rows: list[dict] = []
+        for q in cfg.get("questions", []):
+            question = q["question"]
+            expected = q.get("expected_files", [])
+            hits = rag.retrieve(question, index_ids, top_k=top_k)
+            sources = [h.get("source", "") for h in hits]
+            row = {
+                "id": q.get("id"),
+                "question": question,
+                "expected_files": expected,
+                "hits": [{"source": h.get("source"), "loc": h.get("loc"),
+                          "score": round(float(h.get("score", 0)), 3)} for h in hits],
+                "file_hit": metrics.file_hit(expected, sources),
+                "first_rank": metrics.first_hit_rank(expected, sources),
+            }
+            if args.generate:
+                msgs = llm.build_messages("", [{"role": "user", "content": question}], hits, strict=True)
+                ans = "".join(ev.get("text", "") for ev in llm.chat_stream(msgs, model, num_predict=1024)
+                              if ev.get("type") == "content")
+                ans = postprocess.clean(ans)
+                row["answer"] = ans
+                needles = q.get("expected_answer_contains")
+                row["answer_match"] = metrics.answer_contains(ans, needles) if needles else None
+            rows.append(row)
+            print(f"[{'OK ' if row['file_hit'] else 'MISS'}] {q.get('id', '?')}: "
+                  f"rank={row['first_rank']}  {question[:42]}")
 
-    summary = metrics.summarize(rows)
-    os.makedirs(RESULTS_DIR, exist_ok=True)
-    tag = args.tag or "run"
-    path = os.path.join(RESULTS_DIR, f"{tag}_{time.strftime('%Y%m%d-%H%M%S')}.json")
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump({"tag": tag, "top_k": top_k, "summary": summary, "rows": rows},
-                  f, ensure_ascii=False, indent=2)
-    print("\n=== サマリ ===")
-    print(json.dumps(summary, ensure_ascii=False, indent=2))
-    print("保存:", path)
-    return 0
+        summary = metrics.summarize(rows)
+        os.makedirs(RESULTS_DIR, exist_ok=True)
+        tag = args.tag or "run"
+        path = os.path.join(RESULTS_DIR, f"{tag}_{time.strftime('%Y%m%d-%H%M%S')}.json")
+        config = {"rerank_enabled": (args.rerank == "on") if args.rerank else None}
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump({"tag": tag, "top_k": top_k, "config": config,
+                       "summary": summary, "rows": rows}, f, ensure_ascii=False, indent=2)
+        print("\n=== サマリ ===")
+        print(json.dumps(summary, ensure_ascii=False, indent=2))
+        print("保存:", path)
+        return 0
+    finally:
+        if rr_prev is not None:
+            from app.defaults import set_defaults as _sd
+            _sd({"rerank_enabled": rr_prev})
 
 
 def cmd_compare(args) -> int:
@@ -134,6 +147,8 @@ def main() -> int:
     ap.add_argument("--tag", help="結果タグ(before/after など)")
     ap.add_argument("--model", help="生成モデル(--generate時)")
     ap.add_argument("--generate", action="store_true", help="回答も生成して記録")
+    ap.add_argument("--rerank", choices=["on", "off"],
+                    help="この実行だけリランクを強制ON/OFF(②の効果測定。終了時に元へ復元)")
     ap.add_argument("--list-indexes", action="store_true", help="既存インデックス一覧を表示")
     ap.add_argument("--compare", nargs=2, metavar=("BEFORE", "AFTER"), help="2つの結果JSONを比較")
     args = ap.parse_args()

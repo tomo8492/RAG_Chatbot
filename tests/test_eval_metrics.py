@@ -11,6 +11,7 @@ from evalkit.metrics import (  # noqa: E402
     answer_contains,
     file_hit,
     first_hit_rank,
+    reciprocal_rank,
     summarize,
 )
 
@@ -54,6 +55,25 @@ def test_summarize():
 def test_summarize_empty():
     s = summarize([])
     assert s["questions"] == 0 and s["file_hit_rate"] is None
+    assert s["mrr"] is None and s["hit_at_1"] is None
+
+
+def test_reciprocal_rank():
+    assert reciprocal_rank(["a.pdf"], ["x", "a.pdf", "y"]) == 0.5   # 2位 → 1/2
+    assert reciprocal_rank(["a.pdf"], ["a.pdf"]) == 1.0
+    assert reciprocal_rank(["a.pdf"], ["x", "y"]) == 0.0            # ヒットなし → 0
+
+
+def test_summarize_mrr_and_hit_at_k():
+    rows = [
+        {"file_hit": True, "first_rank": 1},
+        {"file_hit": True, "first_rank": 4},
+        {"file_hit": False, "first_rank": None},
+    ]
+    s = summarize(rows)
+    assert s["mrr"] == round((1.0 + 0.25 + 0.0) / 3, 3)   # (1/1 + 1/4 + 0)/3
+    assert s["hit_at_1"] == round(1 / 3, 3)               # 1位ヒットは rank1 の1件
+    assert s["hit_at_3"] == round(1 / 3, 3)               # 上位3件ヒットも rank1 のみ
 
 
 if __name__ == "__main__":
