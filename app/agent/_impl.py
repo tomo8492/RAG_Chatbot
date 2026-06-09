@@ -37,6 +37,9 @@ from .constants import (
     MUTATING,
     PLAN_PHASE_TOOLS,
     READONLY,
+    SUBAGENT_MAX_STEPS,
+    SUBAGENT_SYSTEM,
+    SUBAGENT_TOOLS,
     _APPLY_NUDGE,
     _CHANGE_INTENT,
 )
@@ -67,6 +70,8 @@ def _preview_args(name: str, args: dict) -> dict:
         return {"pattern": args.get("pattern", "")}
     if name == "summarize_path":
         return {"path": args.get("path", "")}
+    if name == "explore":
+        return {"task": args.get("task", "")}
     return {}
 
 
@@ -219,6 +224,56 @@ def _tc_to_dict(tc) -> dict:
     name = getattr(fn, "name", "") if fn is not None else ""
     args = getattr(fn, "arguments", {}) if fn is not None else {}
     return {"function": {"name": name, "arguments": args}}
+
+
+def _run_subagent(model: str, ws: Path, task: str, num_ctx: Optional[int]) -> str:
+    """読み取り専用の調査サブエージェントを実行し、調査結果の要約だけを返す。
+
+    list_files/read_file/glob/grep のみを許可した別文脈の小ループ(最大 SUBAGENT_MAX_STEPS)。
+    本体(run_stream)の文脈を汚さずに横断調査を任せるのが狙い。非ストリーミング。
+    """
+    if not (task or "").strip():
+        return "[エラー] 調査タスクが空です"
+    try:
+        client = _client()
+    except Exception as e:
+        return f"[エラー] 調査サブエージェントを起動できません: {e}"
+    messages = [{"role": "system", "content": SUBAGENT_SYSTEM},
+                {"role": "user", "content": task.strip()}]
+    last = ""
+    for _ in range(SUBAGENT_MAX_STEPS):
+        try:
+            resp = client.chat(model=model, messages=messages,
+                               tools=SUBAGENT_TOOLS, options=_gen_options(num_ctx))
+        except Exception as e:
+            log.debug("_run_subagent: 例外を無視して継続", exc_info=True)
+            return last.strip() or f"[エラー] 調査サブエージェントの実行に失敗: {e}"
+        cm = resp.message
+        content = getattr(cm, "content", "") or ""
+        if content:
+            last = content
+        tcs = list(getattr(cm, "tool_calls", None) or [])
+        asst = {"role": "assistant", "content": content}
+        if tcs:
+            asst["tool_calls"] = [_tc_to_dict(tc) for tc in tcs]
+        messages.append(asst)
+        if not tcs:
+            return content.strip() or "(調査結果なし)"
+        for tc in tcs:
+            name = tc.function.name
+            args = tc.function.arguments
+            if isinstance(args, str):
+                try:
+                    args = json.loads(args)
+                except Exception:
+                    log.debug("_run_subagent: 例外を無視して継続", exc_info=True)
+                    args = {}
+            if name in READONLY:          # list_files/read_file/glob/grep のみ実行可
+                result = dispatch(ws, name, args or {})
+            else:
+                result = "[エラー] 調査サブエージェントは読み取り専用です(変更・コマンドは不可)"
+            messages.append({"role": "tool", "content": str(result), "tool_name": name})
+    return (last.strip() + "\n(調査は上限ステップで打ち切り)") if last.strip() else "(調査が完了しませんでした)"
 
 
 # ============================================================
@@ -524,6 +579,14 @@ def run_stream(model: str, messages: list, workspace: str,
                 except Exception as e:
                     log.debug("run_stream: 例外を無視して継続", exc_info=True)
                     result = f"[エラー] {e}"
+                yield {"type": "tool_result", "name": name,
+                       "status": _result_status(result), "result": result}
+                messages.append({"role": "tool", "content": str(result), "tool_name": name})
+                continue
+
+            # --- 調査サブエージェントへ委譲(読み取り専用・確認不要・本体文脈を汚さない) ---
+            if name == "explore":
+                result = _run_subagent(model, ws, (args.get("task") or "").strip(), num_ctx)
                 yield {"type": "tool_result", "name": name,
                        "status": _result_status(result), "result": result}
                 messages.append({"role": "tool", "content": str(result), "tool_name": name})
