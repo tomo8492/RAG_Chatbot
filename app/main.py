@@ -522,6 +522,8 @@ def api_agent(cid: str, body: AgentBody) -> Response:
     allow_changes = bool(s.get("allow_changes"))
     plan_mode = bool(s.get("plan_mode", True))
     auto_accept_edits = bool(s.get("auto_accept_edits"))
+    auto_verify = bool(s.get("auto_verify", True))      # 変更後にテスト等を自動実行して直す(既定ON)
+    verify_cmd = (s.get("verify_cmd") or "").strip()    # 空=作業フォルダから自動検出
     if not workspace:
         raise HTTPException(400, "作業フォルダが設定されていません。先にフォルダを選択してください。")
     ws = Path(workspace).expanduser()
@@ -606,7 +608,8 @@ def api_agent(cid: str, body: AgentBody) -> Response:
 
         try:
             for ev in agent.run_stream(model, ctx, str(ws.resolve()), allow_changes, plan_mode,
-                                       num_ctx, auto_accept_edits=auto_accept_edits):
+                                       num_ctx, auto_accept_edits=auto_accept_edits,
+                                       auto_verify=auto_verify, verify_cmd=verify_cmd):
                 t = ev.get("type")
                 if t in ("assistant_delta", "assistant"):
                     if ev.get("text"):

@@ -37,6 +37,8 @@ function bindGlobalEvents() {
   $("cb-plan").onchange = (e) => setCodePlan(e.target.checked);
   $("cb-allow").onchange = (e) => setCodeAllow(e.target.checked);
   $("cb-autoaccept").onchange = (e) => setCodeAutoAccept(e.target.checked);
+  if ($("cb-verify")) $("cb-verify").onchange = (e) => setCodeVerify(e.target.checked);
+  if ($("cb-verify-cmd")) $("cb-verify-cmd").onchange = (e) => setCodeVerifyCmd(e.target.value.trim());
 
   $("chat-title").addEventListener("change", renameConversation);
   $("chat-title").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); $("chat-title").blur(); } });

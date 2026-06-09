@@ -32,6 +32,7 @@ from .constants import (
     CONFIRM_IN_EXEC,
     EXEC_PHASE_TOOLS,
     MAX_STEPS,
+    MAX_VERIFY_ROUNDS,
     META,
     MUTATING,
     PLAN_PHASE_TOOLS,
@@ -40,6 +41,7 @@ from .constants import (
     _CHANGE_INTENT,
 )
 from .tools import dispatch, _safe_path
+from .verify import detect_verify_cmd, run_verify
 from .approvals import new_pending, wait, wait_answer, wait_decision
 from .context import _ctx_chars, compact_ctx
 from .helpers import _norm_todos, _norm_questions, _format_ask_result
@@ -308,7 +310,8 @@ def undo(undo_id: str) -> str:
 def run_stream(model: str, messages: list, workspace: str,
                allow_changes: bool, plan_mode: bool = True,
                num_ctx: Optional[int] = None,
-               auto_accept_edits: bool = False) -> Iterator[dict]:
+               auto_accept_edits: bool = False,
+               auto_verify: bool = False, verify_cmd: str = "") -> Iterator[dict]:
     """
     エージェントを1依頼ぶん実行し、イベントを順次 yield する。
     イベント type:
@@ -329,6 +332,9 @@ def run_stream(model: str, messages: list, workspace: str,
         next((str(m.get("content") or "") for m in reversed(messages)
               if m.get("role") == "user"), "")))
     read_files: set[str] = set()   # この依頼で read_file 済みのファイル(編集前 read の強制に使う)
+    applied_change = False         # ファイル変更を実際に適用したか(自律検証ループの起動条件)
+    verify_rounds = 0              # 自動検証の実行回数
+    verify_passed = False          # 検証が成功したか
 
     for _ in range(MAX_STEPS):
         # 実行の途中でも文脈が大きくなったら自動圧縮(溢れ防止。Claude同様)
@@ -398,6 +404,26 @@ def run_stream(model: str, messages: list, workspace: str,
                 apply_nudged = True
                 messages.append({"role": "user", "content": _APPLY_NUDGE})
                 continue
+            # --- 自律検証ループ(Claude Code 風): 変更したのに未検証なら、検証コマンドを
+            #     自動実行して、失敗ならモデルに差し戻して直させる(最大 MAX_VERIFY_ROUNDS 回)。
+            #     表示は通常のツール(verify)として流すので、フロントは既存のツール表示で描ける。
+            if (auto_verify and applied_change and not verify_passed
+                    and verify_rounds < MAX_VERIFY_ROUNDS):
+                vcmd = (verify_cmd or detect_verify_cmd(ws)).strip()
+                if vcmd:
+                    verify_rounds += 1
+                    yield {"type": "tool_call", "name": "verify",
+                           "args": {"command": vcmd, "round": f"{verify_rounds}/{MAX_VERIFY_ROUNDS}"}}
+                    passed, vout = run_verify(ws, vcmd)
+                    yield {"type": "tool_result", "name": "verify",
+                           "status": "ok" if passed else "error", "result": vout}
+                    if not passed:
+                        messages.append({"role": "user", "content": (
+                            f"[自動検証] `{vcmd}` が失敗しました(試行 {verify_rounds}/{MAX_VERIFY_ROUNDS})。"
+                            "出力を読んで原因のファイルを特定し、修正してください。"
+                            f"修正後に自動で再検証します。\n{vout}")})
+                        continue
+                    verify_passed = True
             yield {"type": "done"}
             return
 
@@ -549,6 +575,7 @@ def run_stream(model: str, messages: list, workspace: str,
             # 変更が成功したファイルは「読んだ」とみなす(以後の同一ファイル編集はゲートを通す)
             if name in ("write_file", "edit_file") and _result_status(result) != "error":
                 _mark_read(ws, args.get("path", ""), read_files)
+                applied_change = True   # 自律検証ループの起動条件
             messages.append({"role": "tool", "content": str(result), "tool_name": name})
 
     yield {"type": "max_steps"}

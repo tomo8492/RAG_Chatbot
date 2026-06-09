@@ -444,6 +444,8 @@ body[data-mode="code"] .code-bar.only-code { display: flex; }
   color: var(--ink-soft); user-select: none; white-space: nowrap; }
 .cb-toggle input { accent-color: var(--accent); width: 16px; height: 16px; }
 .cb-toggle.disabled { opacity: .45; cursor: not-allowed; }
+.cb-verify-cmd { font-size: 12px; padding: 4px 8px; border: 1px solid var(--line); border-radius: 6px;
+  background: var(--panel); color: var(--ink); width: 200px; max-width: 32vw; }
 
 /* エージェントのステップ表示 */
 .agent-log { display: flex; flex-direction: column; gap: 6px; }

@@ -570,3 +570,23 @@ async function setCodeAutoAccept(on) {
   } catch (e) { toast("設定失敗: " + e.message); if ($("cb-autoaccept")) $("cb-autoaccept").checked = !on; }
 }
 
+async function setCodeVerify(on) {
+  if (!State.current) return;
+  try {
+    const conv = await api(`/api/conversations/${State.current.id}`, {
+      method: "PATCH", body: JSON.stringify({ settings: { auto_verify: !!on } }),
+    });
+    State.current = conv;
+  } catch (e) { toast("設定失敗: " + e.message); if ($("cb-verify")) $("cb-verify").checked = !on; }
+}
+
+async function setCodeVerifyCmd(cmd) {
+  if (!State.current) return;
+  try {
+    const conv = await api(`/api/conversations/${State.current.id}`, {
+      method: "PATCH", body: JSON.stringify({ settings: { verify_cmd: cmd } }),
+    });
+    State.current = conv;
+  } catch (e) { toast("設定失敗: " + e.message); }
+}
+

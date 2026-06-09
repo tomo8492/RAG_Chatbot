@@ -93,6 +93,13 @@
           <input type="checkbox" id="cb-autoaccept" />
           <span>編集を自動適用</span>
         </label>
+        <label class="cb-toggle" title="変更後にテスト/ビルド等の検証コマンドを自動実行し、失敗したらAIが直して再検証します(Claude Code 風の自律ループ)">
+          <input type="checkbox" id="cb-verify" checked />
+          <span>検証ループ</span>
+        </label>
+        <input type="text" id="cb-verify-cmd" class="cb-verify-cmd"
+               placeholder="検証コマンド(空=自動検出)"
+               title="検証ループで実行するコマンド。空なら作業フォルダから自動検出(pytest -q / npm test 等)" />
       </div>
 
       <div id="messages" class="messages">

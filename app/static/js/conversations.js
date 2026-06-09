@@ -80,6 +80,8 @@ function updateCodeBar(conv) {
   const allowLabel = $("cb-allow").closest(".cb-toggle");
   if (allowLabel) allowLabel.classList.toggle("disabled", plan);
   if ($("cb-autoaccept")) $("cb-autoaccept").checked = !!s.auto_accept_edits;
+  if ($("cb-verify")) $("cb-verify").checked = s.auto_verify !== false;   // 検証ループ(既定ON)
+  if ($("cb-verify-cmd")) $("cb-verify-cmd").value = s.verify_cmd || "";
 }
 
 async function deleteConversation(cid) {
