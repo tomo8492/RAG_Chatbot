@@ -79,6 +79,7 @@ def list_indexes() -> list:
             "finished_at": st.get("finished_at"),
         }
         it["bg_threshold"] = SUMMARY_BG_THRESHOLD
+        it["ocr_skip"] = db.get_kv(f"ocr_skip:{it['id']}") or 0
     return items
 
 

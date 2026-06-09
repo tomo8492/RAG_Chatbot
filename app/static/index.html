@@ -260,6 +260,14 @@
             <label><input type="checkbox" id="set-rerank" /> 回答前にLLMで出典を並べ替え(精度↑/やや遅い)</label>
             <p class="muted small">検索の上位候補を、回答生成の前にLLMが関連度で採点して並べ替えます(リランク)。即時反映。</p>
           </div>
+          <div class="field">
+            <label><input type="checkbox" id="set-ocr" /> スキャンPDFをOCRで取り込む(画像PDF対応)</label>
+            <p class="muted small">テキスト層の無いページを画像化してOCRします(やや遅い)。変更後はインデックス再構築で反映。</p>
+          </div>
+          <div class="field">
+            <label>OCRモデル(空=画像認識モデルを流用)</label>
+            <select id="set-ocr-model"></select>
+          </div>
           <p class="muted small">※ チャンク設定は次回のインデックス作成・再構築から反映されます。</p>
           <p class="muted small">埋め込み: <span id="set-embed-info"></span></p>
         </details>

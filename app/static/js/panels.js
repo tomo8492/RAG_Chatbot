@@ -102,6 +102,8 @@ function openSettings() {
   bindRange("set-overlap", "set-overlap-val", d.chunk_overlap);
   if ($("set-contextual")) $("set-contextual").checked = !!d.contextual_embeddings;
   if ($("set-rerank")) $("set-rerank").checked = !!d.rerank_enabled;
+  if ($("set-ocr")) $("set-ocr").checked = !!d.ocr_enabled;
+  if ($("set-ocr-model")) setSelect($("set-ocr-model"), d.ocr_vlm_model || "");
   $("set-embed-info").textContent =
     `${State.config.embed_backend} / ${State.config.embed_model}`;
   $("settings-modal").classList.remove("hidden");
@@ -127,6 +129,8 @@ async function saveSettings() {
     chunk_overlap: parseInt($("set-overlap").value),
     contextual_embeddings: !!($("set-contextual") && $("set-contextual").checked),
     rerank_enabled: !!($("set-rerank") && $("set-rerank").checked),
+    ocr_enabled: !!($("set-ocr") && $("set-ocr").checked),
+    ocr_vlm_model: ($("set-ocr-model") ? $("set-ocr-model").value : ""),
   };
   State.defaults = await api("/api/settings", { method: "PATCH", body: JSON.stringify(patch) });
   $("settings-modal").classList.add("hidden");
@@ -169,6 +173,10 @@ function renderKbList() {
     card.appendChild(top);
     card.appendChild(el("div", "kb-meta",
       `${idx.file_count} ファイル / ${idx.chunk_count} チャンク`));
+    if (idx.ocr_skip > 0) {
+      card.appendChild(el("div", "kb-status error",
+        `⚠ スキャン等で本文が取れず未取込のファイル ${idx.ocr_skip} 件。設定の「スキャンPDFをOCRで取り込む」をONにして再構築すると取り込めます。`));
+    }
     card.appendChild(el("div", "kb-paths", escapeHtml((idx.paths || []).join("  ・  "))));
     if (idx.error) card.appendChild(el("div", "kb-status error", escapeHtml(idx.error)));
     const actions = el("div", "kb-actions");

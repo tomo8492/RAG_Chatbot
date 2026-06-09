@@ -36,6 +36,9 @@ def base_defaults() -> dict:
         # 回答前リランク(LLMで出典を並べ替え。精度↑/やや遅い)。
         "rerank_enabled": settings.rerank_enabled,
         "rerank_model": settings.rerank_model,
+        # OCR(スキャンPDFの取り込み)。設定画面からON/OFFと使用モデルを切替可能。
+        "ocr_enabled": settings.ocr_enabled,
+        "ocr_vlm_model": settings.ocr_vlm_model,
         "summarize_map_model": "",   # 一括要約の「下書き(map)」用モデル。空=メインと同じ(二段なし)
         "theme": "auto",
     }

@@ -198,6 +198,7 @@ def build_index(iid: str, paths: list[str],
         ok_files = 0
         changed = 0
         skipped = 0
+        ocr_skipped = 0
         current_paths: set[str] = set()
         for fi, f in enumerate(files, 1):
             try:
@@ -219,6 +220,7 @@ def build_index(iid: str, paths: list[str],
                         pass
                 blocks = load_file(f)
                 if not blocks:
+                    ocr_skipped += 1
                     emit(f"  [skip] {f.name}(抽出テキストなし)")
                     continue
                 # 文脈付き埋め込み: 文書全体の文脈を1回だけ生成し、各チャンクの「埋め込み用テキスト」の
@@ -266,6 +268,7 @@ def build_index(iid: str, paths: list[str],
         if removed:
             emit(f"削除されたファイル {len(removed)} 件のデータを除去しました")
 
+        db.set_kv(f"ocr_skip:{iid}", ocr_skipped)   # スキャン等で本文が取れず未取込のファイル数
         if total_chunks == 0:
             db.update_index(iid, status="error",
                             error="テキストを抽出できませんでした(スキャンPDF等の可能性)",

@@ -96,10 +96,15 @@ async function loadModels() {
   fillModelSelect($("set-model"));
   fillModelSelect($("set-vision-model"));
   fillModelSelect($("set-code-model"));
+  fillModelSelect($("set-ocr-model"));
   // Code用モデルは「既定モデルと同じ(空)」を先頭に置いて選べるようにする
   const codeEmpty = el("option", null, "(既定モデルと同じ)");
   codeEmpty.value = "";
   $("set-code-model").insertBefore(codeEmpty, $("set-code-model").firstChild);
+  // OCRモデルは「画像認識モデルを流用(空)」を先頭に
+  const ocrEmpty = el("option", null, "(画像認識モデルを流用)");
+  ocrEmpty.value = "";
+  $("set-ocr-model").insertBefore(ocrEmpty, $("set-ocr-model").firstChild);
   if (!State.models.length) {
     const o = el("option", null, "(モデルなし — ollama pull が必要)");
     o.value = "";
