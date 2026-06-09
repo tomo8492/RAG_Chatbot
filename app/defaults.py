@@ -33,6 +33,9 @@ def base_defaults() -> dict:
         "chunk_overlap": settings.chunk_overlap,
         # 文脈付き埋め込み(検索精度↑/作成は遅め)。変更は再構築で反映。
         "contextual_embeddings": settings.contextual_embeddings,
+        # 回答前リランク(LLMで出典を並べ替え。精度↑/やや遅い)。
+        "rerank_enabled": settings.rerank_enabled,
+        "rerank_model": settings.rerank_model,
         "summarize_map_model": "",   # 一括要約の「下書き(map)」用モデル。空=メインと同じ(二段なし)
         "theme": "auto",
     }

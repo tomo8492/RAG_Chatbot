@@ -101,6 +101,7 @@ function openSettings() {
   bindRange("set-chunk", "set-chunk-val", d.chunk_size);
   bindRange("set-overlap", "set-overlap-val", d.chunk_overlap);
   if ($("set-contextual")) $("set-contextual").checked = !!d.contextual_embeddings;
+  if ($("set-rerank")) $("set-rerank").checked = !!d.rerank_enabled;
   $("set-embed-info").textContent =
     `${State.config.embed_backend} / ${State.config.embed_model}`;
   $("settings-modal").classList.remove("hidden");
@@ -125,6 +126,7 @@ async function saveSettings() {
     chunk_size: parseInt($("set-chunk").value),
     chunk_overlap: parseInt($("set-overlap").value),
     contextual_embeddings: !!($("set-contextual") && $("set-contextual").checked),
+    rerank_enabled: !!($("set-rerank") && $("set-rerank").checked),
   };
   State.defaults = await api("/api/settings", { method: "PATCH", body: JSON.stringify(patch) });
   $("settings-modal").classList.add("hidden");

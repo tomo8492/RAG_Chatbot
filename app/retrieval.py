@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import math
 import re
+from typing import Callable
 
 # RRF の定数(大きいほど順位差の影響がなだらか。情報検索で一般的な 60)
 RRF_K = 60
@@ -153,3 +154,34 @@ def rerank(query: str, hits: list[dict], top_k: int,
         per[src] = per.get(src, 0) + 1
         out.append(h)
     return out if unlimited else out[:top_k]
+
+
+def llm_rerank(query: str, hits: list[dict], top_k: int,
+               score_fn: Callable[[str, list[str]], list[float]],
+               max_per_source: int = 5) -> list[dict]:
+    """RRF融合済みの候補を、LLMの関連度スコア(score_fn 注入)で並べ替えて top_k 返す。
+
+    score_fn(query, [text,...]) -> [score,...]。長さ不一致・失敗時は入力順を維持する
+    (=融合順へフォールバック)。LLM/外部依存を持たない純関数なので単体テスト可能。
+    """
+    if not hits:
+        return []
+    texts = [h.get("text", "") for h in hits]
+    try:
+        scores = score_fn(query, texts)
+    except Exception:
+        scores = []
+    if scores and len(scores) == len(hits):
+        order = sorted(range(len(hits)), key=lambda i: (-float(scores[i]), i))
+        ranked = [hits[i] for i in order]
+    else:
+        ranked = list(hits)   # フォールバック: 融合順を維持
+    out: list[dict] = []
+    per: dict[str, int] = {}
+    for h in ranked:
+        src = h.get("source", "")
+        if per.get(src, 0) >= max_per_source:
+            continue
+        per[src] = per.get(src, 0) + 1
+        out.append(h)
+    return out[:top_k]

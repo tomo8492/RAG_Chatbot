@@ -97,6 +97,10 @@ class Settings:
         # 文脈付き埋め込み(Contextual Embeddings の局所版)。各文書の主題をLLMで1〜2文生成し、
         # チャンクの埋め込みテキストに前置きして検索精度を上げる(作成は遅くなる。既定OFF)。
         self.contextual_embeddings: bool = _bool("CONTEXTUAL_EMBEDDINGS", False)
+        # 回答前リランク: 融合上位の出典を LLM で関連度採点して並べ替える(精度↑/やや遅い。既定OFF)。
+        self.rerank_enabled: bool = _bool("RERANK_ENABLED", False)
+        # リランクに使うモデル(空なら既定モデルを流用)。
+        self.rerank_model: str = os.getenv("RERANK_MODEL", "").strip()
 
         # --- OCR(スキャン/画像PDF。既定OFF=現行動作を変えない) ---
         self.ocr_enabled: bool = _bool("OCR_ENABLED", False)

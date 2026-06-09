@@ -337,6 +337,34 @@ def delete_conv_collection(cid: str) -> None:
 # ============================================================
 UNLIMITED_TOP_K = 9999  # これ以上は「上限なし(全件取得)」とみなすセンチネル
 MAX_PER_SOURCE = 5      # 1ファイルから採用する最大チャンク数(多ファイル横断の多様化)
+RERANK_POOL = 20        # LLMリランク時に並べ替え対象とする融合上位の母集団サイズ
+
+
+def _llm_rerank_scores(query: str, texts: list[str], model: str) -> list[float]:
+    """各候補の関連度を LLM で 0〜10 採点する(1回の呼び出し)。JSON {"0": 8, ...} を期待。
+    解析不能・失敗時は [](=並べ替えなし=融合順を維持)を返す。"""
+    if not texts or not model:
+        return []
+    lines = [f"[{i}] " + " ".join((t or "").split())[:300] for i, t in enumerate(texts)]
+    prompt = (
+        f"質問: {query}\n\n"
+        "次の各文章が、この質問に答える根拠としてどれだけ関連するかを 0〜10 で採点してください"
+        "(10=直接の根拠 / 0=無関係)。説明は書かず、JSON だけを返す。"
+        "形式: {\"0\": 8, \"1\": 2, ...}\n\n" + "\n".join(lines)
+    )
+    try:
+        import json as _json
+        import re as _re
+        from . import llm
+        out = llm.complete_text(prompt, model, num_predict=400, temperature=0.0)
+        m = _re.search(r"\{.*\}", out or "", _re.S)
+        if not m:
+            return []
+        data = _json.loads(m.group(0))
+        return [float(data.get(str(i), 0.0)) for i in range(len(texts))]
+    except Exception:
+        log.debug("_llm_rerank_scores: 例外を無視して継続", exc_info=True)
+        return []
 
 
 def retrieve(query: str, index_ids: list[str], conversation_id: Optional[str] = None,
@@ -400,7 +428,20 @@ def retrieve(query: str, index_ids: list[str], conversation_id: Optional[str] = 
 
     # 密検索の候補を、語彙スコア(BM25相当)とのRRF融合で再ランク。
     # 重複除去・ソース多様化・無関係ヒットの足切りもここで行う。
-    return retrieval.rerank(query, hits, top_k, MAX_PER_SOURCE, unlimited)
+    from .defaults import get_defaults
+    d = get_defaults()
+    rerank_on = (not unlimited and bool(query.strip()) and bool(d.get("rerank_enabled")))
+    pool_k = max(top_k, RERANK_POOL) if rerank_on else top_k
+    fused = retrieval.rerank(query, hits, pool_k, MAX_PER_SOURCE, unlimited)
+    # 任意: 融合上位を LLM で関連度採点して並べ替える(精度↑/やや遅い。既定OFF)
+    if rerank_on and len(fused) > 1:
+        model = (d.get("rerank_model") or d.get("model") or "").strip()
+        if model:
+            return retrieval.llm_rerank(
+                query, fused, top_k,
+                lambda q, texts: _llm_rerank_scores(q, texts, model),
+                MAX_PER_SOURCE)
+    return fused if unlimited else fused[:top_k]
 
 
 def reset_all() -> None:
