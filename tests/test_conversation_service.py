@@ -60,6 +60,21 @@ def test_create_defaults_title_by_kind_and_effective():
         assert code["kind"] == "code"
 
 
+def test_create_code_uses_code_model_default():
+    with temp_db():
+        db.set_kv("defaults", {"code_model": "qwen-coder:test"})
+        # model 未指定の code 会話は code_model を既定にする
+        code = cs.create_conversation(None, None, None, None, None, "code")
+        assert code["model"] == "qwen-coder:test"
+        assert code["effective"]["model"] == "qwen-coder:test"
+        # chat 会話は code_model の影響を受けない(通常の既定モデル)
+        chat = cs.create_conversation(None, None, None, None, None, "chat")
+        assert chat["model"] != "qwen-coder:test"
+        # 明示指定モデルは常に優先(code でも上書きされない)
+        explicit = cs.create_conversation(None, "explicit:x", None, None, None, "code")
+        assert explicit["model"] == "explicit:x"
+
+
 # ---------------- list / search ----------------
 def test_list_and_search():
     with temp_db():

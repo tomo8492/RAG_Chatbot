@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Optional
 
 from .. import db, safety
-from ..defaults import effective_for, get_defaults
+from ..defaults import effective_for, model_for_kind
 
 
 def with_effective(conv: dict) -> dict:
@@ -25,11 +25,10 @@ def list_conversations(kind: Optional[str], q: Optional[str]) -> list:
 
 
 def create_conversation(title, model, system_prompt, active_indexes, settings, kind) -> dict:
-    d = get_defaults()
     kind = kind or "chat"
     conv = db.create_conversation(
         title=title or ("新しいコード" if kind == "code" else "新しい会話"),
-        model=model or d["model"],
+        model=model or model_for_kind(kind),
         system_prompt=system_prompt,
         settings_json=settings or {},
         active_indexes=active_indexes or [],

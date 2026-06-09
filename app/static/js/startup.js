@@ -95,6 +95,11 @@ async function loadModels() {
   fillModelSelect($("q-model"));
   fillModelSelect($("set-model"));
   fillModelSelect($("set-vision-model"));
+  fillModelSelect($("set-code-model"));
+  // Code用モデルは「既定モデルと同じ(空)」を先頭に置いて選べるようにする
+  const codeEmpty = el("option", null, "(既定モデルと同じ)");
+  codeEmpty.value = "";
+  $("set-code-model").insertBefore(codeEmpty, $("set-code-model").firstChild);
   if (!State.models.length) {
     const o = el("option", null, "(モデルなし — ollama pull が必要)");
     o.value = "";

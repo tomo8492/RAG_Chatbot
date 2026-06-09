@@ -90,6 +90,7 @@ function openSettings() {
   const d = State.defaults;
   setSelect($("set-model"), d.model);
   setSelect($("set-vision-model"), d.vision_model);
+  setSelect($("set-code-model"), d.code_model || "");
   $("set-system").value = d.system_prompt || "";
   setSelect($("set-effort"), d.effort);
   bindRange("set-numpredict", "set-numpredict-val", d.num_predict);
@@ -112,6 +113,7 @@ async function saveSettings() {
   const patch = {
     model: $("set-model").value,
     vision_model: $("set-vision-model").value,
+    code_model: $("set-code-model").value,
     system_prompt: $("set-system").value,
     effort: $("set-effort").value,
     num_predict: parseInt($("set-numpredict").value),

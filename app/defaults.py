@@ -17,6 +17,8 @@ LENGTH_PRESETS = {"short": 512, "standard": 1024, "long": 2048, "max": 4096}
 def base_defaults() -> dict:
     return {
         "model": settings.chat_model,
+        # Code(コーディングエージェント)用の既定モデル。空=既定モデル(model)を流用。
+        "code_model": settings.code_model,
         # 画像(スクショ)付き質問のときに使う Vision/OCR モデル。
         # 設定画面で GLM-OCR など任意の対応モデルに切り替えられる。
         "vision_model": settings.vision_model,
@@ -72,3 +74,13 @@ def effective_for(conv: dict) -> dict:
 def chunk_params() -> tuple[int, int]:
     d = get_defaults()
     return int(d["chunk_size"]), int(d["chunk_overlap"])
+
+
+def model_for_kind(kind: str) -> str:
+    """会話種別ごとの既定モデル。code は code_model(設定があれば)を優先し、無ければ通常の既定モデル。"""
+    d = get_defaults()
+    if kind == "code":
+        cm = (d.get("code_model") or "").strip()
+        if cm:
+            return cm
+    return d["model"]
