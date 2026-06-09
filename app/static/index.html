@@ -252,6 +252,10 @@
               <input type="range" id="set-overlap" min="0" max="500" step="20" />
             </div>
           </div>
+          <div class="field">
+            <label><input type="checkbox" id="set-contextual" /> 文脈付き埋め込み(検索精度↑/作成は遅め)</label>
+            <p class="muted small">各文書の主題をLLMで1〜2文生成し、チャンクの埋め込みに前置きします(出典表示は元のまま)。次回の作成・再構築から反映。</p>
+          </div>
           <p class="muted small">※ チャンク設定は次回のインデックス作成・再構築から反映されます。</p>
           <p class="muted small">埋め込み: <span id="set-embed-info"></span></p>
         </details>

@@ -31,6 +31,8 @@ def base_defaults() -> dict:
         "system_prompt": DEFAULT_SYSTEM_PROMPT,
         "chunk_size": settings.chunk_size,
         "chunk_overlap": settings.chunk_overlap,
+        # 文脈付き埋め込み(検索精度↑/作成は遅め)。変更は再構築で反映。
+        "contextual_embeddings": settings.contextual_embeddings,
         "summarize_map_model": "",   # 一括要約の「下書き(map)」用モデル。空=メインと同じ(二段なし)
         "theme": "auto",
     }
