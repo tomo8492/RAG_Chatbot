@@ -133,7 +133,9 @@ def rerank(query: str, hits: list[dict], top_k: int,
     # 4) 語彙スコア(BM25)の順位。クエリに使える語が無ければ密のみ。
     q_tokens = tokenize(query)
     if q_tokens:
-        docs_tokens = [tokenize(h.get("text", "")) for h in pool]
+        # Contextual BM25: 文脈付き埋め込みが有効なら、文書の文脈(ctx)も語彙照合に含める
+        # (型番・固有名詞だけでなく「どの文書か」を示す語でも拾えるようにする)
+        docs_tokens = [tokenize(((h.get("ctx") or "") + " " + (h.get("text") or "")).strip()) for h in pool]
         lex = bm25_scores(q_tokens, docs_tokens)
         lex_order = [i for i in sorted(range(n), key=lambda i: lex[i], reverse=True)
                      if lex[i] > 0.0]

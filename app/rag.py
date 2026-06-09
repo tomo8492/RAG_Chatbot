@@ -247,7 +247,7 @@ def build_index(iid: str, paths: list[str],
                         embeddings=vecs,
                         documents=[c[0] for c in batch],                     # 保存・表示は元チャンク(出典はクリーン)
                         metadatas=[{"source": c[1], "loc": c[2], "path": c[3],
-                                    "sig": sig, "heading": c[4]} for c in batch],
+                                    "sig": sig, "heading": c[4], "ctx": fctx} for c in batch],
                     )
                 total_chunks += len(pending)
                 ok_files += 1
@@ -418,6 +418,7 @@ def retrieve(query: str, index_ids: list[str], conversation_id: Optional[str] = 
                     "loc": (meta or {}).get("loc", ""),
                     "path": (meta or {}).get("path", ""),
                     "attachment": bool((meta or {}).get("attachment", False)),
+                    "ctx": (meta or {}).get("ctx", ""),   # 文脈付き埋め込みの文書文脈(Contextual BM25 用)
                     "score": 1.0 - float(dist),  # cosine距離 -> 類似度
                     "distance": float(dist),
                 })

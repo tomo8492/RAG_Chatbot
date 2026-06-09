@@ -109,6 +109,29 @@ def test_rerank_unlimited_returns_all_diverse():
     assert len(out) == 3        # unlimited は top_k で切らない
 
 
+# ---------------- Contextual BM25(文脈を語彙検索にも効かせる)----------------
+def test_contextual_bm25_uses_ctx_to_rerank():
+    """文脈付き埋め込み有効時、文書文脈(ctx)の語彙一致で密検索の劣後候補を引き上げる。"""
+    hits = [
+        {"text": "アルファ本文", "source": "a", "loc": "", "distance": 0.6, "score": 0.4,
+         "ctx": "初品検査結果通知書"},
+        {"text": "ベータ本文", "source": "b", "loc": "", "distance": 0.5, "score": 0.5,
+         "ctx": ""},
+    ]
+    # クエリ語は a の ctx にだけ含まれる。密検索だけなら b(距離小)が上位だが、
+    # Contextual BM25 で a が逆転して1位になる。
+    out = retrieval.rerank("初品検査結果", hits, top_k=2)
+    assert out[0]["source"] == "a"
+
+
+def test_rerank_without_ctx_is_backward_compatible():
+    """ctx キーが無い(従来)場合も本文のみで BM25 照合して動作する。"""
+    hits = [_hit("初品検査結果の記録", source="a", distance=0.6),
+            _hit("無関係な内容", source="b", distance=0.5)]
+    out = retrieval.rerank("初品検査結果", hits, top_k=2)
+    assert out[0]["source"] == "a"   # 本文一致で a が上位(ctx 無しでも動く)
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     passed = 0
