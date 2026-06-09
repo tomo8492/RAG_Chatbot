@@ -241,8 +241,10 @@ function renderSources(container, sources, note) {
     if (note) container.appendChild(el("span", "src-title src-empty", "🔍 " + note));
     return;
   }
-  const title = el("span", "src-title", "📎 参照: ");
-  container.appendChild(title);
+  // 思考(.thinking)と同じく折りたたみ表示。既定は閉じておき、クリックで展開する。
+  const details = el("details", "src-details");
+  details.appendChild(el("summary", "src-summary", `📎 参照ファイル (${sources.length})`));
+  const list = el("div", "src-list");
   sources.forEach((s) => {
     const label = `${s.source}${s.loc ? " " + s.loc : ""}${s.attachment ? " (添付)" : ""}`;
     const item = el("span", "src-item", escapeHtml(label));
@@ -251,8 +253,10 @@ function renderSources(container, sources, note) {
       item.title = "クリックで該当箇所(原文)を表示";
       item.onclick = (e) => { e.stopPropagation(); showSourcePopover(item, s); };
     }
-    container.appendChild(item);
+    list.appendChild(item);
   });
+  details.appendChild(list);
+  container.appendChild(details);
 }
 
 function showSourcePopover(anchor, s) {

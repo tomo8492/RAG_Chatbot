@@ -204,6 +204,11 @@ body {
 .sources .src-item { color: var(--ink-soft); display: inline-block; margin: 2px 8px 2px 0; }
 .sources .src-clickable { cursor: pointer; text-decoration: underline dotted; }
 .sources .src-clickable:hover { color: var(--accent); }
+/* 出典は思考(.thinking)と同様に折りたたみ。既定は閉じておく。 */
+.sources .src-details { margin-top: 4px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
+.sources .src-summary { cursor: pointer; padding: 6px 12px; font-size: 12.5px; color: var(--green);
+  font-weight: 600; user-select: none; list-style-position: inside; }
+.sources .src-list { padding: 2px 12px 9px; }
 .src-popover { position: absolute; z-index: 60; max-width: 540px; max-height: 340px; overflow: auto;
   background: var(--card); border: 1px solid var(--line); border-radius: 10px;
   box-shadow: 0 10px 34px rgba(0,0,0,.22); }
