@@ -78,7 +78,8 @@ def _normalize(data: bytes) -> tuple[bytes, str] | None:
         log.debug("_normalize: Pillow なし(PNG/JPEGのみ通す)")
         return (data, ext) if ext in ("png", "jpg") else None
     try:
-        img = PILImage.open(io.BytesIO(data))
+        # 注釈: open() は ImageFile を返すが、convert() の戻り(Image)を再代入するため広い型で受ける
+        img: PILImage.Image = PILImage.open(io.BytesIO(data))
         w, h = img.size
         if w < MIN_DIM or h < MIN_DIM:
             return None

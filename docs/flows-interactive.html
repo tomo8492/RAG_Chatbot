@@ -1,0 +1,309 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>処理フロー(対話型ノードグラフ) | 社内文書アシスタント</title>
+<style>
+  :root{--ink:#1f2328;--muted:#5b6570;--line:#e3e6ec;--bg:#f6f8fb;--paper:#fff;--accent:#3b5bdb;--green:#0a7d44;--warn:#b54708}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:"Yu Gothic UI","Hiragino Kaku Gothic ProN",Meiryo,system-ui,-apple-system,"Segoe UI",sans-serif;
+    line-height:1.7;padding:28px 16px 70px}
+  .wrap{max-width:1080px;margin:0 auto}
+  h1{font-size:22px;margin:0 0 4px}
+  h2{font-size:18px;margin:34px 0 6px;padding-top:12px;border-top:2px solid var(--line)}
+  h3{font-size:15px;margin:18px 0 4px;color:var(--accent)}
+  .sub{color:var(--muted);font-size:14px;margin:0 0 6px}
+  .note{background:#eef4ff;border:1px solid #c7d7fb;border-radius:9px;padding:9px 14px;font-size:13px;margin:14px 0 6px}
+  .lead{font-size:13.5px;color:var(--muted);margin:2px 0 8px}
+  .card{background:var(--paper);border:1px solid var(--line);border-radius:11px;padding:8px;margin:8px 0;overflow:auto}
+  pre.mermaid{margin:0;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    font-size:12px;color:#444;white-space:pre;line-height:1.45;padding:8px}
+  .mermaid .node{cursor:pointer}
+  .toc{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0 4px;font-size:13px}
+  .toc a{background:var(--paper);border:1px solid var(--line);border-radius:999px;padding:4px 12px;text-decoration:none;color:var(--accent)}
+  code{background:var(--paper);border:1px solid var(--line);border-radius:5px;padding:0 5px;font-size:12px}
+  footer{color:var(--muted);font-size:12px;text-align:center;margin-top:28px}
+  /* ---- 詳細パネル(ノードクリックで表示) ---- */
+  #info{position:fixed;top:0;right:-420px;width:400px;max-width:92vw;height:100vh;z-index:50;
+    background:var(--paper);border-left:1px solid var(--line);box-shadow:-6px 0 24px rgba(15,23,42,.10);
+    transition:right .18s ease;display:flex;flex-direction:column}
+  #info.open{right:0}
+  #info .hd{display:flex;align-items:center;gap:8px;padding:14px 16px;border-bottom:1px solid var(--line)}
+  #info .hd .t{font-weight:700;font-size:15px;flex:1}
+  #info .hd button{border:1px solid var(--line);background:var(--bg);border-radius:7px;
+    font-size:13px;padding:3px 10px;cursor:pointer}
+  #info .file{padding:8px 16px 0;font-size:12px;color:var(--muted)}
+  #info .bd{padding:10px 16px 20px;font-size:13.5px;overflow:auto}
+  #info .bd ul{margin:6px 0;padding-left:18px}
+  #info .bd li{margin:3px 0}
+  @media (max-width:760px){
+    #info{top:auto;bottom:-70vh;right:0;left:0;width:auto;height:62vh;border-left:none;border-top:1px solid var(--line);transition:bottom .18s ease}
+    #info.open{bottom:0;right:0}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>処理フロー(対話型ノードグラフ)</h1>
+  <p class="sub">社内文書アシスタント — <b>チャット(RAG)</b> と <b>Code エージェント</b> の処理を実コードに基づき図示。</p>
+  <div class="note">🖱 <b>ノードをクリックすると右側に詳細(役割・分岐条件・該当ファイル)が表示されます。</b><br>
+    点線矢印=例外/異常系。図が描画されない環境では各枠内のテキスト定義をそのままお読みください。</div>
+  <div class="toc">
+    <a href="#chat">💬 チャット: 質問応答</a>
+    <a href="#intake">📁 チャット: 資料取り込み(チャンク化)</a>
+    <a href="#agent">🤖 Code エージェント</a>
+  </div>
+
+  <h2 id="chat">💬 チャット: 質問応答フロー</h2>
+  <p class="lead">質問 → 検索(密+語彙) → 出典確定 → 生成 → 表示/保存。参照フォルダ選択時は資料内のみで回答(strict-RAG)。</p>
+  <div class="card"><pre class="mermaid">
+flowchart TD
+  c_in(["質問入力<br/>(添付・画像可)"]) --> c_rw["クエリ書き換え<br/>(追問→自立した検索文)"]
+  c_rw --> c_ret["ベクトル検索<br/>(Chroma・候補は top_k×4)"]
+  c_ret --> c_fuse["BM25 + RRF 融合<br/>重複除去・ソース多様化・足切り"]
+  c_fuse --> c_rr{"リランク有効?"}
+  c_rr -->|"ON"| c_llmrr["LLMリランク<br/>(関連度を採点して並べ替え)"]
+  c_rr -->|"OFF"| c_zero
+  c_llmrr --> c_zero{"ヒット 0件?"}
+  c_zero -->|"はい(書き換え時)"| c_retry["原文クエリで再検索(保険)"] --> c_src
+  c_zero -->|"いいえ"| c_src["出典確定<br/>原文チャンク + 🖼 紐づく図"]
+  c_src --> c_msg["プロンプト構築<br/>strict-RAG / num_ctx 予算管理"]
+  c_msg --> c_vis{"画像添付あり?"}
+  c_vis -->|"はい"| c_vmodel["Vision モデルへ切替"] --> c_gen
+  c_vis -->|"いいえ"| c_gen["Ollama 生成<br/>(ストリーミング・思考分離)"]
+  c_gen --> c_post["後処理 + DB保存<br/>(出典・図も保存)"]
+  c_post --> c_ui["表示: 本文 + 📎出典 + 🖼図サムネ"]
+  c_ui --> c_exp["⬇ 保存(任意)<br/>参考図を埋め込み出力"]
+  c_gen -.->|"Ollama不通/モデル無し"| c_err["エラー表示(対処つき)"]
+
+  click c_in call nodeInfo() "詳細を表示"
+  click c_rw call nodeInfo() "詳細を表示"
+  click c_ret call nodeInfo() "詳細を表示"
+  click c_fuse call nodeInfo() "詳細を表示"
+  click c_llmrr call nodeInfo() "詳細を表示"
+  click c_retry call nodeInfo() "詳細を表示"
+  click c_src call nodeInfo() "詳細を表示"
+  click c_msg call nodeInfo() "詳細を表示"
+  click c_vmodel call nodeInfo() "詳細を表示"
+  click c_gen call nodeInfo() "詳細を表示"
+  click c_post call nodeInfo() "詳細を表示"
+  click c_ui call nodeInfo() "詳細を表示"
+  click c_exp call nodeInfo() "詳細を表示"
+  click c_err call nodeInfo() "詳細を表示"
+
+  classDef io fill:#eef4ff,stroke:#3b5bdb,color:#1f2328
+  classDef opt fill:#f3eefe,stroke:#7048e8,color:#1f2328
+  classDef err fill:#fff1f0,stroke:#d4380d,color:#1f2328
+  class c_in,c_ui,c_exp io
+  class c_llmrr,c_vmodel opt
+  class c_err err
+  </pre></div>
+
+  <h2 id="intake">📁 チャット: 資料取り込み(チャンク化)フロー</h2>
+  <p class="lead">フォルダ選択(共有サーバ可)→ 抽出 → OCR/図 → 構造分割 → 埋め込み → 保存。再構築は増分(変更ファイルだけ)。</p>
+  <div class="card"><pre class="mermaid">
+flowchart TD
+  i_pick(["フォルダ選択<br/>ローカル / 共有サーバ(UNC)"]) --> i_guard{"全フォルダに到達できる?"}
+  i_guard -->|"いいえ(共有切断等)"| i_abort["構築を中断<br/>既存チャンクは保持"]
+  i_guard -->|"はい"| i_scan["対応ファイルを再帰走査"]
+  i_scan --> i_diff{"変更あり?(増分判定)<br/>更新時刻+サイズ署名"}
+  i_diff -->|"変更なし"| i_keep["既存チャンク据え置き"]
+  i_diff -->|"新規/変更"| i_load["本文抽出<br/>PDF頁 / Word節 / Excelシート / PPT"]
+  i_load --> i_ocr{"テキスト層が無い頁?"}
+  i_ocr -->|"はい(スキャン頁)"| i_vlm["OCR(VLM/tesseract)<br/>画像非対応モデルは即検知"]
+  i_ocr -->|"いいえ"| i_img
+  i_vlm --> i_img["図の抽出・保存<br/>data/doc_images/ へ"]
+  i_img --> i_fig["図チャンク生成<br/>VLMが説明文を索引化"]
+  i_fig --> i_split["構造分割<br/>見出しパス + chunk/overlap"]
+  i_split --> i_ctx{"文脈付き埋め込み ON?"}
+  i_ctx -->|"ON"| i_doc["文書の主題1〜2文を生成し<br/>埋め込みに前置き"] --> i_embed
+  i_ctx -->|"OFF"| i_embed["埋め込み(e5・128件バッチ)"]
+  i_embed --> i_store["Chroma 保存<br/>削除ファイルのチャンク除去"]
+  i_keep --> i_store
+
+  click i_pick call nodeInfo() "詳細を表示"
+  click i_guard call nodeInfo() "詳細を表示"
+  click i_abort call nodeInfo() "詳細を表示"
+  click i_scan call nodeInfo() "詳細を表示"
+  click i_diff call nodeInfo() "詳細を表示"
+  click i_load call nodeInfo() "詳細を表示"
+  click i_vlm call nodeInfo() "詳細を表示"
+  click i_img call nodeInfo() "詳細を表示"
+  click i_fig call nodeInfo() "詳細を表示"
+  click i_split call nodeInfo() "詳細を表示"
+  click i_doc call nodeInfo() "詳細を表示"
+  click i_embed call nodeInfo() "詳細を表示"
+  click i_store call nodeInfo() "詳細を表示"
+
+  classDef io fill:#eef4ff,stroke:#3b5bdb,color:#1f2328
+  classDef opt fill:#f3eefe,stroke:#7048e8,color:#1f2328
+  classDef err fill:#fff1f0,stroke:#d4380d,color:#1f2328
+  class i_pick io
+  class i_doc,i_vlm,i_fig opt
+  class i_abort err
+  </pre></div>
+
+  <h2 id="agent">🤖 Code エージェント フロー</h2>
+  <p class="lead">調査 → 計画承認 → 実行(編集は承認/自動適用) → 自律検証。すべて作業フォルダ内に限定。</p>
+  <div class="card"><pre class="mermaid">
+flowchart TD
+  a_in(["依頼入力<br/>作業フォルダ + モデル/設定"]) --> a_ws{"作業フォルダは安全?<br/>(システム領域・.env 等を拒否)"}
+  a_ws -->|"NG"| a_deny["拒否(理由を表示)"]
+  a_ws -->|"OK"| a_ctx["文脈の構築/復元<br/>CLAUDE.md 読込 + 自動圧縮"]
+  a_ctx --> a_gen["LLM生成(ストリーム)<br/>ツール呼び出し / 本文JSON復元"]
+  a_gen -.->|"コンテキスト超過(400)"| a_ovf["強制切り詰め→1回再試行<br/>ダメなら num_ctx 増の案内"]
+  a_ovf -.-> a_gen
+  a_gen --> a_branch{"ツール呼び出し?"}
+  a_branch -->|"なし"| a_verify{"変更済み&未検証&検証ON?"}
+  a_branch -->|"present_plan"| a_plan["計画カード→ユーザー承認"]
+  a_plan -->|"承認"| a_exec["実行フェーズへ<br/>(以後の編集は自動適用)"] --> a_gen
+  a_plan -->|"却下"| a_done
+  a_branch -->|"ask_user"| a_ask["選択式の質問カード<br/>(調査前の乱用はガード)"] --> a_gen
+  a_branch -->|"explore"| a_sub["調査サブエージェント<br/>読み取り専用・別文脈"] --> a_gen
+  a_branch -->|"読み取り系"| a_read["list / read / glob / grep /<br/>summarize_path"] --> a_gen
+  a_branch -->|"変更系"| a_gate{"対象を read 済み?"}
+  a_gate -->|"未読"| a_back["差し戻し<br/>まず read_file を要求"] --> a_gen
+  a_gate -->|"読了"| a_conf{"承認は必要?<br/>(モード・自動適用設定による)"}
+  a_conf -->|"確認カード"| a_user{"ユーザー判断"}
+  a_user -->|"承認 / 以後自動"| a_apply
+  a_user -->|"理由つき拒否"| a_rej["拒否理由をモデルへ伝達"] --> a_gen
+  a_conf -->|"自動適用"| a_apply["適用 + undo控え<br/>+ 構文チェック"]
+  a_apply -->|"結果をモデルへ(構文エラーは差し戻し)"| a_gen
+  a_verify -->|"はい"| a_run["検証コマンド実行<br/>(設定 or 自動検出・最大3回)"]
+  a_run -->|"失敗→修正させる"| a_gen
+  a_run -->|"成功"| a_done["完了(done)<br/>本文+ステップをDB保存"]
+  a_verify -->|"いいえ"| a_done
+
+  click a_in call nodeInfo() "詳細を表示"
+  click a_ws call nodeInfo() "詳細を表示"
+  click a_ctx call nodeInfo() "詳細を表示"
+  click a_gen call nodeInfo() "詳細を表示"
+  click a_ovf call nodeInfo() "詳細を表示"
+  click a_plan call nodeInfo() "詳細を表示"
+  click a_exec call nodeInfo() "詳細を表示"
+  click a_ask call nodeInfo() "詳細を表示"
+  click a_sub call nodeInfo() "詳細を表示"
+  click a_read call nodeInfo() "詳細を表示"
+  click a_gate call nodeInfo() "詳細を表示"
+  click a_conf call nodeInfo() "詳細を表示"
+  click a_apply call nodeInfo() "詳細を表示"
+  click a_rej call nodeInfo() "詳細を表示"
+  click a_verify call nodeInfo() "詳細を表示"
+  click a_run call nodeInfo() "詳細を表示"
+  click a_done call nodeInfo() "詳細を表示"
+
+  classDef io fill:#eef4ff,stroke:#3b5bdb,color:#1f2328
+  classDef hil fill:#fff8e1,stroke:#b54708,color:#1f2328
+  classDef err fill:#fff1f0,stroke:#d4380d,color:#1f2328
+  class a_in,a_done io
+  class a_plan,a_ask,a_user hil
+  class a_deny,a_ovf err
+  </pre></div>
+
+  <footer>社内文書アシスタント — 対話型処理フロー(docs/flows-interactive.html)。🟦=入出力 🟨=人の承認 🟥=異常系。静的な全体図は all-flows.html 参照。</footer>
+</div>
+
+<!-- ノード詳細パネル -->
+<aside id="info" aria-hidden="true">
+  <div class="hd"><span class="t" id="info-t">ノード詳細</span><button onclick="closeInfo()">✕ 閉じる</button></div>
+  <div class="file" id="info-f"></div>
+  <div class="bd" id="info-b">図のノードをクリックすると、ここに説明が表示されます。</div>
+</aside>
+
+<script>
+// ---- ノード詳細(クリックで表示)。キーは図のノードID ----
+var NODE_INFO = {
+  /* チャット: 質問応答 */
+  c_in:    {t:"質問入力", f:"app/main.py(api_chat)", d:"<ul><li>テキスト+📎添付+画像(Ctrl+V)を受け付け</li><li>添付は会話専用コレクションに即チャンク化され、検索対象に加わる</li><li>初回メッセージは仮タイトルを即時設定(LLM要約は後追い)</li></ul>"},
+  c_rw:    {t:"クエリ書き換え", f:"app/llm.py(rewrite_query)", d:"「その金額は?」のような<b>追問</b>を、会話履歴から独立した検索文(例「出張旅費の日当の金額」)へLLMが書き換えます。<ul><li>多ターンでも検索が外れにくくなる</li><li>書き換え失敗時は原文で検索(安全側)</li></ul>"},
+  c_ret:   {t:"ベクトル検索", f:"app/rag.py(retrieve)", d:"<ul><li>質問を multilingual-e5 で埋め込み、選択中の参照資料+添付コレクションを横断検索</li><li>後段の融合のため <b>top_k×4(最低40件)</b> と広めに候補取得</li><li>チャンクには見出しパス・出典・🖼図IDがメタデータとして付いている</li></ul>"},
+  c_fuse:  {t:"BM25 + RRF 融合", f:"app/retrieval.py(rerank)", d:"密ベクトルの順位と語彙スコア(BM25相当)の順位を <b>RRF(Reciprocal Rank Fusion)</b> で合成。<ul><li>型番・条番号・固有名詞の完全一致を取りこぼさない</li><li>重複チャンク除去・1ファイル独占を防ぐソース多様化・無関係ヒットの足切り</li><li>文脈付き埋め込みON時は文書文脈も語彙照合に含める(Contextual BM25)</li></ul>"},
+  c_llmrr: {t:"LLMリランク(任意)", f:"app/retrieval.py(llm_rerank)", d:"融合上位の候補を、回答前にLLMが関連度0〜10で採点して並べ替え。<ul><li>精度↑/クエリごとにLLM呼び出し1回ぶん遅くなる</li><li>⚙設定「回答前にLLMで出典を並べ替え」でON/OFF(既定OFF)</li></ul>"},
+  c_retry: {t:"原文で再検索(保険)", f:"app/main.py", d:"書き換え後クエリで0件のときだけ、元の質問文でもう一度検索します。クエリ書き換えの誤りで取りこぼすのを防ぐ保険です。"},
+  c_src:   {t:"出典確定", f:"app/main.py → SSE(sources)", d:"採用チャンクを (ファイル, 場所) で重複除去して出典リスト化。<ul><li>各出典に原文チャンク(クリックで表示)を添付</li><li>チャンクに紐づく<b>🖼文書内の図</b>のURLもここで付与</li></ul>"},
+  c_msg:   {t:"プロンプト構築", f:"app/llm.py(build_messages)", d:"<ul><li>参照フォルダ選択時は<b>strict-RAG</b>: 資料に無いことは「記載が見つかりませんでした」と答えるよう指示</li><li>num_ctx 予算内に参考資料を自動トリム(静かな切り捨てを防ぐ)</li><li>図解要求時のみ Mermaid 出力ガイドを付与</li></ul>"},
+  c_vmodel:{t:"Vision モデル切替", f:"app/main.py / app/llm.py(resolve_installed)", d:"画像が添付された質問は、⚙設定の「画像認識モデル」(vision対応)へ自動切替。未導入・非対応の場合は対処方法つきのエラーを返します。"},
+  c_gen:   {t:"Ollama 生成", f:"app/llm.py(stream_chat)", d:"<ul><li>SSEでトークンを逐次配信(体感速度)</li><li>&lt;think&gt; や harmony 形式の思考は本文から分離し、💭折りたたみに表示</li><li>温度・top_p・効果(思考の深さ)・回答長は会話のクイック設定を反映</li></ul>"},
+  c_post:  {t:"後処理 + 保存", f:"app/postprocess.py / app/db.py", d:"定型句や崩れの軽い清掃をしてから、本文と出典(図のURL含む)をSQLiteに保存。会話を開き直しても同じ表示が再現されます。"},
+  c_ui:    {t:"表示", f:"app/static/js/render.js(renderSources)", d:"<ul><li>本文の下に「📎 参照ファイル (N) ・ 🖼 図 N」の折りたたみ</li><li>展開すると出典一覧(クリックで原文)+図のサムネイル</li><li>サムネイルクリックで原寸を別タブ表示(/api/doc-images/・認証必須)</li></ul>"},
+  c_exp:   {t:"ファイル保存(エクスポート)", f:"app/export/_render.py", d:"回答を Word/Excel/PowerPoint/PDF/HTML/テキスト等へ変換。<ul><li><b>出典の図は「参考図」として埋め込み</b>(HTMLはdata URIで自己完結、PPTは1図1スライド、Excelは参考図シート)</li><li>Mermaid図もPNG化して埋め込み</li></ul>"},
+  c_err:   {t:"エラー処理", f:"app/main.py", d:"Ollama不通・モデル未導入などは、原因と対処(ollama serve / pull コマンド等)を含むメッセージで表示します。リクエストIDがログと紐づきます。"},
+
+  /* チャット: 資料取り込み */
+  i_pick:  {t:"フォルダ選択", f:"app/fsbrowse.py / app/routes/fs_routes.py", d:"<ul><li>サーバPCのフォルダ、または<b>共有サーバフォルダ(UNC: \\\\server\\share)</b>を選択</li><li>.env の SHARED_FOLDERS でクイックアクセス登録可</li><li>OS/システム領域・アプリのデータ領域は選択不可(safety)</li></ul>"},
+  i_guard: {t:"到達性ガード", f:"app/rag.py(build_index 冒頭)", d:"登録フォルダのどれかに到達できない(共有切断・権限切れ)場合、走査前に中断します。<b>オフライン中の再構築で既存チャンクを「削除された」と誤判定して消す事故を防ぐ</b>仕組みです。"},
+  i_abort: {t:"安全な中断", f:"app/rag.py", d:"インデックスはエラー状態になりますが、<b>既存のチャンク・図はすべて保持</b>。共有フォルダ復旧後に「再構築」すれば差分だけ更新されます。"},
+  i_scan:  {t:"ファイル走査", f:"app/rag.py(scan_files)", d:"対応拡張子(.pdf .docx .xlsx .pptx .txt .md .csv 等)を再帰的に収集。重複パスは除去します。"},
+  i_diff:  {t:"増分判定", f:"app/rag.py(_file_sig)", d:"ファイルごとに「更新時刻+サイズ(+設定版数)」の署名を比較。<ul><li>変更なし→再埋め込みせず据え置き(数百ファイルでも高速)</li><li>削除されたファイルのチャンクは最後に除去</li><li>埋め込みモデル変更時は全体を自動で作り直し</li></ul>"},
+  i_load:  {t:"本文抽出", f:"app/loaders.py", d:"<ul><li>PDF=ページ単位 / Word=見出し節+表 / Excel=シート(行を | 連結) / PPT=スライド</li><li>テキスト系は文字コード自動判定(UTF-8/CP932等)</li><li>出典表示用の場所(p.5 / シート:組立 等)を付与</li></ul>"},
+  i_vlm:   {t:"OCR(スキャン頁のみ)", f:"app/ocr.py", d:"テキスト層が16字未満の頁だけ画像化してOCR。<ul><li>エンジン: VLM(glm-ocr / qwen2.5vl 等)または tesseract</li><li><b>画像非対応モデルは1頁目で即検知</b>して全頁スキップ(時間を無駄にしない)</li><li>取り込めなかった件数はUIに通知</li></ul>"},
+  i_img:   {t:"図の抽出・保存", f:"app/doc_images.py", d:"<ul><li>Excel/Word/PPT/PDF の埋め込み画像を抽出し data/doc_images/ へ内容ハッシュ名で保存</li><li>同じシート/頁/節のチャンクに画像IDを紐付け→出典に🖼表示</li><li>アイコン・罫線・ロゴはサイズ/出現頻度で自動除外。1600px超は縮小</li></ul>"},
+  i_fig:   {t:"図チャンク(検索対象化)", f:"app/rag.py + app/ocr.py(describe_image_png)", d:"OCRモデル(VLM)が各図の説明文を生成し「〔図〕配線図…」というチャンクとして索引化。<b>「〜の図はどれ?」という質問で図がヒット</b>するようになります(OCR無効時はスキップ・リンクは維持)。"},
+  i_split: {t:"構造分割(チャンク化)", f:"app/splitter.py(split_structured)", d:"<ul><li>見出し(第N章/条・2.1・【…】・# 等)で節に区切り、<b>見出しパス</b>を各チャンクに付与</li><li>節内は 段落→行→句点→読点 の順で chunk_size(既定800字)に分割、overlap(既定120字)を引き継ぎ</li></ul>"},
+  i_doc:   {t:"文脈付き埋め込み(任意)", f:"app/rag.py(_doc_context)", d:"文書全体の主題をLLMで1〜2文生成し、各チャンクの<b>埋め込み用テキストにだけ</b>前置き(表示はクリーンなまま)。短いチャンクの検索精度が上がります。⚙設定でON(既定OFF・再構築で反映)。"},
+  i_embed: {t:"埋め込み", f:"app/embeddings.py", d:"multilingual-e5-base(768次元)で128件ずつバッチ埋め込み。<ul><li>E5系は passage:/query: プレフィックスを自動付与</li><li>CUDA版 torch があればGPU、無ければCPUで動作</li><li>EMBED_BACKEND=ollama(nomic-embed等)へ切替可</li></ul>"},
+  i_store: {t:"Chroma 保存", f:"app/rag.py", d:"チャンク本文+ベクトル+メタデータ(出典・見出し・署名・図ID)を data/chroma に永続化。削除ファイルのチャンク除去もここで実施します。"},
+
+  /* Code エージェント */
+  a_in:    {t:"依頼入力", f:"app/main.py(api_agent)", d:"<ul><li>作業フォルダ・計画モード・変更許可・自動検証・num_ctx は会話設定から取得</li><li>@相対パス と書くと該当ファイルを文脈に前置き</li><li>num_ctx&lt;16384 は警告ログ(固定費~8千トークンのため)</li></ul>"},
+  a_ws:    {t:"作業フォルダ安全検査", f:"app/safety.py(check_workspace)", d:"<ul><li>OS/システム領域・ドライブ直下・ユーザー共有ルート・アプリの data/ は作業フォルダ不可</li><li><b>アプリ自身の .env(パスワード等)はファイル単位で読み書き・一覧から遮断</b></li><li>実行時にも毎回再検証</li></ul>"},
+  a_ctx:   {t:"文脈の構築と自動圧縮", f:"app/main.py(_init_code_ctx) / app/agent/context.py", d:"<ul><li>新規はシステム指示+作業フォルダ+CLAUDE.md+過去履歴から構築</li><li>しきい値(num_ctx連動)超過でLLM要約に畳み込み</li><li><b>要約も失敗したら機械的に切り詰め(必ず縮む)</b>→会話が詰まない</li></ul>"},
+  a_gen:   {t:"LLM生成", f:"app/agent/_impl.py(run_stream)", d:"<ul><li>ストリーミングで本文・思考・ツール呼び出しを受信</li><li>ツール非対応モデルでも<b>本文中のJSONを復元して実行</b>(実行後は本文から除去して保存)</li><li>フェーズ(計画/実行)でツールセットを切替</li></ul>"},
+  a_ovf:   {t:"コンテキスト超過リカバリ", f:"app/agent/_impl.py(_is_ctx_overflow)", d:"新しめのOllamaは超過を400で拒否します。<ul><li>検知→文脈を強制切り詰め→<b>1回だけ再試行</b></li><li>それでも超過なら「num_ctx を16384以上に」という日本語の対処を表示</li></ul>"},
+  a_plan:  {t:"計画の提示と承認", f:"app/agent/_impl.py + approvals.py", d:"present_plan で実行計画カードを表示し、ユーザーの承認を待ちます(最大600秒)。<ul><li>承認→実行フェーズ(ファイル編集は自動適用に)</li><li>却下→そこで終了し追加指示を待つ</li><li>計画が配列で来るモデルも正規化して受理</li></ul>"},
+  a_exec:  {t:"実行フェーズ", f:"app/agent/_impl.py(_change_action)", d:"計画承認後はファイル編集を自動適用(差分は都度表示・undo可)。<b>コマンド実行だけは引き続き毎回確認</b>します(Claude Code と同じ方針)。"},
+  a_ask:   {t:"ユーザーへの質問", f:"app/agent/helpers.py(_norm_questions)", d:"選択式の質問カード(複数質問はステッパー・自由記述付き)。<ul><li><b>調査もせずに聞き返す動きは一度ガード</b>して、まず調べるよう促す(explore も調査として算入)</li></ul>"},
+  a_sub:   {t:"調査サブエージェント", f:"app/agent/_impl.py(_run_subagent)", d:"読み取り専用ツールだけを持つ<b>別文脈の小ループ</b>に横断調査を委譲し、要約だけ受け取ります。本体の文脈を汚さない(Claude Code の subagent 相当)。文脈予算超過時は途中結果でまとめて返します。"},
+  a_read:  {t:"読み取り系ツール", f:"app/agent/tools.py", d:"list_files / read_file(PDF・Office本文も可) / glob / grep / summarize_path。<ul><li>read_file は行範囲指定で大きいファイルも読める</li><li>結果はツールごとに上限あり(文脈保護)</li></ul>"},
+  a_gate:  {t:"read-first ゲート", f:"app/agent/_impl.py(_require_read_first)", d:"未読の既存ファイルへの edit_file / 全文上書きを差し戻し、先に read_file を要求。<b>古い記憶や推測での盲目編集</b>(行重複・インデント崩れ)を防ぎます。拒否・ブロックされた編集は読了扱いにしません。"},
+  a_conf:  {t:"承認の要否判定", f:"app/agent/_impl.py(_change_action)", d:"<ul><li>非計画モード+変更許可OFF→ブロック</li><li>計画承認前/非計画モード→毎回確認</li><li>計画承認後/「以後自動適用」→ファイル編集は自動適用</li><li>run_command/run_background は常に確認</li></ul>"},
+  a_apply: {t:"適用 + undo + 構文チェック", f:"app/agent/_impl.py(_apply_change)", d:"<ul><li>適用前の内容を控え「↶ 元に戻す」で復元可(上限50件)</li><li>適用直後に .py/.js/.json の構文を即チェックし、エラーならモデルへ差し戻し</li><li>差分(unified diff)を必ず表示</li></ul>"},
+  a_rej:   {t:"理由つき拒否", f:"app/agent/approvals.py", d:"「拒否+どう直してほしいか」を入力でき、その理由がモデルに渡ります(Claude Code の \"No, tell Claude what to do\" 相当)。"},
+  a_verify:{t:"自律検証の判断", f:"app/agent/_impl.py", d:"ファイルを実際に変更した依頼で、まだ検証が通っていなければ自動検証へ。<b>拒否・ブロックされただけの操作では起動しません</b>。⚙設定でOFF可。"},
+  a_run:   {t:"検証実行ループ", f:"app/agent/verify.py", d:"<ul><li>検証コマンドは会話設定(複数行可)または自動検出(pytest / npm test / go build / make test)</li><li>失敗ログをモデルへ差し戻して修正させ、<b>最大3回</b>まで自動で再検証</li></ul>"},
+  a_done:  {t:"完了・保存", f:"app/main.py(api_agent gen)", d:"本文・ツールステップ・差分・計画・TODOを会話に保存。開き直しても同じログが再現されます。"},
+  a_deny:  {t:"作業フォルダ拒否", f:"app/safety.py", d:"危険なフォルダは理由つきで拒否します(選択UI・設定時・実行時・ファイル単位の4段検証)。"}
+};
+
+function nodeInfo(id) {
+  var key = String(id || "").replace(/^flowchart-/, "").split("-")[0];
+  var info = NODE_INFO[key] || NODE_INFO[id];
+  if (!info) { for (var k in NODE_INFO) { if (id && String(id).indexOf(k) === 0) { info = NODE_INFO[k]; break; } } }
+  if (!info) return;
+  document.getElementById("info-t").textContent = info.t;
+  document.getElementById("info-f").innerHTML = info.f ? "📄 <code>" + info.f + "</code>" : "";
+  document.getElementById("info-b").innerHTML = info.d;
+  document.getElementById("info").classList.add("open");
+}
+function closeInfo() { document.getElementById("info").classList.remove("open"); }
+document.addEventListener("keydown", function (e) { if (e.key === "Escape") closeInfo(); });
+</script>
+
+<script>
+// Mermaid 読み込み: ①同梱(リポジトリ内の vendor) → ②CDN → ③テキストのまま(フォールバック)
+(function () {
+  function init() {
+    if (!window.mermaid) return false;
+    window.mermaid.initialize({ startOnLoad: true, theme: "neutral", securityLevel: "loose",
+                                flowchart: { useMaxWidth: true, htmlLabels: true } });
+    return true;
+  }
+  function load(src, onfail) {
+    var s = document.createElement("script");
+    s.src = src;
+    s.onload = function () { if (!init()) onfail(); };
+    s.onerror = onfail;
+    document.body.appendChild(s);
+  }
+  load("../app/static/vendor/mermaid.min.js", function () {
+    load("https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js", function () {
+      document.querySelector(".note").insertAdjacentHTML("beforeend",
+        "<br>⚠ 図の描画ライブラリを読み込めませんでした。各枠のテキスト定義をお読みください。");
+    });
+  });
+})();
+</script>
+</body>
+</html>

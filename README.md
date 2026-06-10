@@ -279,6 +279,9 @@ RAG_Chatbot/
 技術: FastAPI / Uvicorn ・ Ollama ・ ChromaDB(永続) ・ sentence-transformers(多言語E5) ・
 marked + highlight.js + DOMPurify(すべてローカル同梱、オフライン動作)
 
+処理フローの図解: [docs/flows-interactive.html](docs/flows-interactive.html)(チャット/Codeエージェントの
+**対話型ノードグラフ**。ノードをクリックすると詳細説明)・[docs/all-flows.html](docs/all-flows.html)(全フロー静的版)
+
 ---
 
 ## 🔧 トラブルシューティング
