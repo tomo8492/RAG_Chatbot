@@ -90,6 +90,31 @@ def test_subagent_empty_task():
         assert _impl._run_subagent("m", ws, "   ", None).startswith("[エラー]")
 
 
+# 調査結果が文脈を溢れさせる前に、要約して打ち切る(num_ctx 連動)
+def _big_file_scripted():
+    big = ("データ行 " * 12 + "\n") * 220        # 1万字超 → 取り込み時にキャップ
+    scripted = [_Msg(tool_calls=[_TC("read_file", {"path": "big.txt"})]),
+                _Msg(content="STOPPED", tool_calls=[_TC("grep", {"pattern": "データ"})]),
+                _Msg(content="完了")]
+    return big, scripted
+
+
+def test_subagent_stops_early_when_context_full():
+    big, scripted = _big_file_scripted()
+    with fake(scripted) as ws:
+        (ws / "big.txt").write_text(big, encoding="utf-8")
+        out = _impl._run_subagent("m", ws, "big.txt を調べて", 8192)   # 小 num_ctx → 早期打ち切り
+        assert out == "STOPPED"      # 次のツールへ進まず、その場の要約で返す
+
+
+def test_subagent_continues_when_context_has_room():
+    big, scripted = _big_file_scripted()
+    with fake(scripted) as ws:
+        (ws / "big.txt").write_text(big, encoding="utf-8")
+        out = _impl._run_subagent("m", ws, "big.txt を調べて", None)    # 余裕あり → 続行
+        assert out == "完了"
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     passed = 0

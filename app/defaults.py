@@ -24,7 +24,7 @@ def base_defaults() -> dict:
         "vision_model": settings.vision_model,
         "temperature": 0.3,
         "top_p": 0.9,
-        "num_predict": 1024,      # 回答の最大トークン(長さ)
+        "num_predict": 2048,      # 回答の最大トークン(長さ)。思考モデルでも途中で切れにくいよう大きめ
         "num_ctx": settings.num_ctx,   # コンテキスト長(0=モデル既定)。溢れによる先頭切り捨てを防ぐ既定
         "effort": "medium",       # 工数(思考の深さ)
         "top_k": settings.rag_top_k,

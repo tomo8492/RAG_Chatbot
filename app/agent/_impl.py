@@ -38,6 +38,7 @@ from .constants import (
     PLAN_PHASE_TOOLS,
     READONLY,
     SUBAGENT_MAX_STEPS,
+    SUBAGENT_RESULT_CAP,
     SUBAGENT_SYSTEM,
     SUBAGENT_TOOLS,
     _T_VERIFY,
@@ -259,7 +260,20 @@ def _run_subagent(model: str, ws: Path, task: str, num_ctx: Optional[int]) -> st
     messages = [{"role": "system", "content": SUBAGENT_SYSTEM},
                 {"role": "user", "content": task.strip()}]
     last = ""
-    for _ in range(SUBAGENT_MAX_STEPS):
+    sub_limit = _compact_threshold(num_ctx)   # 文脈がこの文字数を超えたら、以降は調べず要約して返す
+    for step in range(SUBAGENT_MAX_STEPS):
+        # 予算超過: これ以上ツールを呼ぶと文脈が溢れ(=先頭が切れて調査品質が落ちる)るので、
+        # 現時点までの調査結果でまとめさせて返す(ツールは渡さず本文生成に限定)。
+        if step > 0 and _ctx_chars(messages) > sub_limit:
+            messages.append({"role": "user", "content":
+                             "(調査用の文脈が上限に達しました。ここまでで分かったことを、関係ファイルと"
+                             "該当箇所『相対パス:行』を添えて簡潔にまとめてください。)"})
+            try:
+                resp = client.chat(model=model, messages=messages, options=_gen_options(num_ctx))
+                return (getattr(resp.message, "content", "") or last).strip() or "(調査結果なし)"
+            except Exception as e:
+                log.debug("_run_subagent: 例外を無視して継続", exc_info=True)
+                return last.strip() or f"[エラー] 調査サブエージェントの実行に失敗: {e}"
         try:
             resp = client.chat(model=model, messages=messages,
                                tools=SUBAGENT_TOOLS, options=_gen_options(num_ctx))
@@ -290,7 +304,10 @@ def _run_subagent(model: str, ws: Path, task: str, num_ctx: Optional[int]) -> st
                 result = dispatch(ws, name, args or {})
             else:
                 result = "[エラー] 調査サブエージェントは読み取り専用です(変更・コマンドは不可)"
-            messages.append({"role": "tool", "content": str(result), "tool_name": name})
+            result = str(result)
+            if len(result) > SUBAGENT_RESULT_CAP:   # 1ツール結果での文脈膨張を抑える
+                result = result[:SUBAGENT_RESULT_CAP] + "\n…(調査用に省略)"
+            messages.append({"role": "tool", "content": result, "tool_name": name})
     return (last.strip() + "\n(調査は上限ステップで打ち切り)") if last.strip() else "(調査が完了しませんでした)"
 
 

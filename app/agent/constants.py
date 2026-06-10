@@ -295,6 +295,7 @@ META_TOOLS = [_T_BGOUT, _T_BGSTOP, _T_REMEMBER]   # 確認不要のメタ操作(
 # 読み取り専用の調査サブエージェントに渡すツール(変更系は持たせない)
 SUBAGENT_TOOLS = [_T_LIST, _T_READ, _T_GLOB, _T_GREP]
 SUBAGENT_MAX_STEPS = 12
+SUBAGENT_RESULT_CAP = 6000   # 調査サブエージェントが1ツール結果として取り込む最大文字数(文脈膨張を防ぐ)
 SUBAGENT_SYSTEM = (
     "あなたは読み取り専用の調査サブエージェントです。与えられた調査タスクについて、"
     "list_files / read_file / glob / grep だけを使って作業フォルダ内を調べ、事実に基づく"

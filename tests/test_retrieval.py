@@ -132,6 +132,31 @@ def test_rerank_without_ctx_is_backward_compatible():
     assert out[0]["source"] == "a"   # 本文一致で a が上位(ctx 無しでも動く)
 
 
+# ---------------- 添付ブースト(会話への添付を控えめに優先)----------------
+def test_rerank_boosts_conversation_attachment_when_close():
+    """密スコアが拮抗するとき、会話への添付(ユーザーが明示的に付けた資料)を上位にする。"""
+    hits = [
+        {"text": "添付の本文", "source": "att.pdf", "loc": "", "distance": 0.45, "score": 0.55,
+         "attachment": True},
+        {"text": "KBの本文", "source": "kb.pdf", "loc": "", "distance": 0.40, "score": 0.60,
+         "attachment": False},
+    ]
+    out = retrieval.rerank("本文", hits, top_k=2)
+    assert out[0]["source"] == "att.pdf"
+
+
+def test_rerank_attachment_boost_does_not_override_relevant_kb():
+    """無関係な添付は、明確に関連するKBチャンクを上回らない(ブーストは控えめ)。"""
+    hits = [
+        {"text": "無関係な添付", "source": "att.pdf", "loc": "", "distance": 0.80, "score": 0.20,
+         "attachment": True},
+        {"text": "検査成績書 本文", "source": "kb.pdf", "loc": "", "distance": 0.15, "score": 0.85,
+         "attachment": False},
+    ]
+    out = retrieval.rerank("検査成績書", hits, top_k=2)
+    assert out[0]["source"] == "kb.pdf"
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     passed = 0

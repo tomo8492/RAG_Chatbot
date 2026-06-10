@@ -19,6 +19,9 @@ from typing import Callable
 RRF_K = 60
 # 語彙スコアの融合重み(密検索を主、語彙を補助とする)
 LEX_WEIGHT = 1.0
+# 会話への添付(ユーザーが明示的に付けた資料)に与える優先度。KB と混在するとき、関連が
+# 拮抗した添付が埋もれないよう少しだけ持ち上げる(無関係な添付までは引き上げない控えめな値)。
+ATTACH_BONUS = 0.5
 # これ未満の類似度(=1-cosine距離)は「ほぼ無関係」として落とす保守的な床
 MIN_SCORE_FLOOR = 0.05
 # 候補プールの上限(再ランクのO(n^2)処理を抑える)
@@ -141,6 +144,12 @@ def rerank(query: str, hits: list[dict], top_k: int,
                      if lex[i] > 0.0]
         for rank, idx in enumerate(lex_order):
             fused[idx] += LEX_WEIGHT / (RRF_K + rank + 1)
+
+    # 4.5) 会話への添付を控えめに優先(関連が拮抗したときに埋もれさせない。
+    #      無関係な添付は元の密+語彙が低いので、このブースト程度では上位に来ない)
+    for i in range(n):
+        if pool[i].get("attachment"):
+            fused[i] += ATTACH_BONUS / RRF_K
 
     # 5) 融合スコア降順(同点は密距離が近い順)
     order = sorted(range(n), key=lambda i: (-fused[i], pool[i].get("distance", 1.0)))
