@@ -14,6 +14,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app import agent  # noqa: E402
+from app.agent import _impl  # noqa: E402
 
 
 @contextlib.contextmanager
@@ -229,6 +230,45 @@ def test_result_status():
     assert agent._result_status("[エラー] x") == "error"
     assert agent._result_status("[OK] done") == "ok"
     assert agent._result_status("") == "ok"
+
+
+# ---------------- read前提の強制ゲート(盲目編集の防止) ----------------
+def test_require_read_first_blocks_unread_edit():
+    with workspace() as ws:
+        agent.t_write_file(ws, "f.py", "x = 1\n")
+        msg = _impl._require_read_first(ws, "edit_file", {"path": "f.py"}, set())
+        assert msg and "read_file" in msg
+
+
+def test_require_read_first_allows_after_read():
+    with workspace() as ws:
+        agent.t_write_file(ws, "f.py", "x = 1\n")
+        seen: set = set()
+        _impl._mark_read(ws, "f.py", seen)
+        assert _impl._require_read_first(ws, "edit_file", {"path": "f.py"}, seen) is None
+
+
+def test_require_read_first_allows_new_file_write():
+    with workspace() as ws:                       # 新規(未存在)への write_file は read 不要
+        assert _impl._require_read_first(ws, "write_file", {"path": "new.py"}, set()) is None
+
+
+def test_require_read_first_blocks_unread_overwrite():
+    with workspace() as ws:                       # 既存への全文上書きは read を要求
+        agent.t_write_file(ws, "f.py", "x = 1\n")
+        msg = _impl._require_read_first(ws, "write_file", {"path": "f.py"}, set())
+        assert msg and "read_file" in msg
+
+
+def test_require_read_first_empty_path():
+    with workspace() as ws:
+        assert _impl._require_read_first(ws, "edit_file", {"path": ""}, set()) is None
+
+
+def test_edit_not_found_suggests_read():
+    with workspace() as ws:
+        agent.t_write_file(ws, "f.txt", "abc")
+        assert "read_file" in agent.t_edit_file(ws, "f.txt", "zzz", "q")
 
 
 if __name__ == "__main__":

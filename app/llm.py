@@ -195,6 +195,7 @@ def is_ollama_available() -> bool:
         _client(timeout=5).list()
         return True
     except Exception:
+        log.debug("is_ollama_available: 例外を無視して継続", exc_info=True)
         return False
 
 
@@ -229,8 +230,52 @@ def supports_thinking(name: str):
 
 
 # コンテキスト超過を防ぐための上限(参照件数を ∞ にしても溢れないように)
-RAG_CONTEXT_CHAR_BUDGET = 12000   # 参考資料ブロックの最大文字数
+RAG_CONTEXT_CHAR_BUDGET = 12000   # 参考資料ブロックの最大文字数(num_ctx 連動時の上限)
 MAX_HISTORY_MESSAGES = 30         # 文脈に含める直近の発話数
+
+# num_ctx(トークン)から「収まる文字数」を見積もる係数。日本語/コード混在で 1トークンに収まる
+# 文字数を安全側(小さめ)に見積もり、コンテキスト超過時に Ollama が先頭(system=RAG指示・
+# 参考資料)を静かに切り捨てて精度が落ちるのを防ぐ。
+_CHARS_PER_TOKEN = 0.85
+_CONTEXT_RESERVE_CHARS = 2500     # system+スタイル/書式ガイド等で常に確保する文字数
+
+
+def context_char_budget(num_ctx: int, num_predict: int = 1024) -> int:
+    """num_ctx から、参考資料ブロックに割ける文字数を見積もる。
+
+    num_ctx<=0(モデル既定で不明)のときは従来の保守値 RAG_CONTEXT_CHAR_BUDGET。
+    回答(num_predict)と system ぶんを差し引き、上限は RAG_CONTEXT_CHAR_BUDGET。
+    """
+    try:
+        n = int(num_ctx)
+    except (TypeError, ValueError):
+        n = 0
+    if n <= 0:
+        return RAG_CONTEXT_CHAR_BUDGET
+    total = int(n * _CHARS_PER_TOKEN)
+    reserve = _CONTEXT_RESERVE_CHARS + int(max(0, num_predict) * _CHARS_PER_TOKEN)
+    return max(1500, min(RAG_CONTEXT_CHAR_BUDGET, total - reserve))
+
+
+def trim_history(history: list[dict], max_messages: int = MAX_HISTORY_MESSAGES,
+                 max_chars: int = 0) -> list[dict]:
+    """会話履歴を直近 max_messages 件かつ合計 max_chars 文字以内に収める(新しい発話を優先)。
+
+    max_chars<=0 のときは文字数制限なし(件数のみ)= 従来動作。
+    """
+    hist = [m for m in (history or []) if m.get("role") in ("user", "assistant")]
+    hist = hist[-max_messages:]
+    if max_chars and max_chars > 0:
+        out: list[dict] = []
+        total = 0
+        for m in reversed(hist):
+            c = len(m.get("content") or "")
+            if out and total + c > max_chars:
+                break
+            out.append(m)
+            total += c
+        hist = list(reversed(out))
+    return hist
 
 
 def build_context_block(hits: list[dict], max_chars: int = RAG_CONTEXT_CHAR_BUDGET) -> str:
@@ -253,8 +298,9 @@ def build_context_block(hits: list[dict], max_chars: int = RAG_CONTEXT_CHAR_BUDG
 
 def build_messages(system_prompt: str, history: list[dict], hits: list[dict],
                    strict: bool = False,
-                   max_context_chars: int = RAG_CONTEXT_CHAR_BUDGET,
-                   diagram_hint: Optional[bool] = None) -> list[dict]:
+                   max_context_chars: Optional[int] = None,
+                   diagram_hint: Optional[bool] = None,
+                   num_ctx: int = 0, num_predict: int = 1024) -> list[dict]:
     """system + 履歴からOllama用messagesを組み立てる。
 
     - strict=True(参照フォルダ選択時): 参考資料の内容だけで回答する厳格指示を必ず付与。
@@ -264,6 +310,10 @@ def build_messages(system_prompt: str, history: list[dict], hits: list[dict],
       図が不要な通常QAでは簡潔ガイドにして根拠提示に集中させ、コンテキストも節約する。
     参考資料・履歴はコンテキスト超過を防ぐため上限でトリムする。
     """
+    # 参考資料の文字数予算は num_ctx から逆算(明示指定が無いとき)。コンテキスト超過時に
+    # Ollama が先頭(system=RAG指示)から暗黙に切り捨てて精度が落ちるのを防ぐ。
+    if max_context_chars is None:
+        max_context_chars = context_char_budget(num_ctx, num_predict)
     sys_text = (system_prompt or DEFAULT_SYSTEM_PROMPT).strip()
     # ペルソナを上書きされてもスタイル補正・出力フォーマットは常に効かせる。
     # 図ガイドは意図に応じて詳細/簡潔を切り替える(None は後方互換で詳細)。
@@ -277,10 +327,13 @@ def build_messages(system_prompt: str, history: list[dict], hits: list[dict],
         sys_text = sys_text + "\n\n" + RAG_INSTRUCTION.format(
             context=build_context_block(hits, max_context_chars))
     messages = [{"role": "system", "content": sys_text}]
-    hist = [m for m in history if m["role"] in ("user", "assistant")]
-    if len(hist) > MAX_HISTORY_MESSAGES:
-        hist = hist[-MAX_HISTORY_MESSAGES:]   # 直近のみ(古い発話は省略してコンテキスト超過を防ぐ)
-    for m in hist:
+    # 履歴も num_ctx に収まるよう、件数に加えて文字数でも直近を優先して詰める
+    # (num_ctx 不明=0 のときは従来どおり件数のみ)。
+    hist_chars = 0
+    if int(num_ctx or 0) > 0:
+        hist_chars = max(1000, int(int(num_ctx) * _CHARS_PER_TOKEN) - _CONTEXT_RESERVE_CHARS
+                         - int(max_context_chars) - int(max(0, num_predict) * _CHARS_PER_TOKEN))
+    for m in trim_history(history, MAX_HISTORY_MESSAGES, hist_chars):
         messages.append({"role": m["role"], "content": m["content"]})
     return messages
 
@@ -330,6 +383,7 @@ def rewrite_query(history: list[dict], query: str, model: str) -> str:
         out = complete_text(build_rewrite_prompt(history, query), model,
                             num_predict=80, temperature=0.0)
     except Exception:
+        log.debug("rewrite_query: 例外を無視して継続", exc_info=True)
         return query
     out = " ".join((out or "").split()).strip(' 　"\'「」『』')
     if not out or len(out) > 200:
@@ -390,6 +444,7 @@ def chat_stream(messages: list[dict], model: str, *,
             stream = _run(think)
         except TypeError:
             # 古い ollama-python は think 未対応
+            log.debug("chat_stream: 例外を無視して継続", exc_info=True)
             stream = _run(None)
 
         for part in stream:
@@ -435,17 +490,25 @@ def vision_complete(image_b64s: list[str], instruction: str, model: str, *,
 
 
 def complete_text(prompt: str, model: str, *, system: str = "",
-                  num_predict: int = 64, temperature: float = 0.2) -> str:
-    """短い非ストリーミング生成(会話タイトル等)。思考は使わない。失敗時は ''。"""
+                  num_predict: int = 64, temperature: float = 0.2,
+                  num_ctx: Optional[int] = None) -> str:
+    """短い非ストリーミング生成(会話タイトル等)。思考は使わない。失敗時は ''。
+
+    num_ctx を渡すと、長いプロンプト(リランク採点など)でも先頭が切り捨てられないよう
+    コンテキスト長を確保する。
+    """
     msgs = []
     if system:
         msgs.append({"role": "system", "content": system})
     msgs.append({"role": "user", "content": prompt})
     opts = {"temperature": float(temperature), "num_predict": int(num_predict)}
+    if num_ctx and int(num_ctx) > 0:
+        opts["num_ctx"] = int(num_ctx)
     try:
         try:
             resp = _client(timeout=60).chat(model=model, messages=msgs, stream=False, think=False, options=opts)
         except TypeError:                       # 古い ollama-python は think 未対応
+            log.debug("complete_text: 例外を無視して継続", exc_info=True)
             resp = _client(timeout=60).chat(model=model, messages=msgs, stream=False, options=opts)
         return (_extract(resp, "content") or "").strip()
     except Exception as e:

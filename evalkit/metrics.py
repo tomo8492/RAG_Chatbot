@@ -28,6 +28,12 @@ def first_hit_rank(expected_files, hit_sources):
     return None
 
 
+def reciprocal_rank(expected_files, hit_sources) -> float:
+    """逆順位(1/順位)。ヒットしなければ 0.0(リランクの効果が見えやすい指標)。"""
+    r = first_hit_rank(expected_files, hit_sources)
+    return 1.0 / r if r else 0.0
+
+
 def answer_contains(answer: str, needles) -> bool:
     """期待語句が「すべて」回答に含まれるか(部分一致・大文字小文字無視)。"""
     a = (answer or "").lower()
@@ -41,14 +47,21 @@ def summarize(rows: list[dict]) -> dict:
     """
     n = len(rows)
     if n == 0:
-        return {"questions": 0, "file_hit_rate": None, "mean_first_rank": None, "answer_match_rate": None}
+        return {"questions": 0, "file_hit_rate": None, "mean_first_rank": None,
+                "mrr": None, "hit_at_1": None, "hit_at_3": None, "answer_match_rate": None}
     hits = sum(1 for r in rows if r.get("file_hit"))
     ranks = [r["first_rank"] for r in rows if r.get("first_rank")]
+    rr = [(1.0 / r["first_rank"]) if r.get("first_rank") else 0.0 for r in rows]
+    hit1 = sum(1 for r in rows if r.get("first_rank") and r["first_rank"] <= 1)
+    hit3 = sum(1 for r in rows if r.get("first_rank") and r["first_rank"] <= 3)
     ans = [r for r in rows if r.get("answer_match") is not None]
     ans_ok = sum(1 for r in ans if r.get("answer_match"))
     return {
         "questions": n,
-        "file_hit_rate": round(hits / n, 3),
+        "file_hit_rate": round(hits / n, 3),       # top_k 内に期待ファイルがある割合(Recall@k)
         "mean_first_rank": round(sum(ranks) / len(ranks), 2) if ranks else None,
+        "mrr": round(sum(rr) / n, 3),              # 平均逆順位(リランクの効果に敏感)
+        "hit_at_1": round(hit1 / n, 3),            # 1位が期待ファイルの割合
+        "hit_at_3": round(hit3 / n, 3),            # 上位3件に期待ファイルがある割合
         "answer_match_rate": round(ans_ok / len(ans), 3) if ans else None,
     }

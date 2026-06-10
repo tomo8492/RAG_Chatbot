@@ -16,9 +16,34 @@ from .logging_setup import get_logger
 log = get_logger("ocr")
 
 
+def _ocr_enabled() -> bool:
+    """OCR有効か。設定画面(defaults)があればそれを優先、無ければ .env(settings)。"""
+    try:
+        from .defaults import get_defaults
+        v = get_defaults().get("ocr_enabled")
+        if v is not None:
+            return bool(v)
+    except Exception:
+        log.debug("_ocr_enabled: 例外を無視して継続", exc_info=True)
+    return settings.ocr_enabled
+
+
+def _ocr_model() -> str:
+    """VLM-OCR に使うモデル。defaults の ocr_vlm_model → vision_model → settings の順。"""
+    try:
+        from .defaults import get_defaults
+        d = get_defaults()
+        return ((d.get("ocr_vlm_model") or "").strip()
+                or (d.get("vision_model") or "").strip()
+                or settings.vision_model)
+    except Exception:
+        log.debug("_ocr_model: 例外を無視して継続", exc_info=True)
+        return settings.ocr_vlm_model or settings.vision_model
+
+
 def needs_ocr(page_text: str) -> bool:
     """このページをOCRすべきか(OCR有効 かつ テキスト層が閾値未満=スキャン頁)。"""
-    if not settings.ocr_enabled:
+    if not _ocr_enabled():
         return False
     return len((page_text or "").strip()) < settings.ocr_min_chars
 
@@ -48,7 +73,7 @@ def ocr_image_png(png: bytes) -> str:
 def _ocr_vlm(png: bytes) -> str:
     import ollama
 
-    model = settings.ocr_vlm_model or settings.vision_model
+    model = _ocr_model()
     b64 = base64.b64encode(png).decode("ascii")
     client = ollama.Client(host=settings.ollama_host)
     resp = client.chat(
@@ -69,8 +94,8 @@ def _ocr_tesseract(png: bytes) -> str:
 
 def ocr_available() -> tuple[bool, str]:
     """選択中のエンジンが使えるか(導入チェック)。(ok, 理由) を返す。"""
-    if not settings.ocr_enabled:
-        return False, "OCR_ENABLED=false"
+    if not _ocr_enabled():
+        return False, "OCR無効(設定画面でOFF または OCR_ENABLED=false)"
     if settings.ocr_engine == "tesseract":
         try:
             import pytesseract
@@ -78,15 +103,17 @@ def ocr_available() -> tuple[bool, str]:
             pytesseract.get_tesseract_version()
             return True, f"tesseract(lang={settings.ocr_lang})"
         except Exception as e:
+            log.debug("ocr_available: 例外を無視して継続", exc_info=True)
             return False, f"tesseract未導入: {str(e)[:120]}"
     # vlm
     try:
         from . import llm
 
-        model = settings.ocr_vlm_model or settings.vision_model
+        model = _ocr_model()
         if not model:
             return False, "VISION_MODEL/OCR_VLM_MODEL 未設定"
         ok = llm.is_model_installed(model)
         return ok, f"vlm:{model}" if ok else f"VLモデル未導入: {model}(ollama pull が必要)"
     except Exception as e:
+        log.debug("ocr_available: 例外を無視して継続", exc_info=True)
         return False, f"vlm確認失敗: {str(e)[:120]}"

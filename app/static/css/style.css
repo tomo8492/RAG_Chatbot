@@ -204,6 +204,11 @@ body {
 .sources .src-item { color: var(--ink-soft); display: inline-block; margin: 2px 8px 2px 0; }
 .sources .src-clickable { cursor: pointer; text-decoration: underline dotted; }
 .sources .src-clickable:hover { color: var(--accent); }
+/* 出典は思考(.thinking)と同様に折りたたみ。既定は閉じておく。 */
+.sources .src-details { margin-top: 4px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
+.sources .src-summary { cursor: pointer; padding: 6px 12px; font-size: 12.5px; color: var(--green);
+  font-weight: 600; user-select: none; list-style-position: inside; }
+.sources .src-list { padding: 2px 12px 9px; }
 .src-popover { position: absolute; z-index: 60; max-width: 540px; max-height: 340px; overflow: auto;
   background: var(--card); border: 1px solid var(--line); border-radius: 10px;
   box-shadow: 0 10px 34px rgba(0,0,0,.22); }
@@ -439,6 +444,9 @@ body[data-mode="code"] .code-bar.only-code { display: flex; }
   color: var(--ink-soft); user-select: none; white-space: nowrap; }
 .cb-toggle input { accent-color: var(--accent); width: 16px; height: 16px; }
 .cb-toggle.disabled { opacity: .45; cursor: not-allowed; }
+.cb-verify-cmd { font-size: 12px; padding: 4px 8px; border: 1px solid var(--line); border-radius: 6px;
+  background: var(--panel); color: var(--ink); width: 200px; max-width: 32vw;
+  resize: vertical; font-family: inherit; vertical-align: middle; min-height: 1.7em; }
 
 /* エージェントのステップ表示 */
 .agent-log { display: flex; flex-direction: column; gap: 6px; }
@@ -588,3 +596,6 @@ summary.step-head:hover { background: rgba(127,127,127,.06); }
 .confirm-status { font-weight: 700; font-size: 13px; }
 .confirm-status.ok { color: var(--green); }
 .confirm-status.no { color: var(--stop); }
+
+/* 参照資料に該当が無いときの注記(strict-RAG の透明性) */
+.src-empty { opacity: .7; font-style: italic; }

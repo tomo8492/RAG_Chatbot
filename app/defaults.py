@@ -17,18 +17,28 @@ LENGTH_PRESETS = {"short": 512, "standard": 1024, "long": 2048, "max": 4096}
 def base_defaults() -> dict:
     return {
         "model": settings.chat_model,
+        # Code(コーディングエージェント)用の既定モデル。空=既定モデル(model)を流用。
+        "code_model": settings.code_model,
         # 画像(スクショ)付き質問のときに使う Vision/OCR モデル。
         # 設定画面で GLM-OCR など任意の対応モデルに切り替えられる。
         "vision_model": settings.vision_model,
         "temperature": 0.3,
         "top_p": 0.9,
-        "num_predict": 1024,      # 回答の最大トークン(長さ)
-        "num_ctx": 0,             # 0 = モデル既定のコンテキスト長
+        "num_predict": 2048,      # 回答の最大トークン(長さ)。思考モデルでも途中で切れにくいよう大きめ
+        "num_ctx": settings.num_ctx,   # コンテキスト長(0=モデル既定)。溢れによる先頭切り捨てを防ぐ既定
         "effort": "medium",       # 工数(思考の深さ)
         "top_k": settings.rag_top_k,
         "system_prompt": DEFAULT_SYSTEM_PROMPT,
         "chunk_size": settings.chunk_size,
         "chunk_overlap": settings.chunk_overlap,
+        # 文脈付き埋め込み(検索精度↑/作成は遅め)。変更は再構築で反映。
+        "contextual_embeddings": settings.contextual_embeddings,
+        # 回答前リランク(LLMで出典を並べ替え。精度↑/やや遅い)。
+        "rerank_enabled": settings.rerank_enabled,
+        "rerank_model": settings.rerank_model,
+        # OCR(スキャンPDFの取り込み)。設定画面からON/OFFと使用モデルを切替可能。
+        "ocr_enabled": settings.ocr_enabled,
+        "ocr_vlm_model": settings.ocr_vlm_model,
         "summarize_map_model": "",   # 一括要約の「下書き(map)」用モデル。空=メインと同じ(二段なし)
         "theme": "auto",
     }
@@ -66,9 +76,26 @@ def effective_for(conv: dict) -> dict:
     for k in ("temperature", "top_p", "num_predict", "num_ctx", "effort", "top_k"):
         if k in s and s[k] is not None:
             d[k] = s[k]
+    # num_ctx=0(自動)は、溢れやすいモデル既定(多くは4096)ではなく安全な既定へ解決する。
+    # これで「設定保存済みで num_ctx=0 のまま」の既存ユーザーにも改善が届く。
+    try:
+        if int(d.get("num_ctx") or 0) <= 0:
+            d["num_ctx"] = settings.num_ctx
+    except (TypeError, ValueError):
+        d["num_ctx"] = settings.num_ctx
     return d
 
 
 def chunk_params() -> tuple[int, int]:
     d = get_defaults()
     return int(d["chunk_size"]), int(d["chunk_overlap"])
+
+
+def model_for_kind(kind: str) -> str:
+    """会話種別ごとの既定モデル。code は code_model(設定があれば)を優先し、無ければ通常の既定モデル。"""
+    d = get_defaults()
+    if kind == "code":
+        cm = (d.get("code_model") or "").strip()
+        if cm:
+            return cm
+    return d["model"]

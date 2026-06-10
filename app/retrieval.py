@@ -13,12 +13,15 @@ from __future__ import annotations
 
 import math
 import re
-from typing import Optional
+from typing import Callable
 
 # RRF の定数(大きいほど順位差の影響がなだらか。情報検索で一般的な 60)
 RRF_K = 60
 # 語彙スコアの融合重み(密検索を主、語彙を補助とする)
 LEX_WEIGHT = 1.0
+# 会話への添付(ユーザーが明示的に付けた資料)に与える優先度。KB と混在するとき、関連が
+# 拮抗した添付が埋もれないよう少しだけ持ち上げる(無関係な添付までは引き上げない控えめな値)。
+ATTACH_BONUS = 0.5
 # これ未満の類似度(=1-cosine距離)は「ほぼ無関係」として落とす保守的な床
 MIN_SCORE_FLOOR = 0.05
 # 候補プールの上限(再ランクのO(n^2)処理を抑える)
@@ -133,12 +136,20 @@ def rerank(query: str, hits: list[dict], top_k: int,
     # 4) 語彙スコア(BM25)の順位。クエリに使える語が無ければ密のみ。
     q_tokens = tokenize(query)
     if q_tokens:
-        docs_tokens = [tokenize(h.get("text", "")) for h in pool]
+        # Contextual BM25: 文脈付き埋め込みが有効なら、文書の文脈(ctx)も語彙照合に含める
+        # (型番・固有名詞だけでなく「どの文書か」を示す語でも拾えるようにする)
+        docs_tokens = [tokenize(((h.get("ctx") or "") + " " + (h.get("text") or "")).strip()) for h in pool]
         lex = bm25_scores(q_tokens, docs_tokens)
         lex_order = [i for i in sorted(range(n), key=lambda i: lex[i], reverse=True)
                      if lex[i] > 0.0]
         for rank, idx in enumerate(lex_order):
             fused[idx] += LEX_WEIGHT / (RRF_K + rank + 1)
+
+    # 4.5) 会話への添付を控えめに優先(関連が拮抗したときに埋もれさせない。
+    #      無関係な添付は元の密+語彙が低いので、このブースト程度では上位に来ない)
+    for i in range(n):
+        if pool[i].get("attachment"):
+            fused[i] += ATTACH_BONUS / RRF_K
 
     # 5) 融合スコア降順(同点は密距離が近い順)
     order = sorted(range(n), key=lambda i: (-fused[i], pool[i].get("distance", 1.0)))
@@ -154,3 +165,34 @@ def rerank(query: str, hits: list[dict], top_k: int,
         per[src] = per.get(src, 0) + 1
         out.append(h)
     return out if unlimited else out[:top_k]
+
+
+def llm_rerank(query: str, hits: list[dict], top_k: int,
+               score_fn: Callable[[str, list[str]], list[float]],
+               max_per_source: int = 5) -> list[dict]:
+    """RRF融合済みの候補を、LLMの関連度スコア(score_fn 注入)で並べ替えて top_k 返す。
+
+    score_fn(query, [text,...]) -> [score,...]。長さ不一致・失敗時は入力順を維持する
+    (=融合順へフォールバック)。LLM/外部依存を持たない純関数なので単体テスト可能。
+    """
+    if not hits:
+        return []
+    texts = [h.get("text", "") for h in hits]
+    try:
+        scores = score_fn(query, texts)
+    except Exception:
+        scores = []
+    if scores and len(scores) == len(hits):
+        order = sorted(range(len(hits)), key=lambda i: (-float(scores[i]), i))
+        ranked = [hits[i] for i in order]
+    else:
+        ranked = list(hits)   # フォールバック: 融合順を維持
+    out: list[dict] = []
+    per: dict[str, int] = {}
+    for h in ranked:
+        src = h.get("source", "")
+        if per.get(src, 0) >= max_per_source:
+            continue
+        per[src] = per.get(src, 0) + 1
+        out.append(h)
+    return out[:top_k]

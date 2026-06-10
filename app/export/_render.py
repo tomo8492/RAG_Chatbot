@@ -10,9 +10,11 @@ import base64
 import html as _html
 import io
 import re
+import unicodedata
 from datetime import datetime
 
-from .logging_setup import get_logger
+from ..logging_setup import get_logger
+from .blocks import (parse_blocks, _LINK, _align_style, _render_list, _item_plain, _item_level, _strip_inline, _inline_html, _inline_runs)
 
 log = get_logger("export")
 
@@ -30,137 +32,6 @@ MIME = {
 EXT = {"md": "md", "txt": "txt", "html": "html",
        "docx": "docx", "xlsx": "xlsx", "pptx": "pptx"}
 
-
-# ============================================================
-#  Markdown 簡易ブロック解析
-# ============================================================
-def parse_blocks(md: str) -> list[dict]:
-    lines = (md or "").replace("\r\n", "\n").split("\n")
-    blocks: list[dict] = []
-    i, n = 0, len(lines)
-
-    def is_table_sep(s: str) -> bool:
-        return bool(re.match(r"^\s*\|?[\s:\-\|]+\|?\s*$", s)) and "-" in s
-
-    while i < n:
-        line = lines[i]
-
-        # コードフェンス
-        m = re.match(r"^\s*```(.*)$", line)
-        if m:
-            lang = m.group(1).strip()
-            i += 1
-            buf = []
-            while i < n and not re.match(r"^\s*```\s*$", lines[i]):
-                buf.append(lines[i]); i += 1
-            i += 1  # 終端 ``` をスキップ
-            blocks.append({"type": "code", "lang": lang, "text": "\n".join(buf)})
-            continue
-
-        # 空行
-        if line.strip() == "":
-            i += 1
-            continue
-
-        # 見出し
-        m = re.match(r"^(#{1,6})\s+(.*)$", line)
-        if m:
-            blocks.append({"type": "heading", "level": len(m.group(1)), "text": m.group(2).strip()})
-            i += 1
-            continue
-
-        # テーブル
-        if "|" in line and i + 1 < n and is_table_sep(lines[i + 1]):
-            header = _split_row(line)
-            i += 2
-            rows = []
-            while i < n and "|" in lines[i] and lines[i].strip():
-                rows.append(_split_row(lines[i])); i += 1
-            blocks.append({"type": "table", "header": header, "rows": rows})
-            continue
-
-        # 引用
-        if re.match(r"^\s*>\s?", line):
-            buf = []
-            while i < n and re.match(r"^\s*>\s?", lines[i]):
-                buf.append(re.sub(r"^\s*>\s?", "", lines[i])); i += 1
-            blocks.append({"type": "quote", "text": "\n".join(buf)})
-            continue
-
-        # リスト
-        if re.match(r"^\s*([-*+]|\d+[.)])\s+", line):
-            items = []
-            ordered = bool(re.match(r"^\s*\d+[.)]\s+", line))
-            while i < n and re.match(r"^\s*([-*+]|\d+[.)])\s+", lines[i]):
-                items.append(re.sub(r"^\s*([-*+]|\d+[.)])\s+", "", lines[i]).strip()); i += 1
-            blocks.append({"type": "list", "ordered": ordered, "items": items})
-            continue
-
-        # 段落(連続する非空行をまとめる)
-        buf = []
-        while i < n and lines[i].strip() != "" and not re.match(r"^\s*```", lines[i]) \
-                and not re.match(r"^(#{1,6})\s+", lines[i]) \
-                and not re.match(r"^\s*([-*+]|\d+[.)])\s+", lines[i]) \
-                and not re.match(r"^\s*>\s?", lines[i]):
-            buf.append(lines[i]); i += 1
-        blocks.append({"type": "paragraph", "text": "\n".join(buf)})
-
-    return blocks
-
-
-def _split_row(line: str) -> list[str]:
-    s = line.strip()
-    if s.startswith("|"):
-        s = s[1:]
-    if s.endswith("|"):
-        s = s[:-1]
-    return [c.strip() for c in s.split("|")]
-
-
-# ---- インライン処理 ----
-_LINK = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
-
-
-def _strip_inline(text: str) -> str:
-    """強調記号などを除いたプレーン文字列。"""
-    text = _LINK.sub(r"\1 (\2)", text)
-    text = re.sub(r"\*\*(.+?)\*\*", r"\1", text)
-    text = re.sub(r"`([^`]+)`", r"\1", text)
-    text = re.sub(r"(?<!\*)\*(?!\*)([^*]+)\*(?!\*)", r"\1", text)
-    text = re.sub(r"__(.+?)__", r"\1", text)
-    return text
-
-
-def _inline_html(text: str) -> str:
-    out = _html.escape(text)
-    # 角括弧・丸括弧はエスケープされないのでリンク記法を変換可能
-    out = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r'<a href="\2">\1</a>', out)
-    out = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", out)
-    out = re.sub(r"`([^`]+)`", r"<code>\1</code>", out)
-    out = re.sub(r"(?<!\*)\*(?!\*)([^*]+)\*(?!\*)", r"<em>\1</em>", out)
-    return out
-
-
-def _inline_runs(text: str) -> list[tuple[str, dict]]:
-    """docx 用: (テキスト, {bold,italic,code}) のリスト。"""
-    text = _LINK.sub(r"\1 (\2)", text)
-    parts: list[tuple[str, dict]] = []
-    pattern = re.compile(r"(\*\*.+?\*\*|`[^`]+`|(?<!\*)\*(?!\*)[^*]+\*(?!\*))")
-    pos = 0
-    for m in pattern.finditer(text):
-        if m.start() > pos:
-            parts.append((text[pos:m.start()], {}))
-        tok = m.group(0)
-        if tok.startswith("**"):
-            parts.append((tok[2:-2], {"bold": True}))
-        elif tok.startswith("`"):
-            parts.append((tok[1:-1], {"code": True}))
-        else:
-            parts.append((tok[1:-1], {"italic": True}))
-        pos = m.end()
-    if pos < len(text):
-        parts.append((text[pos:], {}))
-    return parts or [(text, {})]
 
 
 # ============================================================
@@ -189,15 +60,19 @@ img{max-width:100%;height:auto;border-radius:8px;}
 .doc-title{font-size:28px;font-weight:800;line-height:1.35;margin:0;letter-spacing:.01em;}
 .doc-date{color:var(--muted);font-size:13px;margin-top:10px;}
 .doc-body>*:first-child{margin-top:0;}
-h1,h2,h3,h4{line-height:1.4;font-weight:700;}
+h1,h2,h3,h4,h5,h6{line-height:1.4;font-weight:700;}
 h1{font-size:23px;margin:1.8em 0 .6em;padding-bottom:.3em;border-bottom:1px solid var(--line);}
 h2{font-size:19.5px;margin:1.7em 0 .5em;padding-left:12px;border-left:4px solid var(--accent);}
 h3{font-size:16.5px;margin:1.5em 0 .4em;color:#2b3138;}
 h4{font-size:15px;margin:1.3em 0 .3em;color:var(--muted);}
+h5{font-size:14px;margin:1.2em 0 .3em;color:var(--muted);}
+h6{font-size:13px;margin:1.1em 0 .3em;color:var(--muted);font-weight:600;}
 p{margin:.9em 0;}
 ul,ol{margin:.7em 0;padding-left:1.6em;}
 li{margin:.35em 0;}
 li::marker{color:var(--accent);}
+li.task{list-style:none;margin-left:-1.5em;}
+li.task>input{margin-right:.5em;vertical-align:middle;}
 a{color:var(--accent);text-decoration:none;border-bottom:1px solid transparent;}
 a:hover{border-bottom-color:currentColor;}
 strong{font-weight:700;}
@@ -210,6 +85,7 @@ hr{border:none;border-top:1px solid var(--line);margin:2em 0;}
 pre{background:var(--soft);border:1px solid var(--line);border-radius:10px;
   padding:14px 16px;overflow-x:auto;margin:1.1em 0;}
 pre code{font-family:var(--mono);font-size:13.5px;line-height:1.6;color:#1f2328;}
+pre code.hljs{background:transparent;padding:0;}
 pre.mermaid{background:none;border:none;padding:0;overflow:visible;text-align:center;
   margin:1.4em 0;line-height:normal;}
 .mermaid svg{max-width:100%;height:auto;}
@@ -226,7 +102,7 @@ tbody tr:last-child td{border-bottom:none;}
 @media print{
   body{background:#fff;}
   .sheet{margin:0;max-width:none;border:none;border-radius:0;box-shadow:none;padding:0;}
-  h1,h2,h3,h4{break-after:avoid;}
+  h1,h2,h3,h4,h5,h6{break-after:avoid;}
   table,pre,blockquote,img{break-inside:avoid;}
   .doc-footer{display:none;}
 }
@@ -242,34 +118,41 @@ def to_html(md: str, title: str = "回答") -> bytes:
 
     body: list[str] = []
     has_mermaid = False
+    has_code = False
     for b in blocks:
         t = b["type"]
         if t == "heading":
-            lv = min(b["level"], 4)
+            lv = min(b["level"] + 1, 6)   # ページ表題が <h1>。本文は <h2> 起点に降格(h1重複を防ぐ)
             body.append(f"<h{lv}>{_inline_html(b['text'])}</h{lv}>")
         elif t == "paragraph":
             body.append(f"<p>{_inline_html(b['text']).replace(chr(10), '<br>')}</p>")
         elif t == "list":
-            tag = "ol" if b["ordered"] else "ul"
-            items = "".join(f"<li>{_inline_html(it)}</li>" for it in b["items"])
-            body.append(f"<{tag}>{items}</{tag}>")
+            body.append(_render_list(b["items"]))
         elif t == "code":
             if b.get("lang", "").lower() == "mermaid":
                 # Mermaid 図はコードではなく図として描画する(後段でライブラリを同梱)
                 has_mermaid = True
                 body.append(f'<pre class="mermaid">{_html.escape(b["text"])}</pre>')
             else:
-                body.append(f"<pre><code>{_html.escape(b['text'])}</code></pre>")
+                has_code = True
+                lang = re.sub(r"[^A-Za-z0-9+#-]", "", b.get("lang", "")).lower()
+                cls = f' class="language-{lang}"' if lang else ""
+                body.append(f"<pre><code{cls}>{_html.escape(b['text'])}</code></pre>")
         elif t == "quote":
             body.append(f"<blockquote>{_inline_html(b['text']).replace(chr(10), '<br>')}</blockquote>")
         elif t == "table":
-            head = "".join(f"<th>{_inline_html(c)}</th>" for c in b["header"])
-            rows = "".join("<tr>" + "".join(f"<td>{_inline_html(c)}</td>" for c in r) + "</tr>"
-                           for r in b["rows"])
+            al = b.get("aligns", [])
+            head = "".join(f"<th{_align_style(al, j)}>{_inline_html(c)}</th>"
+                           for j, c in enumerate(b["header"]))
+            rows = "".join(
+                "<tr>" + "".join(f"<td{_align_style(al, j)}>{_inline_html(c)}</td>"
+                                 for j, c in enumerate(r)) + "</tr>"
+                for r in b["rows"])
             body.append(f'<div class="table-wrap"><table><thead><tr>{head}</tr></thead>'
                         f"<tbody>{rows}</tbody></table></div>")
 
-    return _html_page(title, "\n".join(body), with_mermaid=has_mermaid).encode("utf-8")
+    return _html_page(title, "\n".join(body),
+                      with_mermaid=has_mermaid, with_code=has_code).encode("utf-8")
 
 
 # Mermaid 同梱(vendored を1度だけ読み込みキャッシュ)。図を含む HTML のみに埋め込む。
@@ -281,7 +164,7 @@ def _mermaid_scripts() -> str:
     global _MERMAID_JS_CACHE
     if _MERMAID_JS_CACHE is None:
         from pathlib import Path
-        p = Path(__file__).resolve().parent / "static" / "vendor" / "mermaid.min.js"
+        p = Path(__file__).resolve().parent.parent / "static" / "vendor" / "mermaid.min.js"
         try:
             js = p.read_text(encoding="utf-8")
             js = re.sub(r"</(script)", r"<\\/\1", js, flags=re.IGNORECASE)  # </script> での早期終了を防ぐ
@@ -296,10 +179,52 @@ def _mermaid_scripts() -> str:
     return f"<script>{_MERMAID_JS_CACHE}</script>\n<script>{init}</script>"
 
 
-def _html_page(title: str, body_html: str, with_mermaid: bool = False) -> str:
+# highlight.js 同梱(コードの構文ハイライトをオフラインHTMLに内蔵)
+_HLJS_CACHE: tuple[str, str] | None = None
+
+
+def _highlight_assets() -> tuple[str, str]:
+    """(テーマCSS, ライブラリJS) を返す。読めなければ ("", "")。"""
+    global _HLJS_CACHE
+    if _HLJS_CACHE is None:
+        from pathlib import Path
+        base = Path(__file__).resolve().parent.parent / "static" / "vendor"
+        try:
+            js = (base / "highlight.min.js").read_text(encoding="utf-8")
+            js = re.sub(r"</(script)", r"<\\/\1", js, flags=re.IGNORECASE)
+            css = (base / "github.min.css").read_text(encoding="utf-8")
+            _HLJS_CACHE = (css, js)
+        except Exception as e:   # 読めなければハイライト無し(コードは素のまま表示)
+            log.warning("highlight.js を同梱できません: %s", e)
+            _HLJS_CACHE = ("", "")
+    return _HLJS_CACHE
+
+
+def _highlight_head_and_scripts() -> tuple[str, str]:
+    """コードを含むHTML用の (head追加CSS, body末尾スクリプト)。"""
+    css, js = _highlight_assets()
+    if not js:
+        return "", ""
+    head = f"<style>{css}</style>"
+    scripts = (f"<script>{js}</script>\n"
+               "<script>hljs.highlightAll();</script>")
+    return head, scripts
+
+
+def _html_page(title: str, body_html: str, with_mermaid: bool = False,
+               with_code: bool = False) -> str:
     """整ったドキュメントの外枠(CSS・タイトル・日付・フッター)に本文HTMLを差し込む。"""
     date = datetime.now().strftime("%Y年%m月%d日")
-    scripts = _mermaid_scripts() if with_mermaid else ""
+    parts = []
+    if with_mermaid:
+        parts.append(_mermaid_scripts())
+    head_extra = ""
+    if with_code:
+        hl_head, hl_scripts = _highlight_head_and_scripts()
+        head_extra += hl_head
+        if hl_scripts:
+            parts.append(hl_scripts)
+    scripts = "\n".join(p for p in parts if p)
     return f"""<!DOCTYPE html>
 <html lang="ja">
 <head>
@@ -307,7 +232,7 @@ def _html_page(title: str, body_html: str, with_mermaid: bool = False) -> str:
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{_html.escape(title)}</title>
 <style>{_HTML_CSS}</style>
-</head>
+{head_extra}</head>
 <body>
 <main class="sheet">
 <header class="doc-header">
@@ -397,7 +322,7 @@ def _extract_html_document(content: str, title: str) -> str | None:
 def to_docx(md: str, title: str = "回答", images: list | None = None) -> bytes:
     from docx import Document
     from docx.enum.text import WD_ALIGN_PARAGRAPH
-    from docx.shared import Inches, Pt, RGBColor
+    from docx.shared import Inches, Pt
     doc = Document()
     mm_idx = 0
     for b in parse_blocks(md):
@@ -408,10 +333,16 @@ def to_docx(md: str, title: str = "回答", images: list | None = None) -> bytes
             p = doc.add_paragraph()
             _add_runs(p, b["text"])
         elif t == "list":
-            style = "List Number" if b["ordered"] else "List Bullet"
             for it in b["items"]:
+                style = "List Number" if it["ordered"] else "List Bullet"
                 p = doc.add_paragraph(style=style)
-                _add_runs(p, it)
+                if _item_level(it):
+                    try:
+                        p.paragraph_format.left_indent = Inches(0.25 * _item_level(it))
+                    except Exception:
+                        log.debug("to_docx: 例外を無視して継続", exc_info=True)
+                        pass
+                _add_runs(p, _item_plain(it))
         elif t == "code":
             is_mmd = b.get("lang", "").lower() == "mermaid"
             img = images[mm_idx] if (is_mmd and images and mm_idx < len(images)) else None
@@ -425,6 +356,7 @@ def to_docx(md: str, title: str = "回答", images: list | None = None) -> bytes
                     doc.paragraphs[-1].alignment = WD_ALIGN_PARAGRAPH.CENTER
                     continue
                 except Exception:
+                    log.debug("to_docx: 例外を無視して継続", exc_info=True)
                     pass
             for ln in b["text"].split("\n"):
                 p = doc.add_paragraph()
@@ -440,6 +372,7 @@ def to_docx(md: str, title: str = "回答", images: list | None = None) -> bytes
             try:
                 table.style = "Light Grid Accent 1"
             except Exception:
+                log.debug("to_docx: 例外を無視して継続", exc_info=True)
                 pass
             for j, c in enumerate(b["header"]):
                 if j < cols:
@@ -496,7 +429,8 @@ def to_xlsx(md: str, title: str = "回答") -> bytes:
         elif b["type"] == "paragraph":
             text_lines.extend(_strip_inline(b["text"]).split("\n"))
         elif b["type"] == "list":
-            text_lines.extend("・" + _strip_inline(it) for it in b["items"])
+            text_lines.extend("・" + "  " * _item_level(it) + _strip_inline(_item_plain(it))
+                              for it in b["items"])
         elif b["type"] == "code":
             text_lines.extend(b["text"].split("\n"))
         elif b["type"] == "quote":
@@ -528,7 +462,6 @@ def _autofit(ws) -> None:
 
 def to_pptx(md: str, title: str = "回答", images: list | None = None) -> bytes:
     from pptx import Presentation
-    from pptx.util import Pt
     prs = Presentation()
     blocks = parse_blocks(md)
 
@@ -567,7 +500,7 @@ def to_pptx(md: str, title: str = "回答", images: list | None = None) -> bytes
                         _add_bullet(body, ln, 0)
             elif b["type"] == "list":
                 for it in b["items"]:
-                    _add_bullet(body, _strip_inline(it), 1)
+                    _add_bullet(body, _strip_inline(_item_plain(it)), 1 + _item_level(it))
             elif b["type"] == "code":
                 for ln in b["text"].split("\n"):
                     _add_bullet(body, ln, 0, mono=True)
@@ -640,6 +573,7 @@ def to_pdf(md: str, title: str = "回答", images: list | None = None) -> bytes:
         try:
             pdfmetrics.registerFont(UnicodeCIDFont(f))
         except Exception:
+            log.debug("to_pdf: 例外を無視して継続", exc_info=True)
             pass
 
     ACCENT = colors.HexColor("#3b5bdb"); INK = colors.HexColor("#1f2328")
@@ -727,8 +661,9 @@ def to_pdf(md: str, title: str = "回答", images: list | None = None) -> bytes:
         elif t == "paragraph":
             story.append(Paragraph(_pdf_inline(b["text"]).replace("\n", "<br/>"), body))
         elif t == "list":
-            items = [ListItem(Paragraph(_pdf_inline(it), body)) for it in b["items"]]
-            story.append(ListFlowable(items, bulletType="1" if b["ordered"] else "bullet",
+            items = [ListItem(Paragraph(_pdf_inline(_item_plain(it)), body)) for it in b["items"]]
+            ordered = bool(b["items"]) and b["items"][0]["ordered"]
+            story.append(ListFlowable(items, bulletType="1" if ordered else "bullet",
                                       bulletColor=ACCENT, bulletFontName=FONT, leftIndent=16))
         elif t == "code":
             is_mmd = b.get("lang", "").lower() == "mermaid"
@@ -746,6 +681,7 @@ def to_pdf(md: str, title: str = "回答", images: list | None = None) -> bytes:
                     story.append(Spacer(1, 8))
                     embedded = True
                 except Exception:
+                    log.debug("to_pdf: 例外を無視して継続", exc_info=True)
                     embedded = False
             if not embedded:
                 story.append(Preformatted(b["text"], code_st))   # 画像が無い図はコード枠で表示
@@ -796,13 +732,100 @@ def to_csv(md: str, title: str = "回答") -> bytes:
                     w.writerow([ln])
             elif b["type"] == "list":
                 for it in b["items"]:
-                    w.writerow([_strip_inline(it)])
+                    w.writerow([_strip_inline(_item_plain(it))])
     return out.getvalue().encode("utf-8-sig")   # BOM付きで Excel の文字化けを防ぐ
 
 
 # ============================================================
-#  ディスパッチ
+#  プレーンテキスト(.txt)
 # ============================================================
+def _wcwidth(s: str) -> int:
+    """文字列の表示幅(全角=2 / 半角=1)。等幅前提の桁そろえ用。"""
+    return sum(2 if unicodedata.east_asian_width(c) in ("W", "F") else 1 for c in s)
+
+
+def _table_to_txt(header: list[str], rows: list[list[str]]) -> str:
+    """表を桁そろえしたプレーンテキストにする(データ欠落を防ぐ。全角幅も考慮)。"""
+    table = [header] + rows
+    ncol = max((len(r) for r in table), default=0)
+    if ncol == 0:
+        return ""
+    norm = [[_strip_inline(r[j]) if j < len(r) else "" for j in range(ncol)] for r in table]
+    widths = [max((_wcwidth(row[j]) for row in norm), default=0) for j in range(ncol)]
+
+    def pad(cell: str, w: int) -> str:
+        return cell + " " * max(0, w - _wcwidth(cell))
+
+    def fmt(row: list[str]) -> str:
+        return " | ".join(pad(row[j], widths[j]) for j in range(ncol)).rstrip()
+
+    out = [fmt(norm[0]), "-+-".join("-" * w for w in widths)]
+    out += [fmt(r) for r in norm[1:]]
+    return "\n".join(out)
+
+
+def _list_to_txt(items: list[dict]) -> str:
+    """リストをネスト・番号・タスクを保ったプレーンテキストにする。"""
+    lines: list[str] = []
+    counters: dict[int, int] = {}
+    for it in items:
+        lvl = _item_level(it)
+        for d in [k for k in counters if k > lvl]:   # 深い階層の番号はリセット
+            del counters[d]
+        if it.get("ordered"):
+            counters[lvl] = counters.get(lvl, 0) + 1
+            marker = f"{counters[lvl]}. "
+        else:
+            counters[lvl] = 0                         # 後続の番号付きが1から始まるように
+            marker = "・"
+        lines.append("    " * lvl + marker + _strip_inline(_item_plain(it)))
+    return "\n".join(lines)
+
+
+def to_txt(md: str, title: str = "回答") -> bytes:
+    """Markdown を読みやすいプレーンテキストへ整形する。
+
+    ブロック間を空行で区切り、見出し・段落・リスト(ネスト/番号/タスク)・表・コード・
+    引用をすべて保持する(旧実装は表が欠落し、ブロックが詰まって読みにくかった)。
+    """
+    parts: list[str] = []
+    for b in parse_blocks(md):
+        t = b["type"]
+        if t in ("heading", "paragraph"):
+            parts.append(_strip_inline(b["text"]))
+        elif t == "quote":
+            parts.append("\n".join("> " + _strip_inline(ln) for ln in b["text"].split("\n")))
+        elif t == "code":
+            parts.append(b.get("text", ""))
+        elif t == "list":
+            parts.append(_list_to_txt(b["items"]))
+        elif t == "table":
+            parts.append(_table_to_txt(b.get("header", []), b.get("rows", [])))
+    text = "\n\n".join(p for p in parts if p.strip() != "")
+    return (text or (md or "")).encode("utf-8")
+
+
+# ============================================================
+#  ファイル名 / ディスパッチ
+# ============================================================
+_RESERVED_NAMES = {"CON", "PRN", "AUX", "NUL",
+                   *(f"COM{i}" for i in range(1, 10)),
+                   *(f"LPT{i}" for i in range(1, 10))}
+
+
+def safe_stem(title: str, limit: int = 40) -> str:
+    """ダウンロードファイル名(拡張子なし)に使える安全な語幹を返す。
+
+    OS の禁止文字・制御文字を除去し、Windows で問題になる末尾のドット/空白・
+    予約デバイス名(CON/PRN/NUL 等)も回避する。空になる場合は「回答」を返す。
+    """
+    s = re.sub(r'[\\/:*?"<>|\x00-\x1f]', "", title or "回答")
+    s = s.strip()[:limit].strip().rstrip(" .")
+    if not s or s.upper() in _RESERVED_NAMES:
+        return "回答"
+    return s
+
+
 def export_content(content: str, fmt: str, ext: str | None = None,
                    title: str = "回答", images: list | None = None) -> tuple[bytes, str, str]:
     """(bytes, mime, 拡張子) を返す。"""
@@ -812,11 +835,7 @@ def export_content(content: str, fmt: str, ext: str | None = None,
     if fmt == "md":
         return content.encode("utf-8"), MIME["md"], "md"
     if fmt == "txt":
-        # 記法を軽く落としたプレーンテキスト
-        plain = "\n".join(_strip_inline(b["text"]) if b["type"] in ("paragraph", "heading", "quote")
-                          else ("\n".join("・" + _strip_inline(x) for x in b["items"]) if b["type"] == "list"
-                                else b.get("text", "")) for b in parse_blocks(content))
-        return (plain or content).encode("utf-8"), MIME["txt"], "txt"
+        return to_txt(content, title), MIME["txt"], "txt"
     if fmt == "code":
         safe_ext = re.sub(r"[^A-Za-z0-9]", "", (ext or "txt")) or "txt"
         return content.encode("utf-8"), MIME["code"], safe_ext

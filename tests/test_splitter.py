@@ -72,6 +72,13 @@ def test_empty_text():
     assert split_structured("", 800, 120) == []
 
 
+def test_heading_only_block_not_dropped():
+    # 見出ししか無いブロックでも、索引から欠落しないようチャンクを返す
+    out = split_structured("# タイトル\n## 節だけ", 800, 120)
+    assert len(out) >= 1
+    assert "".join(c for c, _ in out).strip() != ""
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     passed = 0

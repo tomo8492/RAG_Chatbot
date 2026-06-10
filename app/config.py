@@ -10,6 +10,10 @@ import secrets
 from pathlib import Path
 
 from dotenv import load_dotenv
+from .logging_setup import get_logger
+
+log = get_logger("config")
+
 
 # プロジェクトルート( app/ の1つ上 )
 ROOT_DIR = Path(__file__).resolve().parent.parent
@@ -29,6 +33,7 @@ def _int(name: str, default: int) -> int:
     try:
         return int(os.getenv(name, "").strip())
     except (ValueError, AttributeError):
+        log.debug("_int: 例外を無視して継続", exc_info=True)
         return default
 
 
@@ -66,6 +71,9 @@ class Settings:
         # 画像(スクショ)付き質問のときに使う Vision モデル。
         # Gemma 3 はマルチモーダルなので既定では同じモデルを使用(切替なし)。
         self.vision_model: str = os.getenv("VISION_MODEL", "gemma3:27b").strip()
+        # Code(コーディングエージェント)用の既定モデル。空なら CHAT_MODEL を流用。
+        # コード/ツール操作に強いモデル(例: qwen2.5-coder, qwen3-coder)を指定すると精度が上がる。
+        self.code_model: str = os.getenv("CODE_MODEL", "").strip()
         # OCR API(/api/ocr)を VBA / Python など外部から呼ぶときの簡易APIキー。
         # CHAT_PASSWORD を設定して認証を有効にしている場合、Cookieの代わりに
         # X-API-Key ヘッダでこのキーを送れば呼び出せる(VBA等からの利用向け)。
@@ -86,6 +94,16 @@ class Settings:
         self.rag_top_k: int = _int("RAG_TOP_K", 15)
         self.chunk_size: int = _int("CHUNK_SIZE", 800)
         self.chunk_overlap: int = _int("CHUNK_OVERLAP", 120)
+        # 既定のコンテキスト長(トークン)。0=モデル既定。Ollama の既定(多くは4096)では参考資料や
+        # システム指示が静かに切り捨てられて精度が落ちるため、十分な既定にしておく(メモリと相談で調整可)。
+        self.num_ctx: int = _int("NUM_CTX", 8192)
+        # 文脈付き埋め込み(Contextual Embeddings の局所版)。各文書の主題をLLMで1〜2文生成し、
+        # チャンクの埋め込みテキストに前置きして検索精度を上げる(作成は遅くなる。既定OFF)。
+        self.contextual_embeddings: bool = _bool("CONTEXTUAL_EMBEDDINGS", False)
+        # 回答前リランク: 融合上位の出典を LLM で関連度採点して並べ替える(精度↑/やや遅い。既定OFF)。
+        self.rerank_enabled: bool = _bool("RERANK_ENABLED", False)
+        # リランクに使うモデル(空なら既定モデルを流用)。
+        self.rerank_model: str = os.getenv("RERANK_MODEL", "").strip()
 
         # --- OCR(スキャン/画像PDF。既定OFF=現行動作を変えない) ---
         self.ocr_enabled: bool = _bool("OCR_ENABLED", False)
@@ -115,6 +133,7 @@ class Settings:
             try:
                 nets.append(ipaddress.ip_network(part, strict=False))
             except ValueError:
+                log.debug("_parse_cidrs: 例外を無視して継続", exc_info=True)
                 pass
         return nets
 

@@ -5,9 +5,7 @@ FastAPI 本体。API ルートと SSE ストリーミング生成。
 from __future__ import annotations
 
 import base64
-import hmac
 import ipaddress
-import json
 import re
 import threading
 import time
@@ -15,18 +13,18 @@ import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
-from urllib.parse import quote
 
-from fastapi import Body, Cookie, Depends, FastAPI, File, Header, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import agent, auth, db, export, llm, postprocess, rag, safety, summarize
+from . import agent, auth, db, llm, postprocess, rag, safety
 from .config import settings
-from .defaults import effective_for, get_defaults, set_defaults
-from .fsbrowse import count_supported_recursive, get_roots, list_dir
-from .logging_setup import get_logger, setup_logging
+from .defaults import effective_for
+from .logging_setup import get_logger, set_request_id, setup_logging
+from .routes import routers as _routers
+from .sse import sse
 
 setup_logging()
 log = get_logger("main")
@@ -59,6 +57,10 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title=settings.app_title, lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
+# ドメイン別ルータ(routes/ 配下)を取り込む。main.py からの段階的分割の受け口。
+for _r in _routers:
+    app.include_router(_r)
+
 
 def _ip_allowed(host: str | None) -> bool:
     """ループバック / プライベートLAN / リンクローカル / 追加許可レンジで許可。
@@ -71,6 +73,7 @@ def _ip_allowed(host: str | None) -> bool:
     try:
         ip = ipaddress.ip_address(host)
     except ValueError:
+        log.debug("_ip_allowed: 例外を無視して継続", exc_info=True)
         return host == "localhost"
     mapped = getattr(ip, "ipv4_mapped", None)   # ::ffff:192.168.x.x → 192.168.x.x(スマホ等の誤遮断を防ぐ)
     if mapped is not None:
@@ -93,6 +96,7 @@ def _denied_page(host: str | None) -> str:
         if a.version == 4:
             hint = ".".join(str(a).split(".")[:3]) + ".0/24"
     except Exception:
+        log.debug("_denied_page: 例外を無視して継続", exc_info=True)
         pass
     cidr = f"<li><code>.env</code> に <code>ALLOWED_CIDRS={hint}</code> を追加</li>" if hint else ""
     return ("<!doctype html><html lang=ja><head><meta charset=utf-8>"
@@ -122,13 +126,33 @@ async def _lan_guard(request, call_next):
     return await call_next(request)
 
 
+@app.middleware("http")
+async def _observability(request, call_next):
+    """リクエストID付与・アクセスログ・未処理例外のログ。
+
+    失敗が必ず痕跡を残すようにし(サイレント握りつぶしを表に出す)、相関ID(req)で
+    同時アクセス時でも1操作のログを追跡できるようにする。_lan_guard より外側で動く。
+    """
+    rid = uuid.uuid4().hex[:8]
+    set_request_id(rid)
+    t0 = time.time()
+    try:
+        resp = await call_next(request)
+    except Exception:
+        log.exception("未処理の例外: %s %s", request.method, request.url.path)
+        resp = JSONResponse(
+            {"error": "サーバ内部でエラーが発生しました", "request_id": rid},
+            status_code=500,
+        )
+    resp.headers["X-Request-ID"] = rid
+    log.info("%s %s -> %d (%dms)", request.method, request.url.path,
+             resp.status_code, int((time.time() - t0) * 1000))
+    return resp
+
+
 # ============================================================
 #  SSE ヘルパ
 # ============================================================
-def sse(obj: dict) -> str:
-    return f"data: {json.dumps(obj, ensure_ascii=False)}\n\n"
-
-
 def _make_title(content: str, model: str) -> str:
     """最初のユーザーメッセージから、短い日本語タイトルをLLMで生成(失敗時 '')。"""
     src = (content or "").strip()
@@ -144,224 +168,9 @@ def _make_title(content: str, model: str) -> str:
 
 
 # ============================================================
-#  認証
+#  会話 — 削除のみ(他の CRUD は routes/conversation_routes.py に分離。
+#  削除は Code エージェント実行時状態の掃除を伴うため main.py に残置)
 # ============================================================
-class LoginBody(BaseModel):
-    password: str = ""
-
-
-@app.get("/api/config")
-def api_config(rag_session: Optional[str] = Cookie(default=None)) -> dict:
-    return {
-        "app_title": settings.app_title,
-        "auth_enabled": settings.auth_enabled,
-        "authenticated": auth.is_authenticated(rag_session),
-        "ollama_available": llm.is_ollama_available(),
-        "embed_backend": settings.embed_backend,
-        "embed_model": settings.embed_model,
-    }
-
-
-@app.post("/api/login")
-def api_login(body: LoginBody) -> Response:
-    if not settings.auth_enabled:
-        return JSONResponse({"ok": True})
-    if not auth.verify_password(body.password):
-        raise HTTPException(status_code=401, detail="パスワードが違います")
-    token = auth.make_session_token()
-    resp = JSONResponse({"ok": True})
-    resp.set_cookie(auth.COOKIE_NAME, token, httponly=True, samesite="lax",
-                    max_age=60 * 60 * 24 * 14)
-    return resp
-
-
-@app.post("/api/logout")
-def api_logout() -> Response:
-    resp = JSONResponse({"ok": True})
-    resp.delete_cookie(auth.COOKIE_NAME)
-    return resp
-
-
-# ============================================================
-#  設定(グローバル既定値)
-# ============================================================
-@app.get("/api/settings", dependencies=[Depends(auth.require_auth)])
-def api_get_settings() -> dict:
-    return get_defaults()
-
-
-@app.patch("/api/settings", dependencies=[Depends(auth.require_auth)])
-def api_patch_settings(patch: dict = Body(...)) -> dict:
-    return set_defaults(patch)
-
-
-@app.get("/api/models", dependencies=[Depends(auth.require_auth)])
-def api_models() -> dict:
-    return {"available": llm.is_ollama_available(), "models": llm.list_models()}
-
-
-# ============================================================
-#  OCR API (VBA / Python など外部から呼ぶ用)
-#    画像パス(または base64)+ 指示文 を受け取り、Vision モデルの応答を返す。
-#    例) {"path": "C:/work/伝票.png", "instruction": "購入数量を数字だけで返信"}
-# ============================================================
-DEFAULT_OCR_INSTRUCTION = (
-    "この画像に書かれている文字をすべて正確に読み取り、本文だけを出力してください。"
-    "前置き・説明・注釈は不要です。"
-)
-_OCR_IMG_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff"}
-
-
-class OcrBody(BaseModel):
-    path: str = ""                  # サーバ上の画像ファイルパス
-    image_b64: str = ""             # path の代わりに base64 / data URL を直接渡す場合
-    instruction: str = ""           # 読み取り後の指示(空なら全文OCR)
-    model: str = ""                 # 使用モデル(空なら設定のVisionモデル)
-    num_predict: int = 512          # 応答の最大トークン
-    temperature: float = 0.1
-
-
-def _check_ocr_auth(x_api_key: Optional[str], rag_session: Optional[str]) -> None:
-    """OCR API の認証。認証無効時は素通り。有効時は API キー か セッションCookie を要求。"""
-    if not settings.auth_enabled:
-        return
-    if (settings.ocr_api_key and x_api_key
-            and hmac.compare_digest(x_api_key, settings.ocr_api_key)):
-        return
-    if auth.is_authenticated(rag_session):
-        return
-    raise HTTPException(401, "認証が必要です(X-API-Key ヘッダ、またはログインセッションが必要)")
-
-
-@app.post("/api/ocr")
-def api_ocr(body: OcrBody,
-            x_api_key: Optional[str] = Header(default=None, alias="X-API-Key"),
-            rag_session: Optional[str] = Cookie(default=None)) -> dict:
-    _check_ocr_auth(x_api_key, rag_session)
-
-    # --- 画像の取得(base64 優先、無ければパスから読込) ---
-    if body.image_b64.strip():
-        b64 = body.image_b64.strip()
-        if b64.startswith("data:"):
-            try:
-                b64 = b64.split(",", 1)[1]
-            except IndexError:
-                raise HTTPException(400, "data URL の形式が不正です")
-    elif body.path.strip():
-        p = Path(body.path.strip())
-        if not p.is_file():
-            raise HTTPException(404, f"ファイルが見つかりません: {p}")
-        if p.suffix.lower() not in _OCR_IMG_SUFFIXES:
-            raise HTTPException(400, f"対応していない画像形式です: {p.suffix}")
-        data = p.read_bytes()
-        if len(data) > settings.max_upload_mb * 1024 * 1024:
-            raise HTTPException(413, f"画像が大きすぎます(上限 {settings.max_upload_mb}MB)")
-        b64 = base64.b64encode(data).decode("ascii")
-    else:
-        raise HTTPException(400, "path か image_b64 のどちらかを指定してください")
-
-    # --- モデル確認 ---
-    model = llm.resolve_installed((body.model or settings.vision_model or "").strip())
-    if not model:
-        raise HTTPException(400, "Vision モデルが未設定です(model 指定か VISION_MODEL 設定が必要)")
-    if not llm.is_ollama_available():
-        raise HTTPException(503, f"Ollama に接続できません({settings.ollama_host})")
-    if not llm.is_model_installed(model):
-        raise HTTPException(400, f"モデル『{model}』が見つかりません。`ollama pull {model}` を実行してください。")
-
-    instruction = body.instruction.strip() or DEFAULT_OCR_INSTRUCTION
-    log.info("OCR要求 [model=%s src=%s] instruction=%s",
-             model, (body.path or "(base64)")[:80], instruction[:60])
-    try:
-        text = llm.vision_complete([b64], instruction, model,
-                                   temperature=float(body.temperature),
-                                   num_predict=int(body.num_predict))
-    except Exception as e:
-        msg = str(e)
-        if "image input is not supported" in msg.lower():
-            raise HTTPException(
-                400,
-                f"モデル『{model}』は画像入力に対応していません(Vision/mmproj 非対応)。"
-                "qwen2.5vl など画像対応モデルを model に指定するか VISION_MODEL に設定してください。")
-        log.exception("OCR失敗")
-        raise HTTPException(500, f"OCR処理に失敗しました: {msg}")
-
-    return {"ok": True, "model": model, "result": (text or "").strip()}
-
-
-# ============================================================
-#  会話
-# ============================================================
-class ConvCreate(BaseModel):
-    title: Optional[str] = None
-    model: Optional[str] = None
-    system_prompt: Optional[str] = None
-    active_indexes: Optional[list] = None
-    settings: Optional[dict] = None
-    kind: Optional[str] = None       # chat | code
-
-
-class ConvUpdate(BaseModel):
-    title: Optional[str] = None
-    model: Optional[str] = None
-    system_prompt: Optional[str] = None
-    active_indexes: Optional[list] = None
-    settings: Optional[dict] = None
-
-
-@app.get("/api/conversations", dependencies=[Depends(auth.require_auth)])
-def api_list_conversations(kind: Optional[str] = None, q: Optional[str] = None) -> list:
-    if q and q.strip():
-        return db.search_conversations(q.strip(), kind=kind)   # タイトル+本文を検索
-    return db.list_conversations(kind=kind)
-
-
-@app.post("/api/conversations", dependencies=[Depends(auth.require_auth)])
-def api_create_conversation(body: ConvCreate) -> dict:
-    d = get_defaults()
-    kind = body.kind or "chat"
-    conv = db.create_conversation(
-        title=body.title or ("新しいコード" if kind == "code" else "新しい会話"),
-        model=body.model or d["model"],
-        system_prompt=body.system_prompt,
-        settings_json=body.settings or {},
-        active_indexes=body.active_indexes or [],
-        kind=kind,
-    )
-    return _conv_with_effective(conv)
-
-
-@app.get("/api/conversations/{cid}", dependencies=[Depends(auth.require_auth)])
-def api_get_conversation(cid: str) -> dict:
-    conv = db.get_conversation(cid)
-    if not conv:
-        raise HTTPException(404, "会話が見つかりません")
-    out = _conv_with_effective(conv)
-    out["messages"] = db.list_messages(cid)
-    return out
-
-
-@app.patch("/api/conversations/{cid}", dependencies=[Depends(auth.require_auth)])
-def api_update_conversation(cid: str, body: ConvUpdate) -> dict:
-    conv = db.get_conversation(cid)
-    if not conv:
-        raise HTTPException(404, "会話が見つかりません")
-    fields = {k: v for k, v in body.dict().items() if v is not None}
-    # settings は部分マージ
-    if "settings" in fields:
-        # Code の作業フォルダは安全なフォルダのみ許可(OS/システム等は不可)
-        ws = (fields["settings"] or {}).get("workspace")
-        if ws:
-            ok, reason = safety.check_workspace(ws)
-            if not ok:
-                raise HTTPException(400, f"このフォルダは作業フォルダに設定できません: {reason}")
-        merged = dict(conv.get("settings") or {})
-        merged.update(fields["settings"])
-        fields["settings"] = merged
-    conv = db.update_conversation(cid, **fields)
-    return _conv_with_effective(conv)
-
-
 @app.delete("/api/conversations/{cid}", dependencies=[Depends(auth.require_auth)])
 def api_delete_conversation(cid: str) -> dict:
     if not db.get_conversation(cid):
@@ -372,37 +181,6 @@ def api_delete_conversation(cid: str) -> dict:
         _code_ctx.pop(cid, None)
         _code_running.discard(cid)
     return {"ok": True}
-
-
-class MsgEditBody(BaseModel):
-    content: str
-    truncate_after: bool = False   # True=このメッセージ以降を削除(編集して再送する用)
-
-
-@app.patch("/api/conversations/{cid}/messages/{mid}", dependencies=[Depends(auth.require_auth)])
-def api_edit_message(cid: str, mid: str, body: MsgEditBody) -> dict:
-    m = db.get_message(mid)
-    if not m or m.get("conversation_id") != cid:
-        raise HTTPException(404, "メッセージが見つかりません")
-    db.update_message(mid, body.content)
-    if body.truncate_after:
-        db.delete_messages_from(cid, int(m["seq"]) + 1)   # 以降を削除(再生成で続けられる)
-    return {"ok": True}
-
-
-@app.delete("/api/conversations/{cid}/messages/{mid}", dependencies=[Depends(auth.require_auth)])
-def api_delete_message(cid: str, mid: str) -> dict:
-    m = db.get_message(mid)
-    if not m or m.get("conversation_id") != cid:
-        raise HTTPException(404, "メッセージが見つかりません")
-    db.delete_message(mid)
-    return {"ok": True}
-
-
-def _conv_with_effective(conv: dict) -> dict:
-    out = dict(conv)
-    out["effective"] = effective_for(conv)
-    return out
 
 
 # ============================================================
@@ -467,10 +245,12 @@ def _save_b64_image(raw: str) -> Optional[tuple[str, str]]:
             mime = header[5:].split(";")[0].strip().lower()
             ext = _IMG_EXT.get(mime, "png")
         except ValueError:
+            log.debug("_save_b64_image: 例外を無視して継続", exc_info=True)
             return None
     try:
         data = base64.b64decode(b64, validate=False)
     except Exception:
+        log.debug("_save_b64_image: 例外を無視して継続", exc_info=True)
         return None
     if not data or len(data) > 16 * 1024 * 1024:   # 16MB 上限
         return None
@@ -512,6 +292,7 @@ def api_generate(cid: str, body: GenerateBody) -> Response:
                     data = (settings.upload_dir / a["file"]).read_bytes()
                     image_b64s.append(base64.b64encode(data).decode("ascii"))
                 except Exception:
+                    log.debug("api_generate: 例外を無視して継続", exc_info=True)
                     pass
     else:
         content = (body.content or "").strip()
@@ -549,6 +330,11 @@ def api_generate(cid: str, body: GenerateBody) -> Response:
         log.exception("クエリ書き換えに失敗(原文で検索)")
     try:
         hits = rag.retrieve(search_query, conv.get("active_indexes", []), cid, int(eff["top_k"]))
+        # 書き換えクエリで0件なら、元の質問でも検索して取りこぼしを防ぐ(書き換えの誤りに対する保険)。
+        if not hits and search_query != query:
+            hits = rag.retrieve(query, conv.get("active_indexes", []), cid, int(eff["top_k"]))
+            if hits:
+                log.info("書き換えで0件 → 原文で再検索しヒット [conv=%s]", cid)
     except Exception:
         log.exception("検索失敗(無視して続行)")
     if hits:
@@ -566,7 +352,8 @@ def api_generate(cid: str, body: GenerateBody) -> Response:
     strict_rag = bool(conv.get("active_indexes"))
     # 図を求めていない通常QAでは簡潔な整形ガイドにして根拠提示に集中させる。
     messages = llm.build_messages(eff["system_prompt"], history, hits,
-                                  strict=strict_rag, diagram_hint=llm.wants_diagram(query))
+                                  strict=strict_rag, diagram_hint=llm.wants_diagram(query),
+                                  num_ctx=int(eff["num_ctx"]) or 0, num_predict=int(eff["num_predict"]))
     use_vision = bool(image_b64s)
     # Vision/OCR モデルは設定(既定値)で選べる。未設定なら .env の VISION_MODEL を使用。
     vision_model = (eff.get("vision_model") or settings.vision_model or "").strip()
@@ -596,6 +383,10 @@ def api_generate(cid: str, body: GenerateBody) -> Response:
                 return
         if sources:
             yield sse({"type": "sources", "sources": sources})
+        elif conv.get("active_indexes"):
+            # 参照フォルダは選択済みだが関連箇所が無い場合は明示(strict-RAG の透明性)
+            yield sse({"type": "sources", "sources": [],
+                       "note": "参照資料の中に関連する箇所は見つかりませんでした"})
 
         acc_content, acc_thinking = "", ""
         saved = False
@@ -678,12 +469,14 @@ def _resolve_mentions(ws: Path, content: str) -> str:
         try:
             p = agent._safe_path(ws, rel)
         except Exception:
+            log.debug("_resolve_mentions: 例外を無視して継続", exc_info=True)
             continue
         if not p.is_file():
             continue
         try:
             txt = p.read_text(encoding="utf-8", errors="replace")[:6000]
         except Exception:
+            log.debug("_resolve_mentions: 例外を無視して継続", exc_info=True)
             continue
         blocks.append(f"【指定ファイル: {rel}】\n```\n{txt}\n```")
         total += len(txt)
@@ -735,6 +528,8 @@ def api_agent(cid: str, body: AgentBody) -> Response:
     allow_changes = bool(s.get("allow_changes"))
     plan_mode = bool(s.get("plan_mode", True))
     auto_accept_edits = bool(s.get("auto_accept_edits"))
+    auto_verify = bool(s.get("auto_verify", True))      # 変更後にテスト等を自動実行して直す(既定ON)
+    verify_cmd = (s.get("verify_cmd") or "").strip()    # 空=作業フォルダから自動検出
     if not workspace:
         raise HTTPException(400, "作業フォルダが設定されていません。先にフォルダを選択してください。")
     ws = Path(workspace).expanduser()
@@ -819,7 +614,8 @@ def api_agent(cid: str, body: AgentBody) -> Response:
 
         try:
             for ev in agent.run_stream(model, ctx, str(ws.resolve()), allow_changes, plan_mode,
-                                       num_ctx, auto_accept_edits=auto_accept_edits):
+                                       num_ctx, auto_accept_edits=auto_accept_edits,
+                                       auto_verify=auto_verify, verify_cmd=verify_cmd):
                 t = ev.get("type")
                 if t in ("assistant_delta", "assistant"):
                     if ev.get("text"):
@@ -928,283 +724,6 @@ def api_code_file(cid: str, path: str) -> dict:
     text = data.decode("utf-8", errors="replace")
     return {"path": rel, "content": text, "size": size,
             "lines": text.count("\n") + 1, "lang": fp.suffix.lstrip(".").lower()}
-
-
-# ============================================================
-#  インデックス(ナレッジベース)
-# ============================================================
-class IndexCreate(BaseModel):
-    name: Optional[str] = None
-    paths: list[str]
-
-
-def _build_async(iid: str, paths: list[str]) -> None:
-    threading.Thread(target=rag.build_index, args=(iid, paths), daemon=True).start()
-
-
-@app.get("/api/indexes", dependencies=[Depends(auth.require_auth)])
-def api_list_indexes() -> list:
-    items = db.list_indexes()
-    for it in items:
-        st = db.get_kv(f"summary:{it['id']}") or {}
-        it["summary"] = {
-            "status": st.get("status", "none"),
-            "msg": st.get("msg", ""),
-            "has_result": bool(st.get("result")),
-            "finished_at": st.get("finished_at"),
-        }
-        it["bg_threshold"] = SUMMARY_BG_THRESHOLD
-    return items
-
-
-@app.post("/api/indexes", dependencies=[Depends(auth.require_auth)])
-def api_create_index(body: IndexCreate) -> dict:
-    if not body.paths:
-        raise HTTPException(400, "フォルダが指定されていません")
-    # OS/システムやアプリのデータ領域(secret.key 等)を資料として取り込ませない
-    for p in body.paths:
-        if safety.is_within_protected(p):
-            raise HTTPException(400, "OS・システムやアプリのデータ領域は資料に取り込めません")
-    name = body.name or (Path(body.paths[0]).name or body.paths[0])
-    idx = db.create_index(name, body.paths)
-    _build_async(idx["id"], body.paths)
-    log.info("インデックス作成開始: %s (%s)", name, body.paths)
-    return idx
-
-
-@app.get("/api/indexes/{iid}", dependencies=[Depends(auth.require_auth)])
-def api_get_index(iid: str) -> dict:
-    idx = db.get_index(iid)
-    if not idx:
-        raise HTTPException(404, "インデックスが見つかりません")
-    return idx
-
-
-@app.post("/api/indexes/{iid}/rebuild", dependencies=[Depends(auth.require_auth)])
-def api_rebuild_index(iid: str) -> dict:
-    idx = db.get_index(iid)
-    if not idx:
-        raise HTTPException(404, "インデックスが見つかりません")
-    db.update_index(iid, status="building", error=None)
-    db.set_kv(f"summary:{iid}", {"status": "none"})   # 内容が変わるため古い要約は破棄
-    _build_async(iid, idx["paths"])
-    return db.get_index(iid)
-
-
-class SummarizeBody(BaseModel):
-    instruction: str = ""
-    model: Optional[str] = None
-    map_model: Optional[str] = None
-    categories: list[str] = []
-
-
-@app.post("/api/indexes/{iid}/summarize", dependencies=[Depends(auth.require_auth)])
-def api_index_summarize(iid: str, body: SummarizeBody) -> Response:
-    """資料フォルダ配下の全ファイルを map-reduce で一括要約(進捗をSSEで配信)。"""
-    idx = db.get_index(iid)
-    if not idx:
-        raise HTTPException(404, "資料が見つかりません")
-    files = rag.scan_files(idx.get("paths") or [])
-    defs = get_defaults()
-    model = body.model or defs["model"]
-    map_model = (body.map_model or defs.get("summarize_map_model") or "").strip() or None
-    if map_model == model:
-        map_model = None
-    instruction = (body.instruction or "").strip()
-    categories = [c.strip() for c in (body.categories or []) if c and c.strip()]
-
-    def gen():
-        if not files:
-            yield sse({"type": "error", "error": "対象ファイルがありません"})
-            return
-        if not model:
-            yield sse({"type": "error", "error": "モデルが選択されていません"})
-            return
-        if not llm.is_ollama_available():
-            yield sse({"type": "error",
-                       "error": f"Ollama に接続できません({settings.ollama_host})。"})
-            return
-        yield sse({"type": "start", "files": len(files), "model": model, "map_model": map_model})
-        log.info("一括要約 開始 [idx=%s files=%d model=%s map=%s] 観点=%s cats=%d",
-                 iid, len(files), model, map_model, instruction[:40], len(categories))
-        fn = summarize.model_summarize_fn(model, instruction, map_model=map_model, categories=categories)
-        try:
-            for ev in summarize.stream_summarize(files, instruction, fn):
-                yield sse(ev)
-        except GeneratorExit:
-            log.info("一括要約 停止(クライアント切断)[idx=%s]", iid)
-            raise
-        except Exception as e:
-            log.exception("一括要約エラー")
-            yield sse({"type": "error", "error": str(e)})
-
-    headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"}
-    return StreamingResponse(gen(), media_type="text/event-stream", headers=headers)
-
-
-# --- バックグラウンド一括要約(参照ファイルが多いとき。ウィンドウを出さず裏で実行) ---
-SUMMARY_BG_THRESHOLD = 100   # この件数以上はフロントが裏(バックグラウンド)実行を選ぶ
-_summary_cancel: set[str] = set()
-_summary_lock = threading.Lock()
-
-
-def _summary_set(iid: str, **fields) -> dict:
-    st = db.get_kv(f"summary:{iid}", {}) or {}
-    st.update(fields)
-    db.set_kv(f"summary:{iid}", st)
-    return st
-
-
-def _summarize_worker(iid: str, files, instruction: str, categories: list,
-                      model: str, map_model) -> None:
-    db.set_kv(f"summary:{iid}", {
-        "status": "running", "files": len(files), "msg": "準備中…",
-        "instruction": instruction, "categories": categories, "map_model": map_model,
-        "result": None, "error": None, "started_at": time.time(), "finished_at": None})
-    log.info("一括要約(裏) 開始 [idx=%s files=%d model=%s map=%s]", iid, len(files), model, map_model)
-    fn = summarize.model_summarize_fn(model, instruction, map_model=map_model, categories=categories)
-    gen = summarize.stream_summarize(files, instruction, fn)
-    try:
-        for ev in gen:
-            with _summary_lock:
-                canceled = iid in _summary_cancel
-            if canceled:
-                gen.close()
-                _summary_set(iid, status="canceled", msg="中止しました", finished_at=time.time())
-                log.info("一括要約(裏) 中止 [idx=%s]", iid)
-                break
-            t = ev.get("type")
-            if t == "progress":
-                _summary_set(iid, msg=ev.get("msg", ""))
-            elif t == "result":
-                _summary_set(iid, status="done", result=ev.get("text", ""),
-                             msg="完了", finished_at=time.time())
-                log.info("一括要約(裏) 完了 [idx=%s]", iid)
-            elif t == "error":
-                _summary_set(iid, status="error", error=ev.get("error", ""),
-                             msg="エラー", finished_at=time.time())
-    except Exception as e:
-        log.exception("一括要約(裏) 失敗 [idx=%s]", iid)
-        _summary_set(iid, status="error", error=str(e), msg="エラー", finished_at=time.time())
-    finally:
-        with _summary_lock:
-            _summary_cancel.discard(iid)
-
-
-@app.post("/api/indexes/{iid}/summarize/start", dependencies=[Depends(auth.require_auth)])
-def api_summarize_start(iid: str, body: SummarizeBody) -> dict:
-    """裏(バックグラウンド)で一括要約を開始する。進捗は GET /summary でポーリング。"""
-    idx = db.get_index(iid)
-    if not idx:
-        raise HTTPException(404, "資料が見つかりません")
-    cur = db.get_kv(f"summary:{iid}")
-    if cur and cur.get("status") == "running":
-        return {"status": "running", "files": cur.get("files")}
-    files = rag.scan_files(idx.get("paths") or [])
-    if not files:
-        raise HTTPException(400, "対象ファイルがありません")
-    if not llm.is_ollama_available():
-        raise HTTPException(503, f"Ollama に接続できません({settings.ollama_host})。")
-    defs = get_defaults()
-    model = body.model or defs["model"]
-    map_model = (body.map_model or defs.get("summarize_map_model") or "").strip() or None
-    if map_model == model:
-        map_model = None
-    instruction = (body.instruction or "").strip()
-    categories = [c.strip() for c in (body.categories or []) if c and c.strip()]
-    with _summary_lock:
-        _summary_cancel.discard(iid)
-    threading.Thread(target=_summarize_worker,
-                     args=(iid, files, instruction, categories, model, map_model),
-                     daemon=True).start()
-    return {"status": "running", "files": len(files)}
-
-
-@app.get("/api/indexes/{iid}/summary", dependencies=[Depends(auth.require_auth)])
-def api_summary_status(iid: str) -> dict:
-    return db.get_kv(f"summary:{iid}", {"status": "none"}) or {"status": "none"}
-
-
-@app.post("/api/indexes/{iid}/summary/cancel", dependencies=[Depends(auth.require_auth)])
-def api_summary_cancel(iid: str) -> dict:
-    with _summary_lock:
-        _summary_cancel.add(iid)
-    return {"ok": True}
-
-
-@app.delete("/api/indexes/{iid}", dependencies=[Depends(auth.require_auth)])
-def api_delete_index(iid: str) -> dict:
-    if not db.get_index(iid):
-        raise HTTPException(404, "インデックスが見つかりません")
-    rag.delete_index_collection(iid)
-    db.delete_index(iid)
-    return {"ok": True}
-
-
-# ============================================================
-#  ファイルシステム閲覧(フォルダ選択)
-# ============================================================
-@app.get("/api/fs/roots", dependencies=[Depends(auth.require_auth)])
-def api_fs_roots() -> dict:
-    return {"roots": get_roots()}
-
-
-@app.get("/api/fs", dependencies=[Depends(auth.require_auth)])
-def api_fs(path: Optional[str] = None) -> dict:
-    try:
-        return list_dir(path)
-    except FileNotFoundError as e:
-        raise HTTPException(404, str(e))
-    except PermissionError as e:
-        raise HTTPException(403, str(e))
-    except Exception as e:
-        log.exception("フォルダ一覧取得失敗: %s", path)
-        raise HTTPException(400, f"このフォルダは開けません: {e}")
-
-
-@app.post("/api/fs/estimate", dependencies=[Depends(auth.require_auth)])
-def api_fs_estimate(paths: list[str] = Body(..., embed=True)) -> dict:
-    count, capped = count_supported_recursive(paths)
-    return {"count": count, "capped": capped}
-
-
-# ============================================================
-#  ファイル出力(回答の保存)
-# ============================================================
-class ExportBody(BaseModel):
-    content: str
-    format: str = "md"        # md|txt|html|pdf|docx|xlsx|csv|pptx|code
-    ext: Optional[str] = None  # format=code のときの拡張子(例: bas)
-    title: Optional[str] = "回答"
-    images: Optional[list] = None   # PDF用: Mermaid図のPNG(順序対応) [{data(base64), w, h}]
-
-
-def _safe_stem(title: str) -> str:
-    stem = re.sub(r"[\\/:*?\"<>|\n\r\t]", "", (title or "回答")).strip()
-    return (stem[:40] or "回答")
-
-
-@app.post("/api/export", dependencies=[Depends(auth.require_auth)])
-def api_export(body: ExportBody) -> Response:
-    try:
-        data, mime, ext = export.export_content(body.content, body.format, body.ext,
-                                                body.title or "回答", images=body.images)
-    except ValueError as e:
-        raise HTTPException(400, str(e))
-    except ImportError as e:
-        raise HTTPException(500, f"変換に必要なライブラリが未導入です: {e}")
-    except Exception as e:
-        log.exception("エクスポート失敗")
-        raise HTTPException(500, f"変換に失敗しました: {e}")
-
-    fname = f"{_safe_stem(body.title or '回答')}.{ext}"
-    log.info("エクスポート: format=%s -> %s (%d bytes)", body.format, fname, len(data))
-    headers = {
-        "Content-Disposition": f"attachment; filename=\"export.{ext}\"; filename*=UTF-8''{quote(fname)}",
-        "X-Filename": quote(fname),
-        "Access-Control-Expose-Headers": "X-Filename",
-    }
-    return Response(content=data, media_type=mime, headers=headers)
 
 
 # ============================================================

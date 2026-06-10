@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>全処理フローチャート(分岐つき) | 社内文書アシスタント</title>
+<style>
+  :root{--ink:#1f2328;--muted:#5b6570;--line:#e3e6ec;--bg:#f6f8fb;--paper:#fff;--accent:#3b5bdb}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:"Yu Gothic UI","Hiragino Kaku Gothic ProN",Meiryo,system-ui,-apple-system,"Segoe UI",sans-serif;
+    line-height:1.7;padding:28px 16px 70px}
+  .wrap{max-width:1000px;margin:0 auto}
+  h1{font-size:22px;margin:0 0 4px}
+  h2{font-size:17px;margin:30px 0 6px;padding-top:10px;border-top:2px solid var(--line)}
+  .sub{color:var(--muted);font-size:14px;margin:0 0 6px}
+  .note{background:#fff8e1;border:1px solid #ffe08a;border-radius:9px;padding:9px 14px;font-size:13px;margin:14px 0 6px}
+  .lead{font-size:13.5px;color:var(--muted);margin:2px 0 8px}
+  .card{background:var(--paper);border:1px solid var(--line);border-radius:11px;padding:8px;margin:8px 0;overflow:auto}
+  pre.mermaid{margin:0;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    font-size:12px;color:#444;white-space:pre;line-height:1.45;padding:8px}
+  /* mermaid 描画後は SVG が入る */
+  .toc{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0 4px;font-size:13px}
+  .toc a{background:var(--paper);border:1px solid var(--line);border-radius:999px;padding:4px 12px;text-decoration:none;color:var(--accent)}
+  code{background:var(--paper);border:1px solid var(--line);border-radius:5px;padding:0 5px;font-size:12px}
+  footer{color:var(--muted);font-size:12px;text-align:center;margin-top:28px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>全処理フローチャート(分岐つき)</h1>
+  <p class="sub">社内文書アシスタント(RAG Chatbot)。主要な処理と<b>分岐(条件・承認・エラー)</b>を実コードに基づき図示。</p>
+  <div class="note">📌 図は Mermaid で描画します。<b>表示されない環境(オフライン等)では、各枠内のテキスト(フロー定義)をそのままお読みください</b>(分岐ラベル付きで読めます)。点線矢印=例外/異常系。</div>
+  <div class="toc">
+    <a href="#f1">① 共通ライフサイクル</a><a href="#f2">② チャット生成</a><a href="#f3">③ エージェント/コード</a>
+    <a href="#f4">④ 索引構築</a><a href="#f5">⑤ 一括要約</a><a href="#f6">⑥ OCR API</a>
+  </div>
+
+  <h2 id="f1">① 共通ライフサイクル(全API共通)</h2>
+  <p class="lead">どのリクエストもまず観測性 → LAN制限 → 認証を通る。未処理例外は集中ログ+500。</p>
+  <div class="card"><pre class="mermaid">
+flowchart TD
+  R(["リクエスト受信"]) --> OBS["観測性: request_id採番・アクセスログ<br/>(_observability)"]
+  OBS --> LAN{"LAN_ONLY 有効 かつ 許可外IP?"}
+  LAN -->|"はい"| D403["403 アクセス拒否ページ"]
+  LAN -->|"いいえ"| AUTH{"認証ON かつ 未認証?"}
+  AUTH -->|"はい"| D401["401 ログイン要求"]
+  AUTH -->|"いいえ"| ROUTE["各ルート処理(routes/services)"]
+  ROUTE --> RESP["レスポンス + X-Request-ID ヘッダ"]
+  ROUTE -.->|"未処理例外"| EXC["log.exception → 500 JSON(req_id付)"]
+  </pre></div>
+
+  <h2 id="f2">② チャット生成 <code>/api/conversations/{cid}/generate</code></h2>
+  <p class="lead">保存→(初回タイトル)→クエリ書換→RAG検索→検証→ローカルLLMでストリーム生成→保存。すべて SSE。</p>
+  <div class="card"><pre class="mermaid">
+flowchart TD
+  S(["送信(ストリーミング)"]) --> SAVE["ユーザー発言を保存(db)"]
+  SAVE --> T{"初回の発言?"}
+  T -->|"はい"| TITLE["自動タイトル生成(llm)"]
+  T -->|"いいえ"| RW["クエリ書き換え(追問→自立クエリ)"]
+  TITLE --> RW
+  RW --> RAGQ{"参照フォルダ/添付あり?"}
+  RAGQ -->|"はい"| RET["ハイブリッド検索<br/>e5埋め込み + ChromaDB + RRF再ランク"]
+  RAGQ -->|"いいえ"| NOCTX["資料文脈なし"]
+  RET --> HIT{"該当チャンクあり?"}
+  HIT -->|"あり"| SRC["SSE: sources(出典を提示)"]
+  HIT -->|"なし(資料モード)"| NOSRC["SSE: sources(該当なしを明示)"]
+  SRC --> MODEL{"モデル選択済み?"}
+  NOSRC --> MODEL
+  NOCTX --> MODEL
+  MODEL -->|"いいえ"| ERRM["SSE error: モデル未選択"]
+  MODEL -->|"はい"| VIS{"画像添付あり?"}
+  VIS -->|"はい"| VISM{"Visionモデル有効?"}
+  VISM -->|"いいえ"| ERRV["SSE error: Visionモデル必要"]
+  VISM -->|"はい"| GEN["Ollamaでストリーム生成"]
+  VIS -->|"いいえ"| GEN
+  GEN --> STREAM["SSE: thinking/content を逐次"]
+  STREAM --> STOP{"途中で停止?"}
+  STOP -->|"はい"| KEEP["部分内容を保持して終了"]
+  STOP -->|"いいえ"| CLEAN["postprocess.clean → 回答を保存(出典つき)"]
+  CLEAN --> DONE["SSE: done (+ title)"]
+  GEN -.->|"例外"| ERRG["log.exception → SSE error(req_id付)"]
+  </pre></div>
+
+  <h2 id="f3">③ エージェント/コード <code>/api/conversations/{cid}/agent</code></h2>
+  <p class="lead">計画→承認→実行のループ。変更系は <code>_change_action</code> で block / confirm(差分承認) / apply に分岐。</p>
+  <div class="card"><pre class="mermaid">
+flowchart TD
+  A(["エージェント実行"]) --> WS{"作業フォルダ設定済み?"}
+  WS -->|"いいえ"| AERR["エラー: フォルダ未設定"]
+  WS -->|"はい"| CTX["文脈の初期化 / 長ければ自動圧縮"]
+  CTX --> LOOP["ループ: LLM にツール群を提示"]
+  LOOP --> CALL{"ツール呼び出し?"}
+  CALL -->|"なし"| ADONE["応答/完了 → 保存"]
+  CALL -->|"あり"| KIND{"ツール種別"}
+  KIND -->|"読取(list/read/grep/glob)"| RUN["即実行(確認不要)"]
+  KIND -->|"質問(ask_user)"| ASKW["質問を提示 → 回答待ち"]
+  KIND -->|"変更(write/edit/command)"| ACT{"_change_action 判定"}
+  ACT -->|"block(変更不可)"| SKIP["不可として返す"]
+  ACT -->|"confirm(要確認)"| WAIT["差分プレビュー提示 → 承認待ち"]
+  ACT -->|"apply(計画承認後/自動適用)"| APPLY["_apply_change<br/>(undo記録 → 適用 → 構文自己チェック)"]
+  WAIT --> DEC{"ユーザーの決定"}
+  DEC -->|"承認"| APPLY
+  DEC -->|"拒否"| REJ["拒否理由を LLM へ伝える"]
+  RUN --> RES["SSE: tool_result"]
+  ASKW --> RES
+  APPLY --> RES
+  REJ --> RES
+  SKIP --> RES
+  RES --> STEP{"最大ステップ到達?"}
+  STEP -->|"未達"| LOOP
+  STEP -->|"到達"| MAX["max_steps で停止"]
+  </pre></div>
+
+  <h2 id="f4">④ 索引構築 <code>/api/indexes</code>(作成・再構築)</h2>
+  <p class="lead">保護領域は拒否。バックグラウンドで増分インデックス(変更分のみ埋め込み直し)。</p>
+  <div class="card"><pre class="mermaid">
+flowchart TD
+  C(["作成/再構築"]) --> PROT{"OS/システム等の保護領域を含む?"}
+  PROT -->|"はい"| PERR["400 取り込み不可"]
+  PROT -->|"いいえ"| BG["バックグラウンドスレッド build_index"]
+  BG --> SCAN["対象ファイルを走査"]
+  SCAN --> INCR{"前回から変更/追加?"}
+  INCR -->|"同一(変更なし)"| SKIP2["スキップ(増分)"]
+  INCR -->|"変更/新規"| CHUNK["見出し対応チャンク → e5埋め込み → Chroma upsert"]
+  CHUNK --> DEL{"削除されたファイルあり?"}
+  DEL -->|"あり"| RM["該当チャンクを除去"]
+  DEL -->|"なし"| FIN["status = ready"]
+  RM --> FIN
+  SKIP2 --> FIN
+  </pre></div>
+
+  <h2 id="f5">⑤ 一括要約 <code>/api/indexes/{iid}/summarize</code></h2>
+  <p class="lead">件数で同期/裏実行に分岐。map-reduce(二段モデル)。中止フラグで停止可。</p>
+  <div class="card"><pre class="mermaid">
+flowchart TD
+  SUM(["要約"]) --> EMPTY{"対象ファイルあり?"}
+  EMPTY -->|"なし"| SERR["エラー(対象なし)"]
+  EMPTY -->|"あり"| OLL{"Ollama 利用可?"}
+  OLL -->|"不可"| S503["503 接続不可"]
+  OLL -->|"可"| N{"件数 ≥ 100?"}
+  N -->|"はい"| BGW["裏(バックグラウンド)実行"]
+  N -->|"いいえ"| SYNC["同期(SSEで進捗配信)"]
+  BGW --> MR["map-reduce 要約(下書き=小型 / 最終=メイン)"]
+  SYNC --> MR
+  MR --> CANCEL{"中止された?"}
+  CANCEL -->|"はい"| CAN["canceled で停止"]
+  CANCEL -->|"いいえ"| RESULT["結果を保存 / 完了通知"]
+  </pre></div>
+
+  <h2 id="f6">⑥ OCR API <code>/api/ocr</code>(外部連携)</h2>
+  <p class="lead">APIキー or セッションで認証。入力(base64/パス)を検証→Visionモデルで読み取り。</p>
+  <div class="card"><pre class="mermaid">
+flowchart TD
+  O(["OCR要求(VBA等)"]) --> OAUTH{"APIキー一致 or セッション認証?"}
+  OAUTH -->|"不一致"| O401["401 認証要求"]
+  OAUTH -->|"OK"| INP{"入力種別"}
+  INP -->|"base64 / dataURL"| IMG["画像を取得"]
+  INP -->|"サーバ上のパス"| CHK{"存在 & 対応形式 & サイズ内?"}
+  CHK -->|"NG"| OERR["404 / 400 / 413"]
+  CHK -->|"OK"| IMG
+  IMG --> VM{"Visionモデル設定 & 導入済み?"}
+  VM -->|"いいえ"| O400["400 / 503"]
+  VM -->|"はい"| VISION["llm.vision_complete"]
+  VISION --> VOK{"画像入力に対応?"}
+  VOK -->|"非対応"| O400B["400: Vision非対応の案内"]
+  VOK -->|"OK"| ORES["結果(テキスト)を返却"]
+  </pre></div>
+
+  <footer>社内文書アシスタント — 全処理フロー(docs/all-flows.html)。点線=例外/異常系。完全ローカル(Ollama / ChromaDB)。</footer>
+</div>
+
+<script type="module">
+  // Mermaid を CDN から取得(ネットワークがある場合に描画)。失敗時は枠内のテキストがそのまま残る。
+  try {
+    const m = await import("https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs");
+    m.default.initialize({ startOnLoad: true, theme: "neutral", securityLevel: "loose", flowchart: { useMaxWidth: true } });
+  } catch (e) {
+    document.querySelector(".note").insertAdjacentHTML("beforeend",
+      "<br>⚠ 図の描画ライブラリを取得できませんでした(オフライン)。各枠のテキストをお読みください。");
+  }
+</script>
+</body>
+</html>

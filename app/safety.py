@@ -17,12 +17,17 @@ import os
 from pathlib import Path
 
 from .config import settings
+from .logging_setup import get_logger
+
+log = get_logger("safety")
+
 
 
 def _norm(p: Path) -> Path:
     try:
         return p.resolve()
     except Exception:
+        log.debug("_norm: 例外を無視して継続", exc_info=True)
         return p.absolute()
 
 
@@ -54,11 +59,13 @@ def _build_deny_tree() -> list[Path]:
         try:
             out.append(_norm(Path(d)))
         except Exception:
+            log.debug("_build_deny_tree: 例外を無視して継続", exc_info=True)
             pass
     # アプリ自身のデータ領域(secret.key / DB / chroma / uploads)も保護
     try:
         out.append(_norm(settings.data_dir))
     except Exception:
+        log.debug("_build_deny_tree: 例外を無視して継続", exc_info=True)
         pass
     return out
 
@@ -71,11 +78,13 @@ def _build_deny_exact() -> list[Path]:
         try:
             out.append(_norm(Path(d)))
         except Exception:
+            log.debug("_build_deny_exact: 例外を無視して継続", exc_info=True)
             pass
     try:
         # 例: C:\\Users, /home(各ユーザーのホームの親)
         out.append(_norm(Path.home().parent))
     except Exception:
+        log.debug("_build_deny_exact: 例外を無視して継続", exc_info=True)
         pass
     return out
 
@@ -97,6 +106,7 @@ def is_within_protected(path) -> bool:
     try:
         p = _norm(Path(path))
     except Exception:
+        log.debug("is_within_protected: 例外を無視して継続", exc_info=True)
         return True  # 判定できないものは安全側に倒す
     return any(_equal_or_inside(p, d) for d in _DENY_TREE)
 

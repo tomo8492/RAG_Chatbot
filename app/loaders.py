@@ -118,6 +118,7 @@ def load_text(path: Path) -> list[dict]:
             text = raw.decode(enc)
             break
         except (UnicodeDecodeError, LookupError):
+            log.debug("load_text: 例外を無視して継続", exc_info=True)
             continue
     if text is None:
         text = raw.decode("utf-8", errors="replace")

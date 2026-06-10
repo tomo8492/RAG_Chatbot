@@ -88,6 +88,7 @@ def _file_sig(f: Path) -> str:
         st = f.stat()
         return f"{int(st.st_mtime)}:{st.st_size}"
     except Exception:
+        log.debug("_file_sig: 例外を無視して継続", exc_info=True)
         return ""
 
 
@@ -110,6 +111,24 @@ def _embed_error_hint(e: Exception) -> str:
     return f"埋め込みモデルの読み込みに失敗しました: {s}"
 
 
+def _doc_context(model: str, source_name: str, full_text: str) -> str:
+    """文書全体の種類・主題を1〜2文に要約し、チャンクの埋め込みに前置きする文脈を作る
+    (Contextual Embeddings の局所版。検索精度向上)。失敗・無効時は ''(=従来動作)。"""
+    text = (full_text or "").strip()
+    if not text or not model:
+        return ""
+    prompt = (f"次は社内文書「{source_name}」の冒頭抜粋です。検索の手がかりになるよう、"
+              "この文書の種類・主題・対象を日本語で簡潔に1〜2文で述べてください"
+              "(前置き・記号・箇条書きは不要、本文の言い換えのみ)。\n\n" + text[:4000])
+    try:
+        from . import llm
+        out = llm.complete_text(prompt, model, num_predict=120, temperature=0.1)
+        return " ".join((out or "").split())[:400]
+    except Exception:
+        log.debug("_doc_context: 例外を無視して継続", exc_info=True)
+        return ""
+
+
 def build_index(iid: str, paths: list[str],
                 progress: Optional[Callable[[str], None]] = None) -> dict:
     """フォルダ群を読み込み、コレクションを構築する。同期処理(ワーカースレッドから呼ぶ)。"""
@@ -119,11 +138,15 @@ def build_index(iid: str, paths: list[str],
             try:
                 progress(msg)
             except Exception:
+                log.debug("emit: 例外を無視して継続", exc_info=True)
                 pass
 
     try:
-        from .defaults import chunk_params
+        from .defaults import chunk_params, get_defaults
         cs, co = chunk_params()
+        _d = get_defaults()
+        contextual = bool(_d.get("contextual_embeddings"))   # 文脈付き埋め込み(検索精度↑)
+        ctx_model = _d.get("model") or ""
         embedder = get_embedder()
         cname = _index_collection_name(iid)
         client = _get_client()
@@ -175,12 +198,13 @@ def build_index(iid: str, paths: list[str],
         ok_files = 0
         changed = 0
         skipped = 0
+        ocr_skipped = 0
         current_paths: set[str] = set()
         for fi, f in enumerate(files, 1):
             try:
                 fpath = str(f.resolve())
                 current_paths.add(fpath)
-                sig = _file_sig(f)
+                sig = _file_sig(f) + ("|ctx" if contextual else "")   # 文脈付与の有無も署名に含める(切替で再埋め込み)
                 # 変更なし → 既存チャンクを保持してスキップ(再埋め込みしない)
                 if path_ids.get(fpath) and path_sig.get(fpath) == sig:
                     skipped += 1
@@ -192,28 +216,38 @@ def build_index(iid: str, paths: list[str],
                     try:
                         col.delete(ids=path_ids[fpath])
                     except Exception:
+                        log.debug("build_index: 例外を無視して継続", exc_info=True)
                         pass
                 blocks = load_file(f)
                 if not blocks:
+                    ocr_skipped += 1
                     emit(f"  [skip] {f.name}(抽出テキストなし)")
                     continue
+                # 文脈付き埋め込み: 文書全体の文脈を1回だけ生成し、各チャンクの「埋め込み用テキスト」の
+                # 先頭に前置きする(表示・保存は元チャンクのまま=出典はクリーンに保つ)。
+                fctx = ""
+                if contextual:
+                    fctx = _doc_context(ctx_model, f.name, "\n".join(b["text"] for b in blocks))
+                    if fctx:
+                        emit(f"  文脈を付与: {f.name}")
                 pending = []
                 for b in blocks:
                     for chunk, heading in split_structured(b["text"], cs, co):
                         doc = f"{heading}\n{chunk}" if heading else chunk     # 見出しを本文・埋め込みに含める
                         loc = f"{b['loc']} / {heading}" if heading else b["loc"]
-                        pending.append((doc, b["source"], loc, fpath, heading))
+                        embed_doc = f"{fctx}\n{doc}" if fctx else doc         # 埋め込みは文脈付きテキスト
+                        pending.append((doc, b["source"], loc, fpath, heading, embed_doc))
                 if not pending:
                     continue
                 for s in range(0, len(pending), _BATCH):
                     batch = pending[s:s + _BATCH]
-                    vecs = embedder.embed_documents([c[0] for c in batch])
+                    vecs = embedder.embed_documents([c[5] for c in batch])   # 文脈付きテキストを埋め込む
                     col.add(
                         ids=[uuid.uuid4().hex for _ in batch],
                         embeddings=vecs,
-                        documents=[c[0] for c in batch],
+                        documents=[c[0] for c in batch],                     # 保存・表示は元チャンク(出典はクリーン)
                         metadatas=[{"source": c[1], "loc": c[2], "path": c[3],
-                                    "sig": sig, "heading": c[4]} for c in batch],
+                                    "sig": sig, "heading": c[4], "ctx": fctx} for c in batch],
                     )
                 total_chunks += len(pending)
                 ok_files += 1
@@ -229,10 +263,12 @@ def build_index(iid: str, paths: list[str],
             try:
                 col.delete(ids=path_ids[p])
             except Exception:
+                log.debug("build_index: 例外を無視して継続", exc_info=True)
                 pass
         if removed:
             emit(f"削除されたファイル {len(removed)} 件のデータを除去しました")
 
+        db.set_kv(f"ocr_skip:{iid}", ocr_skipped)   # スキャン等で本文が取れず未取込のファイル数
         if total_chunks == 0:
             db.update_index(iid, status="error",
                             error="テキストを抽出できませんでした(スキャンPDF等の可能性)",
@@ -254,6 +290,7 @@ def delete_index_collection(iid: str) -> None:
     try:
         _get_client().delete_collection(_index_collection_name(iid))
     except Exception:
+        log.debug("delete_index_collection: 例外を無視して継続", exc_info=True)
         pass
 
 
@@ -294,6 +331,7 @@ def delete_conv_collection(cid: str) -> None:
     try:
         _get_client().delete_collection(_conv_collection_name(cid))
     except Exception:
+        log.debug("delete_conv_collection: 例外を無視して継続", exc_info=True)
         pass
 
 
@@ -302,6 +340,37 @@ def delete_conv_collection(cid: str) -> None:
 # ============================================================
 UNLIMITED_TOP_K = 9999  # これ以上は「上限なし(全件取得)」とみなすセンチネル
 MAX_PER_SOURCE = 5      # 1ファイルから採用する最大チャンク数(多ファイル横断の多様化)
+RERANK_POOL = 20        # LLMリランク時に並べ替え対象とする融合上位の母集団サイズ
+
+
+def _llm_rerank_scores(query: str, texts: list[str], model: str) -> list[float]:
+    """各候補の関連度を LLM で 0〜10 採点する(1回の呼び出し)。JSON {"0": 8, ...} を期待。
+    解析不能・失敗時は [](=並べ替えなし=融合順を維持)を返す。"""
+    if not texts or not model:
+        return []
+    lines = [f"[{i}] " + " ".join((t or "").split())[:600] for i, t in enumerate(texts)]
+    prompt = (
+        f"質問: {query}\n\n"
+        "次の各文章が、この質問に答える根拠としてどれだけ関連するかを 0〜10 で採点してください"
+        "(10=直接の根拠 / 0=無関係)。説明は書かず、JSON だけを返す。"
+        "形式: {\"0\": 8, \"1\": 2, ...}\n\n" + "\n".join(lines)
+    )
+    try:
+        import json as _json
+        import re as _re
+        from . import llm
+        # 採点プロンプトは候補×600字で長くなるため、リランクモデルのコンテキストを十分に確保して
+        # 先頭(質問・前半候補)の暗黙切り捨て=採点崩れを防ぐ。
+        need_ctx = min(32768, max(8192, int(len(prompt) * 1.2) + 1024))
+        out = llm.complete_text(prompt, model, num_predict=400, temperature=0.0, num_ctx=need_ctx)
+        m = _re.search(r"\{.*\}", out or "", _re.S)
+        if not m:
+            return []
+        data = _json.loads(m.group(0))
+        return [float(data.get(str(i), 0.0)) for i in range(len(texts))]
+    except Exception:
+        log.debug("_llm_rerank_scores: 例外を無視して継続", exc_info=True)
+        return []
 
 
 def retrieve(query: str, index_ids: list[str], conversation_id: Optional[str] = None,
@@ -352,6 +421,7 @@ def retrieve(query: str, index_ids: list[str], conversation_id: Optional[str] = 
                     "loc": (meta or {}).get("loc", ""),
                     "path": (meta or {}).get("path", ""),
                     "attachment": bool((meta or {}).get("attachment", False)),
+                    "ctx": (meta or {}).get("ctx", ""),   # 文脈付き埋め込みの文書文脈(Contextual BM25 用)
                     "score": 1.0 - float(dist),  # cosine距離 -> 類似度
                     "distance": float(dist),
                 })
@@ -365,7 +435,20 @@ def retrieve(query: str, index_ids: list[str], conversation_id: Optional[str] = 
 
     # 密検索の候補を、語彙スコア(BM25相当)とのRRF融合で再ランク。
     # 重複除去・ソース多様化・無関係ヒットの足切りもここで行う。
-    return retrieval.rerank(query, hits, top_k, MAX_PER_SOURCE, unlimited)
+    from .defaults import get_defaults
+    d = get_defaults()
+    rerank_on = (not unlimited and bool(query.strip()) and bool(d.get("rerank_enabled")))
+    pool_k = max(top_k, RERANK_POOL) if rerank_on else top_k
+    fused = retrieval.rerank(query, hits, pool_k, MAX_PER_SOURCE, unlimited)
+    # 任意: 融合上位を LLM で関連度採点して並べ替える(精度↑/やや遅い。既定OFF)
+    if rerank_on and len(fused) > 1:
+        model = (d.get("rerank_model") or d.get("model") or "").strip()
+        if model:
+            return retrieval.llm_rerank(
+                query, fused, top_k,
+                lambda q, texts: _llm_rerank_scores(q, texts, model),
+                MAX_PER_SOURCE)
+    return fused if unlimited else fused[:top_k]
 
 
 def reset_all() -> None:
@@ -373,4 +456,5 @@ def reset_all() -> None:
     try:
         shutil.rmtree(settings.chroma_dir, ignore_errors=True)
     except Exception:
+        log.debug("reset_all: 例外を無視して継続", exc_info=True)
         pass

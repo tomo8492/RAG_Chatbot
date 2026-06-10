@@ -1,0 +1,46 @@
+# ============================================================
+#  RAG Chatbot - プロジェクト設定 / 開発ツール設定
+#  依存パッケージの定義は requirements.txt を正とする(ここには重複させない)。
+#  本ファイルは Python 版の明示と lint/format/型チェックの設定が目的。
+# ============================================================
+[project]
+name = "rag-chatbot"
+version = "0.1.0"
+description = "完全ローカルの社内文書 RAG チャットボット(FastAPI + Ollama + ChromaDB)"
+requires-python = ">=3.11"
+
+# ------------------------------------------------------------
+#  ruff(lint / format)
+# ------------------------------------------------------------
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+extend-exclude = ["legacy", "app/static/vendor"]
+
+[tool.ruff.lint]
+# 段階導入(フェーズ0): 既存コードが緑になる安全なルールから開始する。
+#   - 既定の E4/E7/E9 + F(pyflakes: 未使用 import・未定義名など実害のある検出)
+#   - 意図的な圧縮スタイル(セミコロン E702)は当面許容
+# 今後フェーズを進めながら I(import 整列)・W・E501(行長)等を段階的に有効化する。
+select = ["E4", "E7", "E9", "F"]
+ignore = ["E702"]
+
+[tool.ruff.lint.per-file-ignores]
+# テスト/ツールは sys.path 調整後に import するため、E402 を許容(各所 noqa 済みだが明示)。
+"tests/*" = ["E402"]
+"evalkit/*" = ["E402"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+# ------------------------------------------------------------
+#  mypy(型チェック / 段階導入。CI では当面 非ブロッキング)
+# ------------------------------------------------------------
+[tool.mypy]
+python_version = "3.11"
+# 外部ライブラリ(chromadb/ollama 等)はスタブが無いものが多いので無視。
+ignore_missing_imports = true
+# 緩めに開始(まず実害のあるものから)。段階的に厳格化する。
+check_untyped_defs = false
+warn_unused_ignores = false
+exclude = ["legacy/"]
