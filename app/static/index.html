@@ -335,7 +335,9 @@
       <div class="modal-head"><h2>フォルダを選択</h2><button class="icon-btn close-folder" aria-label="閉じる">✕</button></div>
       <div class="modal-body">
         <div class="fb-input-row">
-          <input type="text" id="fb-path-input" placeholder="パスを直接入力(例: C:\Users\220557\Documents\資料)" />
+          <input type="text" id="fb-path-input"
+                 placeholder="パスを直接入力(例: C:\Users\220557\Documents\資料 / 共有: \\fileserver\共有\設計資料)"
+                 title="ローカルパスのほか、共有サーバのUNCパス(\\サーバ名\共有名\…)も入力できます" />
           <button id="fb-go" class="btn">移動</button>
         </div>
         <div class="fb-roots" id="fb-roots"></div>
