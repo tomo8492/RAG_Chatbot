@@ -25,13 +25,15 @@ class ExportBody(BaseModel):
     ext: Optional[str] = None  # format=code のときの拡張子(例: bas)
     title: Optional[str] = "回答"
     images: Optional[list] = None   # PDF用: Mermaid図のPNG(順序対応) [{data(base64), w, h}]
+    figures: Optional[list] = None  # 出典の文書内画像 [{data(base64), caption}](参考図として掲載)
 
 
 @router.post("/api/export")
 def api_export(body: ExportBody) -> Response:
     try:
         data, mime, ext = export.export_content(body.content, body.format, body.ext,
-                                                body.title or "回答", images=body.images)
+                                                body.title or "回答", images=body.images,
+                                                figures=body.figures)
     except ValueError as e:
         raise HTTPException(400, str(e))
     except ImportError as e:
