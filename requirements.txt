@@ -6,7 +6,7 @@
 # --- Web サーバ ---
 fastapi>=0.110
 uvicorn[standard]>=0.29
-python-multipart>=0.0.9      # ファイルアップロード受信用
+python-multipart>=0.0.32      # ファイルアップロード受信用
 python-dotenv>=1.0           # .env 読み込み
 itsdangerous>=2.1            # セッションCookieの署名
 
