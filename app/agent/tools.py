@@ -40,9 +40,9 @@ def _safe_path(ws: Path, rel: str) -> Path:
     p = (ws / rel).resolve()
     if p != ws and ws not in p.parents:
         raise ValueError(f"作業フォルダ外は操作できません: {rel}")
-    # 作業フォルダ配下でも、OS/システムやアプリのデータ領域は触らせない
+    # 作業フォルダ配下でも、OS/システムやアプリのデータ領域・機密ファイルは触らせない
     if safety.is_within_protected(p):
-        raise ValueError(f"保護されたフォルダのため操作できません: {rel}")
+        raise ValueError(f"保護された領域のため操作できません: {rel}")
     return p
 
 
@@ -52,7 +52,9 @@ def _rel_ok(ws: Path, p: Path) -> bool:
     except ValueError:
         log.debug("_rel_ok: 例外を無視して継続", exc_info=True)
         return False
-    return not any(part in IGNORE_DIRS for part in rel.parts)
+    if any(part in IGNORE_DIRS for part in rel.parts):
+        return False
+    return not safety.is_protected_file(p)   # 自アプリの .env 等は一覧・検索にも出さない
 
 
 def t_list_files(ws: Path) -> str:
@@ -60,6 +62,8 @@ def t_list_files(ws: Path) -> str:
     for root, dirs, files in os.walk(ws):
         dirs[:] = [d for d in dirs if d not in IGNORE_DIRS]
         for f in files:
+            if safety.is_protected_file(os.path.join(root, f)):
+                continue   # 自アプリの .env 等は一覧に出さない
             out.append(str(Path(os.path.relpath(os.path.join(root, f), ws)).as_posix()))
             if len(out) >= 500:
                 return "\n".join(out) + "\n...(500件で省略)"
@@ -200,7 +204,8 @@ def t_edit_file(ws: Path, path: str, old_string: str, new_string: str, replace_a
     if not p.exists() or not p.is_file():
         return f"[エラー] ファイルが存在しません: {path}"
     if not old_string:
-        return "[エラー] old_string が空です"
+        return ("[エラー] old_string が空です。既存ファイルの全文書き換えや新規作成は "
+                "edit_file ではなく write_file を使ってください")
     if old_string == new_string:
         return "[エラー] old_string と new_string が同一です"
     try:

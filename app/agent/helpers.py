@@ -17,8 +17,27 @@ log = get_logger("agent.helpers")
 
 __all__ = [
     "read_project_instructions",
-    "_norm_todos", "_norm_options", "_norm_questions", "_format_ask_result",
+    "_norm_todos", "_norm_options", "_norm_questions", "_norm_plan", "_format_ask_result",
 ]
+
+
+def _norm_plan(raw) -> str:
+    """present_plan の plan 引数を文字列に正規化する。
+
+    手順を配列(["手順1", ...])やオブジェクトで渡すモデルがあり、
+    そのまま .strip() するとクラッシュするため吸収する。"""
+    if isinstance(raw, str):
+        return raw.strip()
+    if isinstance(raw, (list, tuple)):
+        items = [str(x).strip() for x in raw if str(x).strip()]
+        return "\n".join(f"{i}. {s}" for i, s in enumerate(items, 1))
+    if isinstance(raw, dict):
+        try:
+            return json.dumps(raw, ensure_ascii=False, indent=1)
+        except Exception:
+            log.debug("_norm_plan: 例外を無視して継続", exc_info=True)
+            return str(raw)
+    return str(raw or "").strip()
 
 
 def read_project_instructions(ws: Path, limit: int = 8000) -> Optional[str]:

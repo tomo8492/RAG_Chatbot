@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import difflib
 import json
+import re
 import subprocess
 import sys
 import uuid
@@ -49,8 +50,8 @@ from .constants import (
 from .tools import dispatch, _safe_path
 from .verify import resolve_verify_cmds, run_checks
 from .approvals import new_pending, wait, wait_answer, wait_decision
-from .context import _ctx_chars, compact_ctx
-from .helpers import _norm_todos, _norm_questions, _format_ask_result
+from .context import _ctx_chars, compact_ctx, force_truncate_ctx
+from .helpers import _norm_todos, _norm_questions, _norm_plan, _format_ask_result
 
 log = get_logger("agent")
 
@@ -143,8 +144,10 @@ def _gen_options(num_ctx: Optional[int] = None) -> dict:
 def _compact_threshold(num_ctx: Optional[int]) -> int:
     """文脈圧縮を起動する合計文字数のしきい値を num_ctx から算出する。
 
-    エージェントは system + ツール定義(messages 外で毎回送る ~4000トークン相当)の固定オーバー
-    ヘッドが大きい。num_ctx<=0(不明)のときは従来の固定値 CTX_CHAR_LIMIT。
+    エージェントは system プロンプト+ツール定義(messages 外で毎回送る)だけで
+    約8000トークンの固定費がかかる。さらに日本語は 1文字≈1トークンの悲観値で
+    見積もる必要があるため、(num_ctx - 固定費) に安全係数 0.6 を掛ける。
+    num_ctx<=0(不明)のときは従来の固定値 CTX_CHAR_LIMIT。
     """
     try:
         n = int(num_ctx) if num_ctx else 0
@@ -152,11 +155,41 @@ def _compact_threshold(num_ctx: Optional[int]) -> int:
         n = 0
     if n <= 0:
         return CTX_CHAR_LIMIT
-    return max(6000, n - 5000)   # ツール定義+回答ぶんを残して、溢れる前に圧縮する
+    return max(4000, int((n - 6000) * 0.6))
+
+
+def _is_ctx_overflow(err: str) -> bool:
+    """Ollama/llama.cpp の「コンテキスト超過」エラーか(新しめの版は黙って切らず 400 を返す)。"""
+    low = (err or "").lower()
+    return ("exceed_context" in low or "context size" in low
+            or "exceeds the available context" in low or "n_ctx" in low)
+
+
+def _overflow_error_msg(num_ctx: Optional[int], raw: str) -> str:
+    cur = f"num_ctx={num_ctx}" if num_ctx else "モデル既定の num_ctx"
+    return (f"コンテキスト長({cur})を超過しました。文脈を自動で切り詰めましたが収まりません。"
+            "クイック設定または .env の NUM_CTX を 16384 以上に増やす(VRAMと相談)か、"
+            f"新しい会話で続けてください。\n(元エラー: {raw[:200]})")
 
 
 def compact_ctx_with_model(model: str, messages: list, num_ctx: Optional[int] = None) -> bool:
-    """モデルを使って文脈を圧縮(必要時のみ)。num_ctx を渡すと要約対象の取りこぼしを防ぐ。"""
+    """モデルで文脈を圧縮し、要約に失敗しても機械的な切り詰めで必ず縮める(必要時のみ)。
+
+    要約リクエスト自体が num_ctx を超えると圧縮が失敗→本体も超過→会話が詰む、という
+    連鎖を防ぐため、①要約へ渡す transcript を窓に合わせて絞り、②それでも縮まなければ
+    force_truncate_ctx(LLM不要)で切り詰める。
+    """
+    threshold = _compact_threshold(num_ctx)
+    if _ctx_chars(messages) <= threshold:
+        return False
+    # 要約リクエスト = transcript + 指示。1文字≈1トークンの悲観値で窓に収める
+    cap = 40000
+    if num_ctx:
+        try:
+            cap = max(3000, min(40000, int(num_ctx) - 2048))
+        except (TypeError, ValueError):
+            log.debug("compact_ctx_with_model: 例外を無視して継続", exc_info=True)
+
     def summarizer(text: str) -> str:
         # 作業ログの要約は、変更ファイル・結果・残タスクを落とさないよう十分な長さを確保する
         # (短すぎると後続の edit_file の不一致や重複作業を招く)。
@@ -172,7 +205,14 @@ def compact_ctx_with_model(model: str, messages: list, num_ctx: Optional[int] = 
         except Exception:
             log.debug("summarizer: 例外を無視して継続", exc_info=True)
             return ""
-    return compact_ctx(messages, summarizer, _compact_threshold(num_ctx))
+
+    changed = compact_ctx(messages, summarizer, threshold, transcript_cap=cap)
+    if _ctx_chars(messages) > threshold:
+        # 要約で縮まらない(要約LLMの失敗・履歴は短いのに1件が巨大 等)→ 機械的に縮める
+        if force_truncate_ctx(messages, threshold):
+            log.info("文脈を機械的に切り詰めました(要約圧縮の保険)")
+            changed = True
+    return changed
 
 
 def _change_action(name: str, plan_mode: bool, phase: str, allow_changes: bool,
@@ -253,7 +293,8 @@ class _TextToolCall:
 
 
 def _iter_json_objects(text: str):
-    """テキストから {...} のJSONオブジェクトを順に取り出す(波括弧の対応を数える簡易スキャナ)。"""
+    """テキストから {...} のJSONオブジェクトを (obj, start, end) で順に取り出す
+    (波括弧の対応を数える簡易スキャナ。end は終端の次の位置)。"""
     i, n = 0, len(text)
     while i < n:
         if text[i] != "{":
@@ -277,7 +318,7 @@ def _iter_json_objects(text: str):
                 depth -= 1
                 if depth == 0:
                     try:
-                        yield json.loads(text[i:j + 1])
+                        yield json.loads(text[i:j + 1]), i, j + 1
                     except Exception:
                         pass
                     break
@@ -285,18 +326,21 @@ def _iter_json_objects(text: str):
         i = j + 1
 
 
-def _parse_text_tool_calls(content: str, tools: list) -> list:
+def _extract_text_tool_calls(content: str, tools: list) -> tuple[list, str]:
     """ネイティブ tool_calls が無いモデル対策: 本文に書かれた JSON のツール呼び出しを拾う。
 
     例 ```json {"name": "list_files", "arguments": {}} ``` のような出力を実行可能な呼び出しへ変換する。
     既知のツール名に一致するものだけを対象にする(本文中のサンプルJSON等の誤実行を防ぐ)。
+    戻り値: (呼び出しリスト, 認識したJSONを除去した本文)。除去版は保存・文脈用
+    (JSONの羅列が会話履歴に残ると、読みにくいうえ文脈も浪費するため)。
     """
     if not content or "{" not in content:
-        return []
+        return [], content
     names = {t.get("function", {}).get("name") for t in tools if isinstance(t, dict)}
     names.discard(None)
     out: list = []
-    for obj in _iter_json_objects(content):
+    spans: list[tuple[int, int]] = []
+    for obj, s, e in _iter_json_objects(content):
         if not isinstance(obj, dict):
             continue
         tc = obj["tool_call"] if isinstance(obj.get("tool_call"), dict) else obj
@@ -312,7 +356,23 @@ def _parse_text_tool_calls(content: str, tools: list) -> list:
             except Exception:
                 args = {}
         out.append(_TextToolCall(str(name), args if isinstance(args, dict) else {}))
-    return out
+        spans.append((s, e))
+    if not out:
+        return [], content
+    parts, last = [], 0
+    for s, e in spans:
+        parts.append(content[last:s])
+        last = e
+    parts.append(content[last:])
+    cleaned = "".join(parts)
+    cleaned = re.sub(r"```(?:json)?[ \t]*\n?[ \t]*```", "", cleaned)   # 空になったフェンスを除去
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+    return out, cleaned
+
+
+def _parse_text_tool_calls(content: str, tools: list) -> list:
+    """_extract_text_tool_calls の呼び出しリストだけが要る場合の簡易版。"""
+    return _extract_text_tool_calls(content, tools)[0]
 
 
 def _run_subagent(model: str, ws: Path, task: str, num_ctx: Optional[int]) -> str:
@@ -356,7 +416,7 @@ def _run_subagent(model: str, ws: Path, task: str, num_ctx: Optional[int]) -> st
             last = content
         tcs = list(getattr(cm, "tool_calls", None) or [])
         if not tcs and content:        # ネイティブ非対応モデル: 本文のJSONツール呼び出しを復元
-            tcs = _parse_text_tool_calls(content, SUBAGENT_TOOLS)
+            tcs, content = _extract_text_tool_calls(content, SUBAGENT_TOOLS)
         asst = {"role": "assistant", "content": content}
         if tcs:
             asst["tool_calls"] = [_tc_to_dict(tc) for tc in tcs]
@@ -547,12 +607,28 @@ def run_stream(model: str, messages: list, workspace: str,
                 resp = client.chat(model=model, messages=messages, tools=tools, options=options)
             except Exception as e2:
                 emsg = str(e2)
-                log.warning("agent 生成失敗: %s", emsg)
-                if "tool" in emsg.lower():
-                    emsg = (f"{emsg}\n(このモデルはツール呼び出しに未対応かもしれません。"
-                            "qwen3 等のツール対応モデルをお試しください)")
-                yield {"type": "error", "error": emsg}
-                return
+                if _is_ctx_overflow(emsg):
+                    # コンテキスト超過(新しめの Ollama は黙って切らず 400 を返す)。
+                    # 文脈を機械的に切り詰めて、一度だけ再試行する(会話が詰むのを防ぐ)。
+                    log.warning("agent コンテキスト超過 → 文脈を強制切り詰めて再試行: %s", emsg[:200])
+                    force_truncate_ctx(messages, max(2000, _compact_threshold(num_ctx) // 2))
+                    try:
+                        resp = client.chat(model=model, messages=messages,
+                                           tools=tools, options=options)
+                    except Exception as e3:
+                        emsg3 = str(e3)
+                        log.warning("agent 再試行も失敗: %s", emsg3)
+                        yield {"type": "error",
+                               "error": (_overflow_error_msg(num_ctx, emsg3)
+                                         if _is_ctx_overflow(emsg3) else emsg3)}
+                        return
+                else:
+                    log.warning("agent 生成失敗: %s", emsg)
+                    if "tool" in emsg.lower():
+                        emsg = (f"{emsg}\n(このモデルはツール呼び出しに未対応かもしれません。"
+                                "qwen3 等のツール対応モデルをお試しください)")
+                    yield {"type": "error", "error": emsg}
+                    return
             cm = resp.message
             th = getattr(cm, "thinking", None)
             if th:
@@ -567,11 +643,15 @@ def run_stream(model: str, messages: list, workspace: str,
         # ネイティブ tool_calls が無いモデル(gemma3 等、Ollama の tools 非対応)でも、本文に
         # 書かれた JSON のツール呼び出しを拾って実行し、エージェントを前進させる。
         if not tool_calls and content:
-            recovered = _parse_text_tool_calls(content, tools)
+            recovered, cleaned = _extract_text_tool_calls(content, tools)
             if recovered:
                 log.info("本文からツール呼び出しを復元: %s",
                          ", ".join(tc.function.name for tc in recovered))
                 tool_calls = recovered
+                if cleaned != content:
+                    # JSONを除いた本文を保存・文脈用に通知(表示済みストリームはそのまま)
+                    content = cleaned
+                    yield {"type": "assistant_clean", "text": content}
         asst_msg: dict = {"role": "assistant", "content": content}
         if tool_calls:
             asst_msg["tool_calls"] = [_tc_to_dict(tc) for tc in tool_calls]
@@ -624,7 +704,8 @@ def run_stream(model: str, messages: list, workspace: str,
 
             # --- 計画の提示と承認 ---
             if name == "present_plan":
-                plan_text = (args.get("plan") or content or "(計画なし)").strip()
+                # plan は配列・オブジェクトで渡すモデルがある(.strip() でのクラッシュ防止)
+                plan_text = _norm_plan(args.get("plan")) or (content or "").strip() or "(計画なし)"
                 aid = new_pending()
                 yield {"type": "plan", "action_id": aid, "plan": plan_text}
                 decision = wait(aid)

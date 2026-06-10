@@ -96,6 +96,8 @@ class Settings:
         self.chunk_overlap: int = _int("CHUNK_OVERLAP", 120)
         # 既定のコンテキスト長(トークン)。0=モデル既定。Ollama の既定(多くは4096)では参考資料や
         # システム指示が静かに切り捨てられて精度が落ちるため、十分な既定にしておく(メモリと相談で調整可)。
+        # Code(コーディングエージェント)は固定費(システム+ツール定義 ~8千トークン)が大きいため
+        # 16384 以上を推奨(.env.example 参照)。
         self.num_ctx: int = _int("NUM_CTX", 8192)
         # 文脈付き埋め込み(Contextual Embeddings の局所版)。各文書の主題をLLMで1〜2文生成し、
         # チャンクの埋め込みテキストに前置きして検索精度を上げる(作成は遅くなる。既定OFF)。
@@ -105,8 +107,8 @@ class Settings:
         # リランクに使うモデル(空なら既定モデルを流用)。
         self.rerank_model: str = os.getenv("RERANK_MODEL", "").strip()
 
-        # --- OCR(スキャン/画像PDF。既定OFF=現行動作を変えない) ---
-        self.ocr_enabled: bool = _bool("OCR_ENABLED", False)
+        # --- OCR(スキャン/画像PDF。既定ON=スキャン文書も取り込む。設定UI/.envでオフ可) ---
+        self.ocr_enabled: bool = _bool("OCR_ENABLED", True)
         # エンジン: "vlm"(Ollamaのビジョンモデル) / "tesseract"
         self.ocr_engine: str = os.getenv("OCR_ENGINE", "vlm").strip().lower()
         # VLM用モデル(空なら vision_model を流用)。例: "qwen2.5vl"
