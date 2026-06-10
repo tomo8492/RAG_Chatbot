@@ -111,10 +111,15 @@ def rebuild_index(iid: str) -> Optional[dict]:
 
 
 def delete_index(iid: str) -> bool:
-    """インデックスとベクトルコレクションを削除する。見つからなければ False。"""
+    """インデックスとベクトルコレクション・抽出済みの文書内画像を削除する。見つからなければ False。"""
     if not db.get_index(iid):
         return False
     rag.delete_index_collection(iid)
+    try:
+        from .. import doc_images
+        doc_images.delete_index_images(iid)
+    except Exception:
+        log.debug("delete_index: 画像フォルダ削除に失敗(無視)", exc_info=True)
     db.delete_index(iid)
     return True
 

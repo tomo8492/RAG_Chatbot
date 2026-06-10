@@ -243,7 +243,8 @@ function renderSources(container, sources, note) {
   }
   // 思考(.thinking)と同じく折りたたみ表示。既定は閉じておき、クリックで展開する。
   const details = el("details", "src-details");
-  details.appendChild(el("summary", "src-summary", `📎 参照ファイル (${sources.length})`));
+  const summary = el("summary", "src-summary", `📎 参照ファイル (${sources.length})`);
+  details.appendChild(summary);
   const list = el("div", "src-list");
   sources.forEach((s) => {
     const label = `${s.source}${s.loc ? " " + s.loc : ""}${s.attachment ? " (添付)" : ""}`;
@@ -256,6 +257,22 @@ function renderSources(container, sources, note) {
     list.appendChild(item);
   });
   details.appendChild(list);
+  // 出典に紐づく文書内の図(サムネイル)。クリックで原寸を別タブ表示
+  const imgs = [];
+  sources.forEach((s) => (s.images || []).forEach((u) => {
+    if (typeof u === "string" && u.startsWith("/api/doc-images/") && !imgs.includes(u)) imgs.push(u);
+  }));
+  if (imgs.length) {
+    const box = el("div", "src-images");
+    imgs.slice(0, 8).forEach((u) => {
+      const im = el("img", "src-thumb");
+      im.src = u; im.loading = "lazy"; im.alt = "文書内の図"; im.title = "クリックで原寸表示";
+      im.onclick = (e) => { e.stopPropagation(); window.open(u, "_blank"); };
+      box.appendChild(im);
+    });
+    details.appendChild(box);
+    summary.textContent = `📎 参照ファイル (${sources.length}) ・ 🖼 図 ${imgs.length}`;
+  }
   container.appendChild(details);
 }
 

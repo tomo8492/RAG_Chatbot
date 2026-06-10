@@ -7,6 +7,7 @@ ChromaDB(永続)を使った RAG エンジン。
 """
 from __future__ import annotations
 
+import json
 import shutil
 import threading
 import uuid
@@ -51,6 +52,18 @@ def _collection(name: str):
 
 def _index_collection_name(iid: str) -> str:
     return f"idx_{iid}"
+
+
+def _parse_images(raw) -> list[str]:
+    """チャンクメタデータの images(JSON文字列)を画像IDのリストへ復元する。"""
+    if not raw:
+        return []
+    try:
+        v = json.loads(raw)
+        return [str(x) for x in v][:6] if isinstance(v, list) else []
+    except Exception:
+        log.debug("_parse_images: 例外を無視して継続", exc_info=True)
+        return []
 
 
 def _conv_collection_name(cid: str) -> str:
@@ -225,7 +238,9 @@ def build_index(iid: str, paths: list[str],
             try:
                 fpath = str(f.resolve())
                 current_paths.add(fpath)
-                sig = _file_sig(f) + ("|ctx" if contextual else "")   # 文脈付与の有無も署名に含める(切替で再埋め込み)
+                # 署名: 文脈付与の有無も含める(切替で再埋め込み)。"|img1" は文書内画像
+                # 取り込みの導入版数で、既存インデックスも再構築時に一度だけ作り直して図を反映する。
+                sig = _file_sig(f) + ("|ctx" if contextual else "") + "|img1"
                 # 変更なし → 既存チャンクを保持してスキップ(再埋め込みしない)
                 if path_ids.get(fpath) and path_sig.get(fpath) == sig:
                     skipped += 1
@@ -244,6 +259,17 @@ def build_index(iid: str, paths: list[str],
                     ocr_skipped += 1
                     emit(f"  [skip] {f.name}(抽出テキストなし)")
                     continue
+                # 文書内の埋め込み画像を抽出・保存(出典に図を表示するため)。
+                # 失敗しても本文の取り込みには影響させない。
+                img_locs: dict[str, list[str]] = {}
+                file_images: list = []
+                try:
+                    from . import doc_images
+                    img_locs, file_images = doc_images.extract_for_file(iid, f)
+                    if file_images:
+                        emit(f"  図を抽出: {f.name}({len(file_images)}枚)")
+                except Exception:
+                    log.debug("build_index: 画像抽出に失敗(無視して継続)", exc_info=True)
                 # 文脈付き埋め込み: 文書全体の文脈を1回だけ生成し、各チャンクの「埋め込み用テキスト」の
                 # 先頭に前置きする(表示・保存は元チャンクのまま=出典はクリーンに保つ)。
                 fctx = ""
@@ -253,22 +279,52 @@ def build_index(iid: str, paths: list[str],
                         emit(f"  文脈を付与: {f.name}")
                 pending = []
                 for b in blocks:
+                    b_imgs = json.dumps(img_locs.get(b["loc"], [])[:6], ensure_ascii=False) \
+                        if img_locs.get(b["loc"]) else ""
                     for chunk, heading in split_structured(b["text"], cs, co):
                         doc = f"{heading}\n{chunk}" if heading else chunk     # 見出しを本文・埋め込みに含める
                         loc = f"{b['loc']} / {heading}" if heading else b["loc"]
                         embed_doc = f"{fctx}\n{doc}" if fctx else doc         # 埋め込みは文脈付きテキスト
-                        pending.append((doc, b["source"], loc, fpath, heading, embed_doc))
+                        pending.append((doc, b["source"], loc, fpath, heading, embed_doc, b_imgs))
+                # 図チャンク: VLM(OCRモデル)で図の説明を生成して索引化する。
+                # 「〜の図はどれ?」のような質問で画像がヒットするようになる。
+                # OCR無効・画像非対応モデル時は説明が空になり、図チャンクは作らない
+                # (画像のリンク・出典表示は上の img_locs だけで機能する)。
+                fig_count = 0
+                for img_id, img_data, img_loc in file_images[:20]:
+                    try:
+                        from . import ocr as _ocr_mod
+                        desc = _ocr_mod.describe_image_png(img_data)
+                    except Exception:
+                        log.debug("build_index: 図の説明生成に失敗(無視)", exc_info=True)
+                        desc = ""
+                    desc = " ".join((desc or "").split())[:800]
+                    if not desc:
+                        continue
+                    fig_text = "〔図〕 " + desc
+                    fig_loc = f"{img_loc} / 図" if img_loc else "図"
+                    pending.append((fig_text, f.name, fig_loc, fpath, "", fig_text,
+                                    json.dumps([img_id], ensure_ascii=False)))
+                    fig_count += 1
+                if fig_count:
+                    emit(f"  図の説明を索引化: {f.name}({fig_count}枚)")
                 if not pending:
                     continue
                 for s in range(0, len(pending), _BATCH):
                     batch = pending[s:s + _BATCH]
                     vecs = embedder.embed_documents([c[5] for c in batch])   # 文脈付きテキストを埋め込む
+                    mds = []
+                    for c in batch:
+                        md = {"source": c[1], "loc": c[2], "path": c[3],
+                              "sig": sig, "heading": c[4], "ctx": fctx}
+                        if c[6]:
+                            md["images"] = c[6]   # 紐づく画像ID(JSON配列)。出典に図を表示
+                        mds.append(md)
                     col.add(
                         ids=[uuid.uuid4().hex for _ in batch],
                         embeddings=vecs,
                         documents=[c[0] for c in batch],                     # 保存・表示は元チャンク(出典はクリーン)
-                        metadatas=[{"source": c[1], "loc": c[2], "path": c[3],
-                                    "sig": sig, "heading": c[4], "ctx": fctx} for c in batch],
+                        metadatas=mds,
                     )
                 total_chunks += len(pending)
                 ok_files += 1
@@ -443,6 +499,7 @@ def retrieve(query: str, index_ids: list[str], conversation_id: Optional[str] = 
                     "path": (meta or {}).get("path", ""),
                     "attachment": bool((meta or {}).get("attachment", False)),
                     "ctx": (meta or {}).get("ctx", ""),   # 文脈付き埋め込みの文書文脈(Contextual BM25 用)
+                    "images": _parse_images((meta or {}).get("images")),   # 紐づく図(出典に表示)
                     "score": 1.0 - float(dist),  # cosine距離 -> 類似度
                     "distance": float(dist),
                 })

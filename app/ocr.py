@@ -57,6 +57,14 @@ _VLM_PROMPT = (
     "- 説明や前置きは書かず、ページの本文だけを返す。"
 )
 
+# 文書内の挿図(図1等)を検索で見つけられるようにするための説明生成指示
+_DESCRIBE_PROMPT = (
+    "この画像は社内文書に挿入された図です。検索の手がかりになるよう:\n"
+    "1) 図の種類(写真/画面/配線図/フロー図/グラフ等)と内容を日本語で1〜2文で説明する\n"
+    "2) 図中の重要な文字・ラベル・番号があれば列挙する\n"
+    "前置きや感想は書かず、説明だけを簡潔に返してください。"
+)
+
 
 # 画像非対応と判明したOCRモデルを記録し、ビルド中の「全ページで失敗」連打を防ぐ。
 _vlm_blocked: dict[str, str] = {}
@@ -121,7 +129,40 @@ def ocr_image_png(png: bytes) -> str:
         return ""
 
 
-def _ocr_vlm(png: bytes) -> str:
+def describe_image_png(png: bytes) -> str:
+    """文書内の図(画像)の検索用説明文を生成する(図チャンクの索引化に使う)。
+
+    OCRと同じエンジン/モデル設定を流用する。OCR無効・モデル非対応・失敗時は ''
+    (=図チャンクを作らないだけで、画像のリンク・表示には影響しない)。
+    """
+    if not _ocr_enabled():
+        return ""
+    if settings.ocr_engine == "tesseract":
+        try:
+            return _ocr_tesseract(png)   # 説明はできないが、図中の文字は検索に乗せられる
+        except Exception:
+            log.debug("describe_image_png: tesseract失敗(無視)", exc_info=True)
+            return ""
+    model = _ocr_model()
+    if model in _vlm_blocked:
+        return ""
+    if not _model_has_vision(model):
+        _block_model(model, f"OCRモデル『{model}』は画像非対応(visionなし)。"
+                            "設定で qwen2.5vl など画像対応モデルを選んでください")
+        return ""
+    try:
+        return _vlm_chat(png, _DESCRIBE_PROMPT)
+    except Exception as e:
+        emsg = str(e)
+        if _looks_like_no_vision(emsg):
+            _block_model(model, f"OCRモデル『{model}』が画像入力に未対応(mmproj無し等)。"
+                                "設定で qwen2.5vl など画像対応モデルを選んでください")
+        else:
+            log.warning("図の説明生成に失敗: %s", emsg[:200])
+        return ""
+
+
+def _vlm_chat(png: bytes, prompt: str) -> str:
     import ollama
 
     model = _ocr_model()
@@ -129,10 +170,14 @@ def _ocr_vlm(png: bytes) -> str:
     client = ollama.Client(host=settings.ollama_host)
     resp = client.chat(
         model=model,
-        messages=[{"role": "user", "content": _VLM_PROMPT, "images": [b64]}],
+        messages=[{"role": "user", "content": prompt, "images": [b64]}],
         options={"temperature": 0.0},
     )
     return (resp.get("message", {}).get("content") or "").strip()
+
+
+def _ocr_vlm(png: bytes) -> str:
+    return _vlm_chat(png, _VLM_PROMPT)
 
 
 def _ocr_tesseract(png: bytes) -> str:

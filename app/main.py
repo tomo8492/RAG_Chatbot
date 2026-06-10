@@ -346,7 +346,10 @@ def api_generate(cid: str, body: GenerateBody) -> Response:
                 seen.add(key)
                 sources.append({"source": h["source"], "loc": h["loc"],
                                 "score": round(h["score"], 3), "attachment": h["attachment"],
-                                "text": (h.get("text") or "")[:1500]})   # クリックで原文(該当チャンク)表示
+                                "text": (h.get("text") or "")[:1500],   # クリックで原文(該当チャンク)表示
+                                # 文書内の図(チャンクに紐づく画像)。出典にサムネイル表示する
+                                "images": ["/api/doc-images/" + i
+                                           for i in (h.get("images") or [])[:4]]})
 
     history = db.list_messages(cid)
     # 参照フォルダ(インデックス)を選択している会話は、その資料だけで回答する厳格モード。
