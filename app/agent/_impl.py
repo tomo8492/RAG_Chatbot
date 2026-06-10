@@ -387,6 +387,7 @@ def _run_subagent(model: str, ws: Path, task: str, num_ctx: Optional[int]) -> st
 #  変更の取り消し(undo)と 適用後の自動構文チェック(自己検証)
 # ============================================================
 _UNDO: dict[str, dict] = {}          # undo_id -> {path(abs), before(str|None), rel}
+_UNDO_MAX = 50                       # 控えの上限。超えたら古い順に破棄(無制限に溜めない)
 
 # 拡張子ごとの「構文だけ」を確かめるコマンド(.pyc を作らない・副作用なし)
 _SYNTAX_CMD = {
@@ -432,15 +433,22 @@ def _apply_change(ws: Path, name: str, args: dict, detail: dict):
             captured = False
     result = dispatch(ws, name, args)
     status = _result_status(result)
+    # ファイルが実際に書き換わったか(構文チェックで status が error になっても、
+    # 書き込み自体は成功している点に注意。呼び出し側の read 済み/検証要否の判定に使う)
+    applied = name in ("write_file", "edit_file") and status != "error"
     undo_id = None
-    if name in ("write_file", "edit_file") and status != "error" and captured:
+    if applied and captured:
         undo_id = uuid.uuid4().hex[:12]
         _UNDO[undo_id] = {"path": str(_safe_path(ws, rel)), "before": before, "rel": rel}
+        while len(_UNDO) > _UNDO_MAX:          # 古い控えから破棄(ファイル全文を保持するため)
+            _UNDO.pop(next(iter(_UNDO)))
+    if applied:
         serr = _syntax_check(ws, rel)
         if serr:
             result = f"{result}\n[構文エラー] {rel}\n{serr}\n→ 直してください。"
             status = "error"
-    ev = {"type": "tool_result", "name": name, "status": status, "result": result}
+    ev = {"type": "tool_result", "name": name, "status": status, "result": result,
+          "applied": applied}
     if detail.get("diff"):
         ev["diff"] = detail["diff"]
     if detail.get("path"):
@@ -610,8 +618,9 @@ def run_stream(model: str, messages: list, workspace: str,
                     log.debug("run_stream: 例外を無視して継続", exc_info=True)
                     args = {}
             args = args or {}
-            if name in READONLY or name == "summarize_path":
-                investigated = True
+            applied_now = False   # このツールでファイル変更が実際に適用されたか
+            if name in READONLY or name in ("summarize_path", "explore"):
+                investigated = True   # explore(サブエージェント調査)も調査として数える
 
             # --- 計画の提示と承認 ---
             if name == "present_plan":
@@ -747,6 +756,7 @@ def run_stream(model: str, messages: list, workspace: str,
                         auto_accept_edits = True
                     if decision is True:
                         result, ev = _apply_change(ws, name, args, detail)   # 適用+undo控え+構文チェック
+                        applied_now = bool(ev.pop("applied", False))
                         yield ev
                     elif decision is None:
                         result = "[承認がタイムアウトしたため実行しませんでした]"
@@ -759,6 +769,7 @@ def run_stream(model: str, messages: list, workspace: str,
                     # 計画承認済みのファイル編集 → 自動適用(差分を併記して透明性を確保)
                     detail = _action_detail(ws, name, args)
                     result, ev = _apply_change(ws, name, args, detail)   # 適用+undo控え+構文チェック
+                    applied_now = bool(ev.pop("applied", False))
                     yield ev
             else:
                 result = dispatch(ws, name, args)
@@ -767,8 +778,9 @@ def run_stream(model: str, messages: list, workspace: str,
                 yield {"type": "tool_result", "name": name,
                        "status": _result_status(result), "result": result}
 
-            # 変更が成功したファイルは「読んだ」とみなす(以後の同一ファイル編集はゲートを通す)
-            if name in ("write_file", "edit_file") and _result_status(result) != "error":
+            # 実際に適用された変更だけを「読んだ」とみなす(拒否・ブロック・タイムアウトは対象外。
+            # 誤って既読扱いにすると、未読ファイルへの盲目編集ゲートが効かなくなる)
+            if applied_now:
                 _mark_read(ws, args.get("path", ""), read_files)
                 applied_change = True   # 自律検証ループの起動条件
                 verify_passed = False   # コードが変わったので再検証が必要

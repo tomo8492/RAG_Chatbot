@@ -119,8 +119,26 @@ class Settings:
         # --- アップロード ---
         self.max_upload_mb: int = _int("MAX_UPLOAD_MB", 50)
 
+        # --- 参照資料: 共有サーバフォルダ ---
+        # ファイルサーバ/NAS の共有フォルダを、フォルダ選択のクイックアクセスに追加する。
+        # Windows の UNC パス(\\server\share\...)やマウント済みパス(/mnt/...)を ; 区切りで指定。
+        self.shared_folders: list[str] = self._parse_paths(os.getenv("SHARED_FOLDERS", ""))
+
         # --- 表示 ---
         self.app_title: str = os.getenv("APP_TITLE", "社内文書アシスタント").strip()
+
+    @staticmethod
+    def _parse_paths(raw: str) -> list[str]:
+        """; / 改行区切りのパス一覧を、順序維持・重複除去で返す(空要素・引用符は除去)。
+
+        Windows のパスは「,」や「:」を含み得るため、区切りは ; (と改行)のみ。
+        """
+        out: list[str] = []
+        for part in (raw or "").replace("\n", ";").split(";"):
+            part = part.strip().strip('"').strip()
+            if part and part not in out:
+                out.append(part)
+        return out
 
     @staticmethod
     def _parse_cidrs(raw: str) -> list:

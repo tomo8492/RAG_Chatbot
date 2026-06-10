@@ -453,6 +453,7 @@ async function openFolderBrowser(purpose) {
     const rootBox = $("fb-roots"); rootBox.innerHTML = "";
     roots.forEach((r) => {
       const b = el("button", null, r.name);
+      b.title = r.path;
       b.onclick = () => fbNavigate(r.path);
       rootBox.appendChild(b);
     });
