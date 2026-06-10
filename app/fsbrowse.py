@@ -11,17 +11,35 @@ import time
 from pathlib import Path
 
 from . import safety
+from .config import settings
 from .loaders import SUPPORTED_EXTS
 from .logging_setup import get_logger
 
 log = get_logger("fsbrowse")
 
 
+def _is_network_path(path) -> bool:
+    """UNC(\\\\server\\share)/スラッシュ2つ始まりのネットワークパスか。"""
+    s = str(path or "")
+    return s.startswith("\\\\") or s.startswith("//")
+
+
+def _share_display_name(path: str) -> str:
+    """共有フォルダの表示名(末尾のフォルダ名。UNCルートなら共有名)。"""
+    s = (path or "").replace("\\", "/").rstrip("/")
+    return s.rsplit("/", 1)[-1] or path
+
+
 def get_roots() -> list[dict]:
-    """クイックアクセス用のルート(ホーム・ドライブ等)。"""
+    """クイックアクセス用のルート(ホーム・共有サーバフォルダ・ドライブ等)。"""
     roots = []
     home = Path.home()
     roots.append({"name": "ホーム", "path": str(home)})
+    # 登録済みの共有サーバフォルダ(.env の SHARED_FOLDERS)。
+    # ネットワーク切断時に一覧表示まで固まらないよう、ここでは存在確認しない
+    # (開いたときに list_dir が分かりやすいエラーを返す)。
+    for sp in settings.shared_folders:
+        roots.append({"name": "共有: " + _share_display_name(sp), "path": sp})
     if os.name == "nt":
         for letter in string.ascii_uppercase:
             drive = f"{letter}:\\"
@@ -66,6 +84,10 @@ def list_dir(path: str | None) -> dict:
         pass
 
     if not p.exists() or not p.is_dir():
+        if _is_network_path(path):
+            raise FileNotFoundError(
+                f"共有フォルダにアクセスできません: {path}"
+                "(ネットワーク接続と、サーバを起動しているユーザーのアクセス権を確認してください)")
         raise FileNotFoundError(f"フォルダが見つかりません: {path}")
 
     dirs: list[dict] = []

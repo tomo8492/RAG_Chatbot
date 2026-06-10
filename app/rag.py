@@ -149,6 +149,18 @@ def build_index(iid: str, paths: list[str],
                 pass
 
     try:
+        # 登録フォルダに到達できない場合は走査前に中断する。共有サーバフォルダが
+        # 一時的に切断されていると、走査結果が空/欠けになり、既存ファイルを
+        # 「削除された」と誤判定してチャンクを失うため(既存データは変更しない)。
+        missing = [p for p in paths if not Path(p).exists()]
+        if missing:
+            msg = ("参照フォルダにアクセスできません: " + " / ".join(missing)
+                   + "(共有フォルダの切断・未接続やアクセス権が原因の可能性。"
+                     "登録済みの索引データは変更していません)")
+            emit("エラー: " + msg)
+            db.update_index(iid, status="error", error=msg)
+            return _index_row(iid)
+
         from . import ocr
         ocr.reset_run_state()   # 画像非対応モデルの一時ブロックを毎ビルドでリセット
         from .defaults import chunk_params, get_defaults
