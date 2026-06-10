@@ -192,8 +192,9 @@ async def api_attach(cid: str, file: UploadFile = File(...)) -> dict:
     if not conv:
         raise HTTPException(404, "会話が見つかりません")
 
+    fname = (file.filename or "").strip() or "upload"   # filename は str|None のため既定名で補完
     limit = settings.max_upload_mb * 1024 * 1024
-    safe = f"{uuid.uuid4().hex}_{Path(file.filename).name}"
+    safe = f"{uuid.uuid4().hex}_{Path(fname).name}"
     dest = settings.upload_dir / safe
     size = 0
     with dest.open("wb") as f:
@@ -209,7 +210,7 @@ async def api_attach(cid: str, file: UploadFile = File(...)) -> dict:
             f.write(chunk)
 
     try:
-        chunks = rag.add_attachment(cid, dest, Path(file.filename).name)
+        chunks = rag.add_attachment(cid, dest, Path(fname).name)
     except Exception as e:
         log.exception("添付処理失敗")
         raise HTTPException(500, f"添付の処理に失敗しました: {e}")
@@ -217,8 +218,8 @@ async def api_attach(cid: str, file: UploadFile = File(...)) -> dict:
     if chunks == 0:
         raise HTTPException(422, "テキストを抽出できませんでした(対応形式か確認してください)")
 
-    log.info("添付: %s (%dチャンク) -> 会話 %s", file.filename, chunks, cid)
-    return {"name": Path(file.filename).name, "chunks": chunks}
+    log.info("添付: %s (%dチャンク) -> 会話 %s", fname, chunks, cid)
+    return {"name": Path(fname).name, "chunks": chunks}
 
 
 # ============================================================
