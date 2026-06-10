@@ -49,7 +49,7 @@ def load_pdf(path: Path) -> list[dict]:
 
 def load_docx(path: Path) -> list[dict]:
     from docx import Document
-    doc = Document(path)
+    doc = Document(str(path))
     docs: list[dict] = []
     buf: list[str] = []
     head = "本文"
@@ -95,7 +95,7 @@ def load_xlsx(path: Path) -> list[dict]:
 
 def load_pptx(path: Path) -> list[dict]:
     from pptx import Presentation
-    prs = Presentation(path)
+    prs = Presentation(str(path))
     docs = []
     for i, slide in enumerate(prs.slides, 1):
         parts = []
