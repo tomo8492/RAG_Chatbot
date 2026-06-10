@@ -54,7 +54,8 @@ def _tc(name, args):
 
 
 class FakeClient:
-    """run_stream 用のフェイク Ollama クライアント。turns の各要素=1回の chat 応答。"""
+    """run_stream 用のフェイク Ollama クライアント。turns の各要素=1回の chat 応答。
+    要素が Exception ならその呼び出しで送出する(コンテキスト超過の再現用)。"""
 
     def __init__(self, turns):
         self.turns = list(turns)
@@ -62,21 +63,26 @@ class FakeClient:
     def chat(self, model=None, messages=None, tools=None, stream=False, options=None):
         assert self.turns, "想定外の追加 chat 呼び出し"
         turn = self.turns.pop(0)
+        if isinstance(turn, Exception):
+            raise turn
         if stream:
             return iter(turn)
         return turn[-1]
 
 
-def _run(ws, turns, decision=(True, None, None), answer=None, subagent=None, **kw):
+def _run(ws, turns, decision=(True, None, None), answer=None, subagent=None,
+         messages=None, plan_mode=False, plan_ok=True, **kw):
     """run_stream をフェイク環境で最後まで回し、イベント一覧を返す。"""
     events = []
     client = FakeClient(turns)
+    msgs = messages if messages is not None else [{"role": "user", "content": "修正して"}]
     with patched(_impl, "_client", lambda: client), \
+         patched(_impl, "wait", lambda aid, timeout=1: plan_ok), \
          patched(_impl, "wait_decision", lambda aid, timeout=1: decision), \
          patched(_impl, "wait_answer", lambda aid, timeout=1: answer), \
          patched(_impl, "_run_subagent", subagent or (lambda *a, **k: "(調査なし)")):
-        for ev in _impl.run_stream("fake-model", [{"role": "user", "content": "修正して"}],
-                                   str(ws), allow_changes=True, plan_mode=False, **kw):
+        for ev in _impl.run_stream("fake-model", msgs, str(ws),
+                                   allow_changes=True, plan_mode=plan_mode, **kw):
             events.append(ev)
     return events
 
@@ -166,6 +172,105 @@ def test_explore_counts_as_investigation_for_ask_user():
     ask_res = next(e for e in events if e.get("type") == "tool_result"
                    and e.get("name") == "ask_user")
     assert "A" in ask_res["result"]
+
+
+# ---------------- コンテキスト超過(400)からの自己回復 ----------------
+_OVERFLOW = ('{"error":{"code":400,"message":"request (10879 tokens) exceeds '
+             'the available context size (8192 tokens)"}} (status code: 400)')
+
+
+def test_ctx_overflow_truncates_and_retries():
+    with workspace() as ws:
+        # 実際の文脈構造(system+設定+ack の head つき)で、巨大なツール結果による超過を再現
+        big = [{"role": "system", "content": "s"},
+               {"role": "user", "content": "ws"},
+               {"role": "assistant", "content": "了解しました。依頼をどうぞ。"},
+               {"role": "user", "content": "調べて"},
+               {"role": "tool", "content": "x" * 50_000, "tool_name": "read_file"}]
+        turns = [
+            RuntimeError(_OVERFLOW),    # ストリーミング → 400
+            RuntimeError(_OVERFLOW),    # 非ストリーム フォールバック → 400
+            [_chunk(content="回復しました")],   # 強制切り詰め後の再試行 → 成功
+        ]
+        events = _run(ws, turns, messages=big, num_ctx=8192)
+        assert not any(e.get("type") == "error" for e in events)
+        assert events[-1]["type"] == "done"
+        tool = next(m for m in big if m.get("role") == "tool")
+        assert len(tool["content"]) < 3000   # ツール結果が実際に切り詰められている
+
+
+def test_ctx_overflow_final_error_is_actionable():
+    with workspace() as ws:
+        turns = [RuntimeError(_OVERFLOW), RuntimeError(_OVERFLOW), RuntimeError(_OVERFLOW)]
+        events = _run(ws, turns, messages=[{"role": "user", "content": "x"}], num_ctx=8192)
+    err = next(e for e in events if e.get("type") == "error")
+    assert "コンテキスト長" in err["error"] and "16384" in err["error"]   # 生JSONではなく対処を案内
+    assert "num_ctx=8192" in err["error"]
+
+
+def test_is_ctx_overflow_detector():
+    assert _impl._is_ctx_overflow(_OVERFLOW)
+    assert _impl._is_ctx_overflow("exceed_context_size_error")
+    assert not _impl._is_ctx_overflow("connection refused")
+
+
+# ---------------- present_plan の引数ゆらぎ(配列で来てもクラッシュしない)----------------
+def test_present_plan_accepts_list_argument():
+    with workspace() as ws:
+        turns = [
+            [_chunk(tool_calls=[_tc("present_plan", {"plan": ["手順A", "手順B"]})])],
+            [_chunk(content="完了")],
+        ]
+        events = _run(ws, turns, plan_mode=True, plan_ok=True)
+    plan = next(e for e in events if e.get("type") == "plan")
+    assert plan["plan"] == "1. 手順A\n2. 手順B"   # 配列 → 番号付き手順に正規化
+    assert events[-1]["type"] == "done"
+
+
+# ---------------- 復元ツールJSONの本文除去(assistant_clean) ----------------
+def test_text_tool_recovery_emits_cleaned_content():
+    with workspace() as ws:
+        body = '調べます。\n```json\n{"name": "list_files", "arguments": {}}\n```\n以上。'
+        turns = [
+            [_chunk(content=body)],
+            [_chunk(content="空でした")],
+        ]
+        events = _run(ws, turns)
+    clean = next(e for e in events if e.get("type") == "assistant_clean")
+    assert "調べます" in clean["text"] and "{" not in clean["text"]   # JSONと空フェンスを除去
+    assert any(e.get("type") == "tool_result" and e.get("name") == "list_files"
+               for e in events)
+
+
+# ---------------- 自アプリの .env 保護 ----------------
+def test_app_env_is_protected_file():
+    from app import safety
+    from app.config import ROOT_DIR
+    assert safety.is_protected_file(ROOT_DIR / ".env") is True
+    assert safety.is_within_protected(ROOT_DIR / ".env") is True
+    assert safety.is_protected_file(ROOT_DIR / "README.md") is False
+
+
+def test_app_env_blocked_from_read_and_listing():
+    from app.config import ROOT_DIR
+    out = agent.t_read_file(ROOT_DIR, ".env")
+    assert out.startswith("[エラー]") and "保護" in out
+    assert agtools._rel_ok(ROOT_DIR, ROOT_DIR / ".env") is False
+    assert agtools._rel_ok(ROOT_DIR, ROOT_DIR / "README.md") is True
+
+
+def test_other_projects_env_still_editable():
+    with workspace() as ws:   # 作業フォルダ内の(他プロジェクトの).env は通常どおり扱える
+        assert agent.t_write_file(ws, ".env", "FOO=1").startswith("[OK]")
+        assert agent.t_read_file(ws, ".env").startswith("FOO=1")
+
+
+# ---------------- edit_file: old_string 空のときの誘導 ----------------
+def test_edit_file_empty_old_string_suggests_write_file():
+    with workspace() as ws:
+        (ws / "a.txt").write_text("x", encoding="utf-8")
+        out = agent.t_edit_file(ws, "a.txt", "", "y")
+        assert out.startswith("[エラー]") and "write_file" in out
 
 
 # ---------------- 承認待ちエントリの掃除(切断リーク防止)----------------

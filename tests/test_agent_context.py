@@ -12,7 +12,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.agent import _impl                       # noqa: E402
 from app.agent.constants import CTX_CHAR_LIMIT, _CHANGE_INTENT   # noqa: E402
-from app.agent.context import compact_ctx         # noqa: E402
+from app.agent.context import (                   # noqa: E402
+    _ctx_chars, compact_ctx, force_truncate_ctx)
 
 
 # ---------------- _compact_threshold ----------------
@@ -22,9 +23,13 @@ def test_compact_threshold_fallback_when_unknown():
 
 
 def test_compact_threshold_scales_with_num_ctx():
-    assert _impl._compact_threshold(8192) == max(6000, 8192 - 5000)     # 下限 6000
-    assert _impl._compact_threshold(32768) == 32768 - 5000
+    # 固定費(system+ツール定義 ~8千トークン)と日本語1文字≈1トークンを見込んだ安全側の式
+    assert _impl._compact_threshold(8192) == 4000                        # 下限 4000
+    assert _impl._compact_threshold(16384) == int((16384 - 6000) * 0.6)
+    assert _impl._compact_threshold(32768) == int((32768 - 6000) * 0.6)
     assert _impl._compact_threshold(8192) < _impl._compact_threshold(32768)
+    # 小さい窓でも、しきい値が窓そのものを超えない(溢れる前に必ず圧縮が起動する)
+    assert _impl._compact_threshold(16384) < 16384
 
 
 # ---------------- compact_ctx(char_limit 連動) ----------------
@@ -46,6 +51,54 @@ def test_compact_ctx_folds_over_limit():
     n0 = len(m)
     assert compact_ctx(m, lambda t: "要約", char_limit=100) is True
     assert len(m) < n0 and m[-1]["content"].endswith("要約")   # head 保持 + rest を要約1件へ
+
+
+# ---------------- compact_ctx(要約LLMへ渡す transcript の上限) ----------------
+def test_compact_ctx_caps_transcript_for_small_window():
+    m = _msgs()
+    seen = {}
+    def summ(text):
+        seen["len"] = len(text)
+        return "要約"
+    assert compact_ctx(m, summ, char_limit=100, transcript_cap=120) is True
+    assert seen["len"] <= 1000   # 下限1000未満には絞らないが、40000固定では送らない
+
+
+# ---------------- _ctx_chars(tool_calls の引数も算入) ----------------
+def test_ctx_chars_counts_tool_call_arguments():
+    plain = [{"role": "assistant", "content": "x"}]
+    with_tc = [{"role": "assistant", "content": "x",
+                "tool_calls": [{"function": {"name": "write_file",
+                                             "arguments": {"path": "a", "content": "y" * 500}}}]}]
+    assert _ctx_chars(with_tc) > _ctx_chars(plain) + 500
+
+
+# ---------------- force_truncate_ctx(LLM不要の最終手段) ----------------
+def test_force_truncate_cuts_long_tool_results():
+    m = _msgs() + [{"role": "tool", "content": "z" * 9000, "tool_name": "read_file"}]
+    assert force_truncate_ctx(m, char_limit=10_000) is True
+    tool = next(x for x in m if x.get("role") == "tool")
+    assert len(tool["content"]) < 2000 and "自動切り詰め" in tool["content"]
+
+
+def test_force_truncate_drops_old_messages_keeps_head_and_tail():
+    base = [{"role": "system", "content": "s"},
+            {"role": "user", "content": "ws"},
+            {"role": "assistant", "content": "ok"}]
+    base += [{"role": "user", "content": f"u{i}" + "x" * 300} for i in range(30)]
+    last = base[-1]["content"]
+    assert force_truncate_ctx(base, char_limit=2000) is True
+    assert base[0]["role"] == "system"                  # head は維持
+    assert base[-1]["content"] == last                  # 直近は維持
+    assert any("省略しました" in x.get("content", "") for x in base)   # 間引きの注記
+    assert _ctx_chars(base) <= 2000 + 500               # 注記ぶんの余裕を見て上限付近まで縮む
+
+
+def test_force_truncate_noop_when_small():
+    m = _msgs()
+    before = [dict(x) for x in m]
+    assert force_truncate_ctx(m, char_limit=100_000) is False
+    assert m == before
 
 
 # ---------------- _CHANGE_INTENT(活用形) ----------------

@@ -548,6 +548,10 @@ def api_agent(cid: str, body: AgentBody) -> Response:
     eff = effective_for(conv)
     model = eff["model"]
     num_ctx = int(eff["num_ctx"]) or None   # 0 はモデル既定。Chat と同じく設定値を反映
+    if num_ctx and num_ctx < 16384:
+        # Code は system+ツール定義だけで約8千トークンの固定費がある。小さい窓だと
+        # すぐコンテキスト超過になる(自動切り詰めで続行はするが、品質が落ちる)
+        log.warning("Code: num_ctx=%d は小さく、文脈があふれやすい設定です(16384以上を推奨)", num_ctx)
 
     # 文脈を用意(新規ならDB履歴から再構築) → 依頼をDBへ保存 → 文脈へ追加
     with _code_ctx_lock:
@@ -622,6 +626,13 @@ def api_agent(cid: str, body: AgentBody) -> Response:
                     if ev.get("text"):
                         buf.append(ev["text"])
                     yield sse(ev)
+                    continue
+                if t == "assistant_clean":
+                    # 本文から復元済みツールJSONを除去した確定版。保存・再表示用の
+                    # バッファだけ差し替える(ライブ表示は流れた分のままで、転送しない)
+                    buf.clear()
+                    if ev.get("text"):
+                        buf.append(ev["text"])
                     continue
                 if t == "thinking":
                     yield sse(ev)   # 思考は表示のみ(本文に混ぜず・ステップにも保存しない)

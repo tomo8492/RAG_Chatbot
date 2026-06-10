@@ -16,7 +16,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from .config import settings
+from .config import ROOT_DIR, settings
 from .logging_setup import get_logger
 
 log = get_logger("safety")
@@ -89,8 +89,38 @@ def _build_deny_exact() -> list[Path]:
     return out
 
 
+def _build_deny_files() -> list[Path]:
+    """フォルダではなく「このファイルだけ」を保護する機密ファイル。
+
+    自アプリの .env(CHAT_PASSWORD / OCR_API_KEY 等を含む)が対象。作業フォルダに
+    アプリ自身のフォルダを選んだ場合でも、エージェントから読み書きできないようにする
+    (他プロジェクトの .env は対象外=通常の開発作業は妨げない)。
+    """
+    out: list[Path] = []
+    try:
+        out.append(_norm(ROOT_DIR / ".env"))
+    except Exception:
+        log.debug("_build_deny_files: 例外を無視して継続", exc_info=True)
+    return out
+
+
 _DENY_TREE = _build_deny_tree()
 _DENY_EXACT = _build_deny_exact()
+_DENY_FILES = _build_deny_files()
+_DENY_FILE_NAMES = {p.name for p in _DENY_FILES}
+
+
+def is_protected_file(path) -> bool:
+    """このファイル自体が機密保護対象(自アプリの .env 等)か。
+    名前が一致するときだけパスを解決して厳密比較する(走査時の呼び出しでも軽い)。"""
+    try:
+        p = Path(path)
+        if p.name not in _DENY_FILE_NAMES:
+            return False
+        return _norm(p) in _DENY_FILES
+    except Exception:
+        log.debug("is_protected_file: 例外を無視して継続", exc_info=True)
+        return True   # 判定できないものは安全側に倒す
 
 
 def _is_fs_root(p: Path) -> bool:
@@ -102,12 +132,14 @@ def _equal_or_inside(p: Path, base: Path) -> bool:
 
 
 def is_within_protected(path) -> bool:
-    """このパス(またはその親)が保護対象(システム/アプリのデータ領域)か。"""
+    """このパス(またはその親)が保護対象(システム/アプリのデータ領域/機密ファイル)か。"""
     try:
         p = _norm(Path(path))
     except Exception:
         log.debug("is_within_protected: 例外を無視して継続", exc_info=True)
         return True  # 判定できないものは安全側に倒す
+    if p in _DENY_FILES:
+        return True
     return any(_equal_or_inside(p, d) for d in _DENY_TREE)
 
 
