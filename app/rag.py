@@ -149,6 +149,8 @@ def build_index(iid: str, paths: list[str],
                 pass
 
     try:
+        from . import ocr
+        ocr.reset_run_state()   # 画像非対応モデルの一時ブロックを毎ビルドでリセット
         from .defaults import chunk_params, get_defaults
         cs, co = chunk_params()
         _d = get_defaults()

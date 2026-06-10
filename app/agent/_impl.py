@@ -21,6 +21,7 @@ import subprocess
 import sys
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Iterator, Optional
 
 import ollama
@@ -245,6 +246,75 @@ def _tc_to_dict(tc) -> dict:
     return {"function": {"name": name, "arguments": args}}
 
 
+class _TextToolCall:
+    """本文から復元したツール呼び出し。ネイティブ tool_call と同じ .function.name/.arguments を持つ。"""
+    def __init__(self, name: str, arguments: dict):
+        self.function = SimpleNamespace(name=name, arguments=arguments)
+
+
+def _iter_json_objects(text: str):
+    """テキストから {...} のJSONオブジェクトを順に取り出す(波括弧の対応を数える簡易スキャナ)。"""
+    i, n = 0, len(text)
+    while i < n:
+        if text[i] != "{":
+            i += 1
+            continue
+        depth, j, in_str, esc = 0, i, False, False
+        while j < n:
+            c = text[j]
+            if in_str:
+                if esc:
+                    esc = False
+                elif c == "\\":
+                    esc = True
+                elif c == '"':
+                    in_str = False
+            elif c == '"':
+                in_str = True
+            elif c == "{":
+                depth += 1
+            elif c == "}":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        yield json.loads(text[i:j + 1])
+                    except Exception:
+                        pass
+                    break
+            j += 1
+        i = j + 1
+
+
+def _parse_text_tool_calls(content: str, tools: list) -> list:
+    """ネイティブ tool_calls が無いモデル対策: 本文に書かれた JSON のツール呼び出しを拾う。
+
+    例 ```json {"name": "list_files", "arguments": {}} ``` のような出力を実行可能な呼び出しへ変換する。
+    既知のツール名に一致するものだけを対象にする(本文中のサンプルJSON等の誤実行を防ぐ)。
+    """
+    if not content or "{" not in content:
+        return []
+    names = {t.get("function", {}).get("name") for t in tools if isinstance(t, dict)}
+    names.discard(None)
+    out: list = []
+    for obj in _iter_json_objects(content):
+        if not isinstance(obj, dict):
+            continue
+        tc = obj["tool_call"] if isinstance(obj.get("tool_call"), dict) else obj
+        name = tc.get("name") or tc.get("tool") or tc.get("tool_name")
+        if name not in names:
+            continue
+        args = tc.get("arguments")
+        if args is None:
+            args = tc.get("parameters", {})
+        if isinstance(args, str):
+            try:
+                args = json.loads(args)
+            except Exception:
+                args = {}
+        out.append(_TextToolCall(str(name), args if isinstance(args, dict) else {}))
+    return out
+
+
 def _run_subagent(model: str, ws: Path, task: str, num_ctx: Optional[int]) -> str:
     """読み取り専用の調査サブエージェントを実行し、調査結果の要約だけを返す。
 
@@ -285,6 +355,8 @@ def _run_subagent(model: str, ws: Path, task: str, num_ctx: Optional[int]) -> st
         if content:
             last = content
         tcs = list(getattr(cm, "tool_calls", None) or [])
+        if not tcs and content:        # ネイティブ非対応モデル: 本文のJSONツール呼び出しを復元
+            tcs = _parse_text_tool_calls(content, SUBAGENT_TOOLS)
         asst = {"role": "assistant", "content": content}
         if tcs:
             asst["tool_calls"] = [_tc_to_dict(tc) for tc in tcs]
@@ -484,6 +556,14 @@ def run_stream(model: str, messages: list, workspace: str,
             tool_calls = list(getattr(cm, "tool_calls", None) or [])
 
         content = "".join(content_parts)
+        # ネイティブ tool_calls が無いモデル(gemma3 等、Ollama の tools 非対応)でも、本文に
+        # 書かれた JSON のツール呼び出しを拾って実行し、エージェントを前進させる。
+        if not tool_calls and content:
+            recovered = _parse_text_tool_calls(content, tools)
+            if recovered:
+                log.info("本文からツール呼び出しを復元: %s",
+                         ", ".join(tc.function.name for tc in recovered))
+                tool_calls = recovered
         asst_msg: dict = {"role": "assistant", "content": content}
         if tool_calls:
             asst_msg["tool_calls"] = [_tc_to_dict(tc) for tc in tool_calls]
