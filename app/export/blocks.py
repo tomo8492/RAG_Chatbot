@@ -63,8 +63,10 @@ def parse_blocks(md: str) -> list[dict]:
         # リスト(ネスト・タスクリスト対応)
         if re.match(r"^\s*([-*+]|\d+[.)])\s+", line):
             items = []
-            while i < n and re.match(r"^(\s*)([-*+]|\d+[.)])\s+", lines[i]):
+            while i < n:
                 mm = re.match(r"^(\s*)([-*+]|\d+[.)])\s+(.*)$", lines[i])
+                if not mm:
+                    break
                 indent = len(mm.group(1).expandtabs(4))
                 ordered = bool(re.match(r"\d+[.)]", mm.group(2)))
                 content = mm.group(3).strip()

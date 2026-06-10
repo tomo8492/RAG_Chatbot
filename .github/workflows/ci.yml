@@ -26,11 +26,9 @@ jobs:
         run: python tests/run_all.py
 
   typecheck:
-    name: Type check (informational)
+    name: Type check
     runs-on: ubuntu-latest
-    # 段階導入(フェーズ0): 当面は非ブロッキング。型エラーは情報として可視化するが
-    # マージは止めない。段階的に解消し、いずれブロッキング化する。
-    continue-on-error: true
+    # フェーズ0の宿題を解消し、ブロッキングに昇格(mypy エラー0を維持する)。
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

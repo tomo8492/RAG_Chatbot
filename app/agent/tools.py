@@ -246,8 +246,11 @@ BG_OUTPUT_CAP = 20000
 
 
 def _bg_reader(job_id: str, proc: "subprocess.Popen") -> None:
+    out = proc.stdout
+    if out is None:                                  # stdout=PIPE で起動するため通常は到達しない
+        return
     try:
-        for line in proc.stdout:                     # 行ごとにバッファへ
+        for line in out:                             # 行ごとにバッファへ
             with _bg_lock:
                 j = _bg_jobs.get(job_id)
                 if j is None:

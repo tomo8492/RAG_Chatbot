@@ -129,6 +129,13 @@ def _doc_context(model: str, source_name: str, full_text: str) -> str:
         return ""
 
 
+def _index_row(iid: str) -> dict:
+    """インデックス行を返す(build_index の戻り値用。直前に update 済みで必ず存在する)。"""
+    row = db.get_index(iid)
+    assert row is not None, f"index row missing: {iid}"
+    return row
+
+
 def build_index(iid: str, paths: list[str],
                 progress: Optional[Callable[[str], None]] = None) -> dict:
     """フォルダ群を読み込み、コレクションを構築する。同期処理(ワーカースレッドから呼ぶ)。"""
@@ -158,7 +165,7 @@ def build_index(iid: str, paths: list[str],
         if not files:
             db.update_index(iid, status="error", error="対応ファイルが見つかりません",
                             file_count=0, chunk_count=0)
-            return db.get_index(iid)
+            return _index_row(iid)
 
         # 埋め込みモデルを先に1回ロード(失敗ならN件スキップせず、明確なエラーで中断する)
         try:
@@ -169,7 +176,7 @@ def build_index(iid: str, paths: list[str],
             log.error("埋め込みモデルの準備に失敗: %s", e)
             db.update_index(iid, status="error", error=hint, file_count=0, chunk_count=0)
             emit("エラー: " + hint)
-            return db.get_index(iid)
+            return _index_row(iid)
 
         # 既存チャンクの path→署名 / path→ids を取得(増分判定用)。
         # 埋め込み次元が変わっていたら(モデル変更)コレクションを作り直す。
@@ -188,7 +195,7 @@ def build_index(iid: str, paths: list[str],
                     p = (meta or {}).get("path")
                     if not p:
                         continue
-                    path_sig.setdefault(p, (meta or {}).get("sig"))
+                    path_sig.setdefault(p, str((meta or {}).get("sig") or ""))
                     path_ids.setdefault(p, []).append(cid_)
         except Exception:
             log.exception("既存インデックスの読取に失敗(全件作り直し)")
@@ -273,17 +280,17 @@ def build_index(iid: str, paths: list[str],
             db.update_index(iid, status="error",
                             error="テキストを抽出できませんでした(スキャンPDF等の可能性)",
                             file_count=ok_files, chunk_count=0)
-            return db.get_index(iid)
+            return _index_row(iid)
 
         db.update_index(iid, status="ready", error=None,
                         file_count=ok_files, chunk_count=total_chunks)
         emit(f"インデックス完了: {ok_files}ファイル / {total_chunks}チャンク"
              f"(更新 {changed} / 据置 {skipped} / 削除 {len(removed)})")
-        return db.get_index(iid)
+        return _index_row(iid)
     except Exception as e:
         log.exception("インデックス構築失敗")
         db.update_index(iid, status="error", error=str(e))
-        return db.get_index(iid)
+        return _index_row(iid)
 
 
 def delete_index_collection(iid: str) -> None:

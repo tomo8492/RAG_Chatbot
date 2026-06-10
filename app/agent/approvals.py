@@ -45,8 +45,8 @@ def resolve(action_id: str, approved: bool, scope: Optional[str] = None,
     return True
 
 
-def resolve_answer(action_id: str, answer: str) -> bool:
-    """ask_user への回答(自由記述/選択肢)を記録して待機側を起こす。"""
+def resolve_answer(action_id: str, answer: "str | list") -> bool:
+    """ask_user への回答(自由記述=str / 質問ごとの選択=list)を記録して待機側を起こす。"""
     with _pending_lock:
         p = _pending.get(action_id)
     if not p:

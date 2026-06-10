@@ -414,7 +414,7 @@ def chat_stream(messages: list[dict], model: str, *,
       {"type": "content",  "text": ...}  -- 本文
     """
     eff = EFFORT_LEVELS.get((effort or "medium").lower(), EFFORT_LEVELS["medium"])
-    think = eff["think"]
+    think = bool(eff["think"])
     # モデル別最適化: 「思考」を確実に非対応なら最初から思考しない(無駄な失敗→再試行を回避)。
     # 不明(None)/対応(True)のときは従来どおり思考を試す(下の例外フォールバックが安全網)。
     if think and supports_thinking(model) is False:
