@@ -106,10 +106,48 @@ tbody tr:last-child td{border-bottom:none;}
   table,pre,blockquote,img{break-inside:avoid;}
   .doc-footer{display:none;}
 }
+.ref-figs{display:flex;flex-direction:column;gap:18px;margin-top:8px;}
+.ref-figs figure{margin:0;}
+.ref-figs img{max-width:100%;border:1px solid #e7e9ee;border-radius:8px;}
+.ref-figs figcaption{color:var(--muted);font-size:12.5px;margin-top:6px;}
 """.strip()
 
 
-def to_html(md: str, title: str = "回答") -> bytes:
+def _decode_figures(figures: list | None, cap: int = 8) -> list[tuple[bytes, str]]:
+    """出典の図 [{data(base64), caption}] を [(bytes, caption)] に復元する(不正は無視)。"""
+    out: list[tuple[bytes, str]] = []
+    for f in (figures or [])[:cap]:
+        try:
+            data = base64.b64decode(str((f or {}).get("data") or ""))
+            if len(data) > 100:
+                out.append((data, str((f or {}).get("caption") or "").strip()))
+        except Exception:
+            log.debug("_decode_figures: 例外を無視して継続", exc_info=True)
+    return out
+
+
+def _img_mime(data: bytes) -> str:
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return "image/png"
+    if data[:6] in (b"GIF87a", b"GIF89a"):
+        return "image/gif"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    return "image/jpeg"
+
+
+def _figure_dims(data: bytes) -> tuple[float, float]:
+    """画像の (幅px, 高さpx)。Pillow が無い・読めない場合は妥当な既定値。"""
+    try:
+        from PIL import Image as PILImage
+        with PILImage.open(io.BytesIO(data)) as img:
+            return float(img.size[0]), float(img.size[1])
+    except Exception:
+        log.debug("_figure_dims: 例外を無視して継続", exc_info=True)
+        return 600.0, 400.0
+
+
+def to_html(md: str, title: str = "回答", figures: list | None = None) -> bytes:
     blocks = parse_blocks(md)
     # 先頭の見出しがタイトルと同じなら重複を避けて省く
     if blocks and blocks[0]["type"] == "heading" and \
@@ -150,6 +188,17 @@ def to_html(md: str, title: str = "回答") -> bytes:
                 for r in b["rows"])
             body.append(f'<div class="table-wrap"><table><thead><tr>{head}</tr></thead>'
                         f"<tbody>{rows}</tbody></table></div>")
+
+    # 参考図(回答の根拠になった文書内の図)。data URI で自己完結させる
+    figs = _decode_figures(figures)
+    if figs:
+        items = []
+        for i, (data, cap) in enumerate(figs, 1):
+            b64 = base64.b64encode(data).decode("ascii")
+            caption = f"図{i}" + (f"　{_html.escape(cap)}" if cap else "")
+            items.append(f'<figure><img src="data:{_img_mime(data)};base64,{b64}" '
+                         f'alt="参考図{i}"><figcaption>{caption}</figcaption></figure>')
+        body.append('<h2>参考図(出典)</h2><div class="ref-figs">' + "".join(items) + "</div>")
 
     return _html_page(title, "\n".join(body),
                       with_mermaid=has_mermaid, with_code=has_code).encode("utf-8")
@@ -319,7 +368,8 @@ def _extract_html_document(content: str, title: str) -> str | None:
     return _html_page(title, inner.strip(), with_mermaid=uses)
 
 
-def to_docx(md: str, title: str = "回答", images: list | None = None) -> bytes:
+def to_docx(md: str, title: str = "回答", images: list | None = None,
+            figures: list | None = None) -> bytes:
     from docx import Document
     from docx.enum.text import WD_ALIGN_PARAGRAPH
     from docx.shared import Inches, Pt
@@ -385,6 +435,21 @@ def to_docx(md: str, title: str = "回答", images: list | None = None) -> bytes
                 for j, c in enumerate(row):
                     if j < cols:
                         cells[j].text = _strip_inline(c)
+    # 参考図(回答の根拠になった文書内の図)を末尾にまとめて掲載
+    figs = _decode_figures(figures)
+    if figs:
+        doc.add_heading("参考図(出典)", level=2)
+        for i, (data, cap) in enumerate(figs, 1):
+            try:
+                w, h = _figure_dims(data)
+                doc.add_picture(io.BytesIO(data), width=Inches(min(5.8, w / 96.0)))
+                doc.paragraphs[-1].alignment = WD_ALIGN_PARAGRAPH.CENTER
+                p = doc.add_paragraph()
+                run = p.add_run(f"図{i}" + (f" {cap}" if cap else ""))
+                run.font.size = Pt(9)
+                p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            except Exception:
+                log.debug("to_docx: 参考図の埋め込みに失敗(無視)", exc_info=True)
     buf = io.BytesIO()
     doc.save(buf)
     return buf.getvalue()
@@ -403,7 +468,7 @@ def _add_runs(paragraph, text: str) -> None:
             run.font.size = Pt(10)
 
 
-def to_xlsx(md: str, title: str = "回答") -> bytes:
+def to_xlsx(md: str, title: str = "回答", figures: list | None = None) -> bytes:
     from openpyxl import Workbook
     from openpyxl.styles import Font
     blocks = parse_blocks(md)
@@ -441,6 +506,25 @@ def to_xlsx(md: str, title: str = "回答") -> bytes:
             ws.append([ln])
         _autofit(ws)
 
+    # 参考図(回答の根拠になった文書内の図)を専用シートに貼る
+    figs = _decode_figures(figures)
+    if figs:
+        try:
+            from openpyxl.drawing.image import Image as XLImage
+            ws = wb.create_sheet(title="参考図")
+            ws.column_dimensions["A"].width = 90
+            row = 1
+            for i, (data, cap) in enumerate(figs, 1):
+                ws.cell(row=row, column=1, value=f"図{i}" + (f" {cap}" if cap else ""))
+                w, h = _figure_dims(data)
+                scale = min(1.0, 640.0 / w, 420.0 / h)
+                xi = XLImage(io.BytesIO(data))
+                xi.width, xi.height = int(w * scale), int(h * scale)
+                ws.add_image(xi, f"A{row + 1}")
+                row += int(xi.height / 19) + 3   # 既定の行高(~19px)換算で次の図の位置へ
+        except Exception:
+            log.debug("to_xlsx: 参考図シートの作成に失敗(無視)", exc_info=True)
+
     if not wb.sheetnames:
         wb.create_sheet(title="本文")
     buf = io.BytesIO()
@@ -460,7 +544,8 @@ def _autofit(ws) -> None:
         ws.column_dimensions[get_column_letter(col)].width = w
 
 
-def to_pptx(md: str, title: str = "回答", images: list | None = None) -> bytes:
+def to_pptx(md: str, title: str = "回答", images: list | None = None,
+            figures: list | None = None) -> bytes:
     from pptx import Presentation
     prs = Presentation()
     blocks = parse_blocks(md)
@@ -511,9 +596,31 @@ def to_pptx(md: str, title: str = "回答", images: list | None = None) -> bytes
                 _add_bullet(body, head, 0)
                 for row in b["rows"]:
                     _add_bullet(body, " | ".join(_strip_inline(c) for c in row), 1)
+    # 参考図(回答の根拠になった文書内の図)。1枚=1スライドで末尾に追加
+    for i, (data, cap) in enumerate(_decode_figures(figures), 1):
+        try:
+            w, h = _figure_dims(data)
+            _add_picture_slide(prs, data, w, h)
+            _set_last_slide_caption(prs, f"図{i}" + (f" {cap}" if cap else ""))
+        except Exception:
+            log.debug("to_pptx: 参考図スライドの作成に失敗(無視)", exc_info=True)
     buf = io.BytesIO()
     prs.save(buf)
     return buf.getvalue()
+
+
+def _set_last_slide_caption(prs, text: str) -> None:
+    """直近の図スライドの下部にキャプションを置く。"""
+    from pptx.util import Emu, Pt
+    s = prs.slides[-1]
+    box = s.shapes.add_textbox(Emu(int(prs.slide_width * 0.06)),
+                               Emu(int(prs.slide_height * 0.92)),
+                               Emu(int(prs.slide_width * 0.88)),
+                               Emu(int(prs.slide_height * 0.07)))
+    tf = box.text_frame
+    tf.text = text
+    for r in tf.paragraphs[0].runs:
+        r.font.size = Pt(12)
 
 
 def _add_picture_slide(prs, png_bytes: bytes, w, h) -> None:
@@ -554,9 +661,11 @@ def _pdf_inline(text: str) -> str:
     return s
 
 
-def to_pdf(md: str, title: str = "回答", images: list | None = None) -> bytes:
+def to_pdf(md: str, title: str = "回答", images: list | None = None,
+           figures: list | None = None) -> bytes:
     """Markdown を、HTML出力と同じ意匠の整ったPDFにする(日本語=内蔵CIDフォント)。
     images(フロントで描画した Mermaid 図のPNG。出現順)が渡されれば図を埋め込む。
+    figures(出典の文書内画像)が渡されれば「参考図」として末尾に掲載する。
     画像が無い図はコード枠で表示する。"""
     from reportlab.lib import colors
     from reportlab.lib.pagesizes import A4
@@ -703,6 +812,22 @@ def to_pdf(md: str, title: str = "回答", images: list | None = None) -> bytes:
             story.append(tbl)
             story.append(Spacer(1, 6))
 
+    # 参考図(回答の根拠になった文書内の図)を末尾に掲載
+    figs = _decode_figures(figures)
+    if figs:
+        story.append(Paragraph("参考図(出典)", heads[2]))
+        cap_st = ParagraphStyle("figcap", fontName=FONT, fontSize=9, leading=13,
+                                textColor=MUTED, spaceAfter=10, alignment=1)
+        for i, (fdata, cap) in enumerate(figs, 1):
+            try:
+                iw, ih = _figure_dims(fdata)
+                disp_w = min(content_width, iw * 0.75)
+                story.append(RLImage(io.BytesIO(fdata), width=disp_w,
+                                     height=disp_w * (ih / iw), hAlign="CENTER"))
+                story.append(Paragraph(_html.escape(f"図{i}" + (f" {cap}" if cap else "")), cap_st))
+            except Exception:
+                log.debug("to_pdf: 参考図の埋め込みに失敗(無視)", exc_info=True)
+
     buf = io.BytesIO()
     doc = _PDFDoc(buf, pagesize=A4, title=title,
                   leftMargin=22 * mm, rightMargin=22 * mm, topMargin=20 * mm, bottomMargin=18 * mm)
@@ -827,8 +952,9 @@ def safe_stem(title: str, limit: int = 40) -> str:
 
 
 def export_content(content: str, fmt: str, ext: str | None = None,
-                   title: str = "回答", images: list | None = None) -> tuple[bytes, str, str]:
-    """(bytes, mime, 拡張子) を返す。"""
+                   title: str = "回答", images: list | None = None,
+                   figures: list | None = None) -> tuple[bytes, str, str]:
+    """(bytes, mime, 拡張子) を返す。figures は出典の文書内画像(参考図として掲載)。"""
     fmt = (fmt or "md").lower()
     title = (title or "回答").strip() or "回答"
 
@@ -844,16 +970,16 @@ def export_content(content: str, fmt: str, ext: str | None = None,
         doc = _extract_html_document(content, title)
         if doc is not None:
             return doc.encode("utf-8"), MIME["html"], "html"
-        return to_html(content, title), MIME["html"], "html"
+        return to_html(content, title, figures=figures), MIME["html"], "html"
     if fmt == "pdf":
-        return to_pdf(content, title, images=images), MIME["pdf"], "pdf"
+        return to_pdf(content, title, images=images, figures=figures), MIME["pdf"], "pdf"
     if fmt == "csv":
         return to_csv(content, title), MIME["csv"], "csv"
     if fmt == "docx":
-        return to_docx(content, title, images=images), MIME["docx"], "docx"
+        return to_docx(content, title, images=images, figures=figures), MIME["docx"], "docx"
     if fmt == "xlsx":
-        return to_xlsx(content, title), MIME["xlsx"], "xlsx"
+        return to_xlsx(content, title, figures=figures), MIME["xlsx"], "xlsx"
     if fmt == "pptx":
-        return to_pptx(content, title, images=images), MIME["pptx"], "pptx"
+        return to_pptx(content, title, images=images, figures=figures), MIME["pptx"], "pptx"
 
     raise ValueError(f"未対応の形式: {fmt}")

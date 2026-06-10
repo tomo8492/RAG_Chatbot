@@ -6,13 +6,15 @@
 """
 from __future__ import annotations
 
+import re
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
 from .. import auth, db
+from ..config import settings
 from ..services import index_service
 
 # すべてのインデックス系ルートは認証必須(従来の per-route 依存と等価)
@@ -105,3 +107,19 @@ def api_delete_index(iid: str) -> dict:
     if not index_service.delete_index(iid):
         raise HTTPException(404, "インデックスが見つかりません")
     return {"ok": True}
+
+
+# 文書内画像のファイル名(内容ハッシュ + Web表示可能な拡張子)以外は配信しない
+_IMG_NAME = re.compile(r"^[0-9a-f]{8,40}\.(?:png|jpe?g|gif|webp)$")
+
+
+@router.get("/api/doc-images/{iid}/{name}")
+def api_doc_image(iid: str, name: str) -> FileResponse:
+    """チャンクに紐づく文書内画像(図)を配信する(認証必須・doc_images 配下に限定)。"""
+    if not _IMG_NAME.match(name) or not re.match(r"^[0-9a-fA-F-]{8,64}$", iid):
+        raise HTTPException(404, "画像が見つかりません")
+    base = (settings.data_dir / "doc_images").resolve()
+    p = (base / iid / name).resolve()
+    if base not in p.parents or not p.is_file():
+        raise HTTPException(404, "画像が見つかりません")
+    return FileResponse(str(p), headers={"Cache-Control": "private, max-age=86400"})

@@ -98,7 +98,8 @@ function buildAssistantActions(refs, isLast, m) {
     navigator.clipboard.writeText(refs.row.dataset.raw || "").then(() => toast("コピーしました"));
   };
   refs.actions.appendChild(copy);
-  refs.actions.appendChild(makeSaveMenu(() => refs.row.dataset.raw || ""));
+  refs.actions.appendChild(makeSaveMenu(() => refs.row.dataset.raw || "",
+                                        () => (refs.src && refs.src._figures) || []));
   if (isLast && (!State.current || (State.current.kind || "chat") !== "code")) {
     const regen = el("button", null, "↻ 再生成");
     regen.onclick = () => regenerate();
@@ -176,7 +177,7 @@ const SAVE_FORMATS = [
 ];
 function currentTitle() { return (State.current && State.current.title) || "回答"; }
 
-function makeSaveMenu(getContent) {
+function makeSaveMenu(getContent, getFigures) {
   const wrap = el("span", "save-wrap");
   const btn = el("button", null, "⬇ 保存 ▾");
   const menu = el("div", "save-menu hidden");
@@ -185,7 +186,8 @@ function makeSaveMenu(getContent) {
     item.onclick = (e) => {
       e.stopPropagation();
       menu.classList.add("hidden");
-      exportContent(getContent(), fmt, null, currentTitle());
+      exportContent(getContent(), fmt, null, currentTitle(),
+                    getFigures ? getFigures() : null);
     };
     menu.appendChild(item);
   });
@@ -208,7 +210,7 @@ const LANG_EXT = {
 };
 function extForLang(l) { return LANG_EXT[(l || "").toLowerCase()] || "txt"; }
 
-async function exportContent(content, fmt, ext, title) {
+async function exportContent(content, fmt, ext, title, srcFigures) {
   if (!content || !content.trim()) { toast("内容が空です"); return; }
   try {
     let images = null;
@@ -216,9 +218,29 @@ async function exportContent(content, fmt, ext, title) {
       try { images = await collectMermaidImages(content); }   // 図をPNG化して文書に埋め込む
       catch (_) { images = null; }
     }
+    // 出典の文書内画像(参考図)を取得して base64 で同送(対応形式のみ)
+    let figures = null;
+    if (srcFigures && srcFigures.length && ["html", "pdf", "docx", "pptx", "xlsx"].includes(fmt)) {
+      figures = [];
+      for (const f of srcFigures.slice(0, 8)) {
+        try {
+          const r = await fetch(f.url);
+          if (!r.ok) continue;
+          const blob = await r.blob();
+          const b64 = await new Promise((resolve, reject) => {
+            const fr = new FileReader();
+            fr.onload = () => resolve(String(fr.result).split(",")[1] || "");
+            fr.onerror = reject;
+            fr.readAsDataURL(blob);
+          });
+          if (b64) figures.push({ data: b64, caption: f.caption || "" });
+        } catch (_) { /* 取得できない図はスキップ */ }
+      }
+      if (!figures.length) figures = null;
+    }
     const res = await fetch("/api/export", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ content, format: fmt, ext, title, images }),
+      body: JSON.stringify({ content, format: fmt, ext, title, images, figures }),
     });
     if (res.status === 401) { showLogin(); throw new Error("認証が必要です"); }
     if (!res.ok) { let d; try { d = (await res.json()).detail; } catch (_) {} throw new Error(d || "変換に失敗"); }
@@ -243,7 +265,8 @@ function renderSources(container, sources, note) {
   }
   // 思考(.thinking)と同じく折りたたみ表示。既定は閉じておき、クリックで展開する。
   const details = el("details", "src-details");
-  details.appendChild(el("summary", "src-summary", `📎 参照ファイル (${sources.length})`));
+  const summary = el("summary", "src-summary", `📎 参照ファイル (${sources.length})`);
+  details.appendChild(summary);
   const list = el("div", "src-list");
   sources.forEach((s) => {
     const label = `${s.source}${s.loc ? " " + s.loc : ""}${s.attachment ? " (添付)" : ""}`;
@@ -256,6 +279,25 @@ function renderSources(container, sources, note) {
     list.appendChild(item);
   });
   details.appendChild(list);
+  // 出典に紐づく文書内の図(サムネイル)。クリックで原寸を別タブ表示。
+  // 収集結果は container._figures に保持し、「⬇ 保存」時の参考図埋め込みにも使う
+  const figures = [];
+  sources.forEach((s) => (s.images || []).forEach((u) => {
+    if (typeof u === "string" && u.startsWith("/api/doc-images/") && !figures.some((f) => f.url === u))
+      figures.push({ url: u, caption: `${s.source}${s.loc ? " " + s.loc : ""}` });
+  }));
+  container._figures = figures;
+  if (figures.length) {
+    const box = el("div", "src-images");
+    figures.slice(0, 8).forEach((f) => {
+      const im = el("img", "src-thumb");
+      im.src = f.url; im.loading = "lazy"; im.alt = "文書内の図"; im.title = "クリックで原寸表示";
+      im.onclick = (e) => { e.stopPropagation(); window.open(f.url, "_blank"); };
+      box.appendChild(im);
+    });
+    details.appendChild(box);
+    summary.textContent = `📎 参照ファイル (${sources.length}) ・ 🖼 図 ${figures.length}`;
+  }
   container.appendChild(details);
 }
 

@@ -188,6 +188,67 @@ def test_html_code_highlight_inlined_only_when_code():
     assert "hljs.highlightAll" not in _h("ただの段落です。")
 
 
+# ---------------- 参考図(出典の文書内画像)の埋め込み ----------------
+def _fig_payload():
+    """乱数ノイズPNG(圧縮で縮まない実画像の代役)を base64 で参考図形式にする。"""
+    import base64
+    import io
+    import random
+    from PIL import Image
+    raw = random.Random(7).randbytes(240 * 160 * 3)
+    buf = io.BytesIO()
+    Image.frombytes("RGB", (240, 160), raw).save(buf, format="PNG")
+    return [{"data": base64.b64encode(buf.getvalue()).decode(), "caption": "手順書.xlsx シート:組立"}]
+
+
+def _zip_has_media(data: bytes, prefix: str) -> bool:
+    import io
+    import zipfile
+    with zipfile.ZipFile(io.BytesIO(data)) as z:
+        return any(n.startswith(prefix) for n in z.namelist())
+
+
+def test_html_embeds_figures_as_data_uri():
+    html = export.to_html(MD, figures=_fig_payload()).decode("utf-8")
+    assert "参考図(出典)" in html and "data:image/png;base64," in html
+    assert "手順書.xlsx シート:組立" in html
+    assert "参考図" not in export.to_html(MD).decode("utf-8")   # 図なしなら節も出ない
+
+
+def test_docx_embeds_figures():
+    data = export.to_docx(MD, figures=_fig_payload())
+    assert data.startswith(b"PK") and _zip_has_media(data, "word/media/")
+
+
+def test_xlsx_embeds_figures_sheet():
+    data = export.to_xlsx(TABLE_MD, figures=_fig_payload())
+    assert data.startswith(b"PK") and _zip_has_media(data, "xl/media/")
+
+
+def test_pptx_embeds_figures_slide():
+    data = export.to_pptx(MD, figures=_fig_payload())
+    assert data.startswith(b"PK") and _zip_has_media(data, "ppt/media/")
+
+
+def test_pdf_embeds_figures():
+    assert export.to_pdf(MD, figures=_fig_payload()).startswith(b"%PDF")
+
+
+def test_export_content_passes_figures_and_ignores_for_text():
+    figs = _fig_payload()
+    data, _, _ = export.export_content(MD, "html", title="回答", figures=figs)
+    assert b"data:image/png;base64," in data
+    data, _, _ = export.export_content(MD, "md", title="回答", figures=figs)   # mdは無視
+    assert b"data:image" not in data
+
+
+def test_decode_figures_ignores_garbage():
+    from app.export._render import _decode_figures
+    figs = _decode_figures([{"data": "!!!not-base64!!!"}, None, {"caption": "のみ"},
+                            *_fig_payload()])
+    assert len(figs) == 1 and figs[0][1] == "手順書.xlsx シート:組立"
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     passed = 0
