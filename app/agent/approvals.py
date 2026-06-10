@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import threading
+import time
 import uuid
 from typing import Optional
 
@@ -20,13 +21,22 @@ __all__ = [
 
 _pending: dict[str, dict] = {}
 _pending_lock = threading.Lock()
+# 待ち手(wait*)はタイムアウトで自分のエントリを pop するが、確認カードの yield 中に
+# クライアントが切断すると wait* に到達せずエントリが残る。この経過時間を超えた
+# エントリは次の new_pending 時に掃除する(取りこぼしリークの防止)。
+_STALE_AFTER = CONFIRM_TIMEOUT * 2
 
 
 def new_pending() -> str:
     aid = uuid.uuid4().hex
+    now = time.monotonic()
     with _pending_lock:
+        stale = [k for k, v in _pending.items()
+                 if now - v.get("created", now) > _STALE_AFTER]
+        for k in stale:
+            _pending.pop(k, None)
         _pending[aid] = {"event": threading.Event(), "approved": False,
-                         "answer": None, "scope": None, "reason": None}
+                         "answer": None, "scope": None, "reason": None, "created": now}
     return aid
 
 

@@ -243,6 +243,14 @@ _bg_jobs: dict[str, dict] = {}
 _bg_lock = threading.Lock()
 MAX_BG_JOBS = 10
 BG_OUTPUT_CAP = 20000
+KEEP_FINISHED_JOBS = 10   # 終了済みjobの保持数(出力参照用)。超えた古い分は破棄
+
+
+def _prune_finished_jobs() -> None:
+    """終了済みjobを古い順に間引く(_bg_lock 保持中に呼ぶこと)。"""
+    done = [k for k, j in _bg_jobs.items() if not j["running"]]
+    for k in done[:max(len(done) - KEEP_FINISHED_JOBS, 0)]:
+        _bg_jobs.pop(k, None)
 
 
 def _bg_reader(job_id: str, proc: "subprocess.Popen") -> None:
@@ -281,6 +289,7 @@ def t_run_background(ws: Path, command: str) -> str:
         return f"[エラー] 起動失敗: {e}"
     job_id = uuid.uuid4().hex[:8]
     with _bg_lock:
+        _prune_finished_jobs()
         _bg_jobs[job_id] = {"command": command, "output": "", "returncode": None,
                             "running": True, "proc": proc}
     threading.Thread(target=_bg_reader, args=(job_id, proc), daemon=True).start()
