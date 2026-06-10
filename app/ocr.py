@@ -58,15 +58,66 @@ _VLM_PROMPT = (
 )
 
 
+# 画像非対応と判明したOCRモデルを記録し、ビルド中の「全ページで失敗」連打を防ぐ。
+_vlm_blocked: dict[str, str] = {}
+
+
+def _model_has_vision(model: str) -> bool:
+    """OCRモデルが画像対応(vision)か。能力情報が取れないときは True(従来どおり試す=安全側)。"""
+    if not model:
+        return False
+    try:
+        from . import llm
+        caps = llm.model_capabilities(model)
+        if caps:                         # 能力情報が取れたときだけ判定する
+            return "vision" in caps
+    except Exception:
+        log.debug("_model_has_vision: 例外を無視して継続", exc_info=True)
+    return True                          # 不明 → 試す(実呼び出しの例外側で捕捉)
+
+
+def _looks_like_no_vision(msg: str) -> bool:
+    """Ollama の「画像非対応」系エラーメッセージか。"""
+    m = (msg or "").lower()
+    return any(k in m for k in ("image input is not supported", "mmproj",
+                                "multimodal requests", "does not support multimodal"))
+
+
+def _block_model(model: str, reason: str) -> None:
+    """画像非対応モデルを記録し、初回だけ明確に警告する(以降は呼ばずにスキップ)。"""
+    if model and model not in _vlm_blocked:
+        _vlm_blocked[model] = reason
+        log.warning("OCRをスキップ: %s", reason)
+
+
+def reset_run_state() -> None:
+    """インデックス構築の開始時に呼ぶ。画像非対応モデルの一時ブロックを解除して再判定させる。"""
+    _vlm_blocked.clear()
+
+
 def ocr_image_png(png: bytes) -> str:
     """ページ画像(PNGバイト列)をOCRしてテキスト/Markdownを返す。失敗時は ''。"""
     engine = settings.ocr_engine
+    if engine != "tesseract":
+        model = _ocr_model()
+        if model in _vlm_blocked:        # 画像非対応と判明済み → 呼ばずに即スキップ(連打を防ぐ)
+            return ""
+        if not _model_has_vision(model):
+            _block_model(model, f"OCRモデル『{model}』は画像非対応(visionなし)。"
+                                "設定で qwen2.5vl など画像対応モデルを選んでください")
+            return ""
     try:
         if engine == "tesseract":
             return _ocr_tesseract(png)
         return _ocr_vlm(png)
     except Exception as e:  # 未導入・モデル無し・実行時エラー → 縮退
-        log.warning("OCR失敗(engine=%s): %s", engine, str(e)[:200])
+        emsg = str(e)
+        if engine != "tesseract" and _looks_like_no_vision(emsg):
+            m = _ocr_model()
+            _block_model(m, f"OCRモデル『{m}』が画像入力に未対応(mmproj無し等)。"
+                            "設定で qwen2.5vl など画像対応モデルを選んでください")
+        else:
+            log.warning("OCR失敗(engine=%s): %s", engine, emsg[:200])
         return ""
 
 
@@ -112,8 +163,11 @@ def ocr_available() -> tuple[bool, str]:
         model = _ocr_model()
         if not model:
             return False, "VISION_MODEL/OCR_VLM_MODEL 未設定"
-        ok = llm.is_model_installed(model)
-        return ok, f"vlm:{model}" if ok else f"VLモデル未導入: {model}(ollama pull が必要)"
+        if not llm.is_model_installed(model):
+            return False, f"VLモデル未導入: {model}(ollama pull が必要)"
+        if not _model_has_vision(model):
+            return False, f"モデル『{model}』は画像非対応(visionなし)。qwen2.5vl 等を選択してください"
+        return True, f"vlm:{model}"
     except Exception as e:
         log.debug("ocr_available: 例外を無視して継続", exc_info=True)
         return False, f"vlm確認失敗: {str(e)[:120]}"
