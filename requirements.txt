@@ -14,7 +14,7 @@ itsdangerous>=2.1            # セッションCookieの署名
 ollama>=0.3.0
 
 # --- ベクトル検索 (RAG) ---
-chromadb>=0.5.0
+chromadb>=1.5.9
 sentence-transformers>=2.7   # 埋め込みモデル(多言語E5)。torchを含む
 
 # --- 文書ローダ / オフィスファイル生成(Code: 本物のファイル作成にも使用) ---
