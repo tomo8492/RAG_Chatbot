@@ -182,6 +182,7 @@
         <div class="field">
           <label>既定モデル</label>
           <select id="set-model"></select>
+          <p class="muted small">新しい会話で使う生成モデル。大きいモデルほど高精度ですが遅く、VRAMを使います。会話ごとにクイック設定で変更できます。</p>
         </div>
 
         <div class="field">
@@ -199,6 +200,7 @@
         <div class="field">
           <label>システムプロンプト(AIの役割・口調)</label>
           <textarea id="set-system" rows="4"></textarea>
+          <p class="muted small">すべての回答の前提になる指示。役割(例: 社内規程の案内係)・口調・禁止事項などを書きます。会話側で個別指定があればそちらを優先。</p>
         </div>
 
         <div class="grid2">
@@ -211,10 +213,12 @@
               <option value="high">高</option>
               <option value="max">最大(じっくり)</option>
             </select>
+            <p class="muted small">上げると考えてから答えるため難問の正確さが増しますが、回答開始まで遅くなります。単純な調べものは「最小〜低」で十分。</p>
           </div>
           <div class="field">
             <label>回答の最大長 (num_predict): <span id="set-numpredict-val"></span></label>
             <input type="range" id="set-numpredict" min="128" max="16384" step="128" />
+            <p class="muted small">1回の回答の上限トークン。長い要約・コードが途中で切れるときは上げます(必要な分しか使わないので上げて損はほぼ無し)。</p>
           </div>
         </div>
 
@@ -222,10 +226,12 @@
           <div class="field">
             <label>温度 / 創造性 (temperature): <span id="set-temp-val"></span></label>
             <input type="range" id="set-temp" min="0" max="1.5" step="0.05" />
+            <p class="muted small">下げるほど毎回同じ堅実な答え(資料Q&A・要約向き=0.2〜0.4)、上げるほど多様で創造的(アイデア出し=0.7〜)。1.0超は脱線しやすい。</p>
           </div>
           <div class="field">
             <label>top_p: <span id="set-topp-val"></span></label>
             <input type="range" id="set-topp" min="0.1" max="1.0" step="0.05" />
+            <p class="muted small">候補にする語彙の広さ。基本は 0.9 のままでOK。下げると堅く単調に。温度と同時に大きく動かさないのが無難です。</p>
           </div>
         </div>
 
@@ -233,10 +239,12 @@
           <div class="field">
             <label>参照件数 top_k: <span id="set-topk-val"></span></label>
             <input type="range" id="set-topk" min="0" max="60" step="1" />
+            <p class="muted small">回答の根拠として渡す検索チャンク数。増やすと取りこぼしが減る一方、無関係な文脈が混ざり遅くなることも。目安 15〜30。num_ctx が小さいと増やしても入り切りません。</p>
           </div>
           <div class="field">
-            <label>コンテキスト長 num_ctx (0=自動 / 大きいほど資料を多く参照・要メモリ): <span id="set-numctx-val"></span></label>
+            <label>コンテキスト長 num_ctx (0=自動): <span id="set-numctx-val"></span></label>
             <input type="range" id="set-numctx" min="0" max="32768" step="512" />
+            <p class="muted small">モデルが一度に読める量(トークン)。小さいと長い会話・多めの参照資料・Code の作業が途中で切れます。Code を使うなら 16384 以上推奨(大きいほどVRAM/メモリ消費)。</p>
           </div>
         </div>
 
@@ -246,10 +254,12 @@
             <div class="field">
               <label>チャンクサイズ: <span id="set-chunk-val"></span></label>
               <input type="range" id="set-chunk" min="200" max="2000" step="50" />
+              <p class="muted small">資料を分割する1片の文字数。大きいと文脈が繋がり長文の説明に強く、小さいとピンポイント検索に強い。規程・マニュアルは 600〜1000 が目安。</p>
             </div>
             <div class="field">
               <label>オーバーラップ: <span id="set-overlap-val"></span></label>
               <input type="range" id="set-overlap" min="0" max="500" step="20" />
+              <p class="muted small">隣接チャンクの重なり文字数。文や表が境界で分断されて検索に漏れるのを防ぎます。チャンクサイズの 10〜20% が目安。</p>
             </div>
           </div>
           <div class="field">
@@ -261,12 +271,13 @@
             <p class="muted small">検索の上位候補を、回答生成の前にLLMが関連度で採点して並べ替えます(リランク)。即時反映。</p>
           </div>
           <div class="field">
-            <label><input type="checkbox" id="set-ocr" /> スキャンPDFをOCRで取り込む(画像PDF対応)</label>
-            <p class="muted small">テキスト層の無いページを画像化してOCRします(やや遅い)。変更後はインデックス再構築で反映。</p>
+            <label><input type="checkbox" id="set-ocr" /> スキャンPDFをOCRで取り込む(画像PDF対応・既定ON)</label>
+            <p class="muted small">テキスト層の無いページ(スキャン文書)を画像化してOCRし、検索対象にします(その分作成は遅め)。オフにするとスキャンPDFは取り込まれません。変更後はインデックス再構築で反映。</p>
           </div>
           <div class="field">
             <label>OCRモデル(空=画像認識モデルを流用)</label>
             <select id="set-ocr-model"></select>
+            <p class="muted small">OCRに使う画像対応モデル。日本語の文書OCRは qwen2.5vl / GLM-OCR 等が高精度(要 ollama pull)。画像非対応モデルを選ぶと取り込み時に通知されます。</p>
           </div>
           <p class="muted small">※ チャンク設定は次回のインデックス作成・再構築から反映されます。</p>
           <p class="muted small">埋め込み: <span id="set-embed-info"></span></p>

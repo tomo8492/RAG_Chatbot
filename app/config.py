@@ -107,8 +107,8 @@ class Settings:
         # リランクに使うモデル(空なら既定モデルを流用)。
         self.rerank_model: str = os.getenv("RERANK_MODEL", "").strip()
 
-        # --- OCR(スキャン/画像PDF。既定OFF=現行動作を変えない) ---
-        self.ocr_enabled: bool = _bool("OCR_ENABLED", False)
+        # --- OCR(スキャン/画像PDF。既定ON=スキャン文書も取り込む。設定UI/.envでオフ可) ---
+        self.ocr_enabled: bool = _bool("OCR_ENABLED", True)
         # エンジン: "vlm"(Ollamaのビジョンモデル) / "tesseract"
         self.ocr_engine: str = os.getenv("OCR_ENGINE", "vlm").strip().lower()
         # VLM用モデル(空なら vision_model を流用)。例: "qwen2.5vl"
