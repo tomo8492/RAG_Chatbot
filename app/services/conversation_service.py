@@ -66,8 +66,8 @@ def update_conversation(cid: str, fields: dict) -> Optional[dict]:
         merged = dict(conv.get("settings") or {})
         merged.update(fields["settings"])
         fields["settings"] = merged
-    conv = db.update_conversation(cid, **fields)
-    return with_effective(conv)
+    updated = db.update_conversation(cid, **fields)
+    return with_effective(updated) if updated else None
 
 
 def edit_message(cid: str, mid: str, content: str, truncate_after: bool) -> bool:

@@ -484,7 +484,7 @@ def run_stream(model: str, messages: list, workspace: str,
             tool_calls = list(getattr(cm, "tool_calls", None) or [])
 
         content = "".join(content_parts)
-        asst_msg = {"role": "assistant", "content": content}
+        asst_msg: dict = {"role": "assistant", "content": content}
         if tool_calls:
             asst_msg["tool_calls"] = [_tc_to_dict(tc) for tc in tool_calls]
         messages.append(asst_msg)

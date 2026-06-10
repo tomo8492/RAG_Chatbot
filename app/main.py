@@ -91,7 +91,7 @@ def _denied_page(host: str | None) -> str:
     ip = (host or "不明").replace("<", "").replace(">", "")
     hint = ""
     try:
-        a = ipaddress.ip_address(host)
+        a = ipaddress.ip_address(host or "")
         a = getattr(a, "ipv4_mapped", None) or a
         if a.version == 4:
             hint = ".".join(str(a).split(".")[:3]) + ".0/24"
@@ -575,7 +575,7 @@ def api_agent(cid: str, body: AgentBody) -> Response:
     except Exception:
         log.exception("文脈圧縮に失敗(無視して続行)")
     # @file 指定があれば対象ファイルを文脈に前置きしてから依頼を追加
-    um = {"role": "user", "content": _resolve_mentions(ws, content) + (content or "添付された画像について説明・対応してください")}
+    um: dict = {"role": "user", "content": _resolve_mentions(ws, content) + (content or "添付された画像について説明・対応してください")}
     if image_b64s:
         um["images"] = image_b64s
     ctx.append(um)

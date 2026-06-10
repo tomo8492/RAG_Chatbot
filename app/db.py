@@ -119,7 +119,9 @@ def create_conversation(title: str = "新しい会話", model: Optional[str] = N
              now, now),
         )
         conn.commit()
-    return get_conversation(cid)
+    row = get_conversation(cid)
+    assert row is not None   # 直前に INSERT 済み
+    return row
 
 
 def get_conversation(cid: str) -> Optional[dict]:
@@ -259,7 +261,9 @@ def add_message(conversation_id: str, role: str, content: str,
         )
         conn.execute("UPDATE conversations SET updated_at=? WHERE id=?", (now, conversation_id))
         conn.commit()
-    return get_message(mid)
+    row = get_message(mid)
+    assert row is not None   # 直前に INSERT 済み
+    return row
 
 
 def get_message(mid: str) -> Optional[dict]:
@@ -326,7 +330,9 @@ def create_index(name: str, paths: list[str]) -> dict:
             (iid, name, json.dumps(paths, ensure_ascii=False), "building", now, now),
         )
         conn.commit()
-    return get_index(iid)
+    row = get_index(iid)
+    assert row is not None   # 直前に INSERT 済み
+    return row
 
 
 def get_index(iid: str) -> Optional[dict]:

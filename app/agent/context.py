@@ -22,7 +22,7 @@ def _text_of(m) -> str:
 
 
 def _role_of(m) -> str:
-    return m.get("role") if isinstance(m, dict) else getattr(m, "role", "")
+    return str((m.get("role") if isinstance(m, dict) else getattr(m, "role", "")) or "")
 
 
 def _ctx_chars(messages: list) -> int:
