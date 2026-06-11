@@ -150,19 +150,28 @@ def _extract_xlsx(path: Path) -> list[tuple[str, bytes]]:
 
 
 def _extract_docx(path: Path) -> list[tuple[str, bytes]]:
-    """Word: 段落を順に歩き、現在の見出し(loaders.load_docx と同じ規則)に画像を紐付ける。"""
+    """Word: 本文の段落と表を文書順に歩き、現在の見出し(loaders.load_docx と同じ規則)に
+    画像を紐付ける。手順書では表のセル内にスクショを貼ることが多いため、表の中も拾う。"""
     out: list[tuple[str, bytes]] = []
     try:
         from docx import Document
         from docx.oxml.ns import qn
+        from docx.text.paragraph import Paragraph
         doc = Document(str(path))
         head = "本文"
-        for para in doc.paragraphs:
-            t = para.text.strip()
-            if t and para.style and para.style.name and \
-                    para.style.name.startswith(("Heading", "見出し")):
-                head = t
-            for blip in para._element.xpath(".//a:blip"):
+        for child in doc.element.body.iterchildren():
+            if child.tag == qn("w:p"):
+                para = Paragraph(child, doc)
+                t = para.text.strip()
+                if t and para.style and para.style.name and \
+                        para.style.name.startswith(("Heading", "見出し")):
+                    head = t
+                blips = child.xpath(".//a:blip")
+            elif child.tag == qn("w:tbl"):
+                blips = child.xpath(".//a:blip")   # 表のセル内の画像(現在の見出しに帰属)
+            else:
+                continue
+            for blip in blips:
                 rid = blip.get(qn("r:embed"))
                 if not rid:
                     continue

@@ -114,16 +114,42 @@ tbody tr:last-child td{border-bottom:none;}
 
 
 def _decode_figures(figures: list | None, cap: int = 8) -> list[tuple[bytes, str]]:
-    """出典の図 [{data(base64), caption}] を [(bytes, caption)] に復元する(不正は無視)。"""
+    """出典の図 [{data(base64), caption}] を [(bytes, caption)] に復元する(不正は無視)。
+
+    Word/PowerPoint/PDF ライブラリが扱えない形式(WebP/BMP 等)は PNG へ変換して
+    互換性を確保する(変換できない図は黙って除外し、文書生成は止めない)。
+    """
     out: list[tuple[bytes, str]] = []
     for f in (figures or [])[:cap]:
         try:
             data = base64.b64decode(str((f or {}).get("data") or ""))
-            if len(data) > 100:
-                out.append((data, str((f or {}).get("caption") or "").strip()))
+            if len(data) <= 100:
+                continue
+            if not (data[:8] == b"\x89PNG\r\n\x1a\n" or data[:3] == b"\xff\xd8\xff"):
+                data = _to_png(data)
+                if not data:
+                    continue
+            out.append((data, str((f or {}).get("caption") or "").strip()))
         except Exception:
             log.debug("_decode_figures: 例外を無視して継続", exc_info=True)
     return out
+
+
+def _to_png(data: bytes) -> bytes:
+    """PNG/JPEG 以外の画像バイト列を PNG へ変換する(失敗時は b'')。"""
+    try:
+        from PIL import Image as PILImage
+        img = PILImage.open(io.BytesIO(data))
+        if img.mode in ("P", "LA"):
+            img = img.convert("RGBA")
+        elif img.mode not in ("RGB", "RGBA", "L"):
+            img = img.convert("RGB")
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        return buf.getvalue()
+    except Exception:
+        log.debug("_to_png: 変換に失敗(この図は除外)", exc_info=True)
+        return b""
 
 
 def _img_mime(data: bytes) -> str:
