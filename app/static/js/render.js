@@ -272,24 +272,8 @@ function renderSources(container, sources, note) {
     if (note) container.appendChild(el("span", "src-title src-empty", "🔍 " + note));
     return;
   }
-  // 思考(.thinking)と同じく折りたたみ表示。既定は閉じておき、クリックで展開する。
-  const details = el("details", "src-details");
-  const summary = el("summary", "src-summary", `📎 参照ファイル (${sources.length})`);
-  details.appendChild(summary);
-  const list = el("div", "src-list");
-  sources.forEach((s) => {
-    const label = `${s.source}${s.loc ? " " + s.loc : ""}${s.attachment ? " (添付)" : ""}`;
-    const item = el("span", "src-item", escapeHtml(label));
-    if (s.text && s.text.trim()) {           // 原文(該当チャンク)があればクリックで表示
-      item.classList.add("src-clickable");
-      item.title = "クリックで該当箇所(原文)を表示";
-      item.onclick = (e) => { e.stopPropagation(); showSourcePopover(item, s); };
-    }
-    list.appendChild(item);
-  });
-  details.appendChild(list);
-  // 出典に紐づく文書内の図(サムネイル)。クリックで原寸を別タブ表示。
-  // 収集結果は container._figures に保持し、「⬇ 保存」時の参考図埋め込みにも使う
+  // 出典に紐づく文書内の図は、折りたたみの外=回答のすぐ下に常時表示する
+  // (クリックで原寸)。収集結果は container._figures に保持し「⬇ 保存」の参考図にも使う
   const figures = [];
   sources.forEach((s) => (s.images || []).forEach((u) => {
     if (typeof u === "string" && u.startsWith("/api/doc-images/") && !figures.some((f) => f.url === u))
@@ -300,13 +284,29 @@ function renderSources(container, sources, note) {
     const box = el("div", "src-images");
     figures.slice(0, 8).forEach((f) => {
       const im = el("img", "src-thumb");
-      im.src = f.url; im.loading = "lazy"; im.alt = "文書内の図"; im.title = "クリックで原寸表示";
+      im.src = f.url; im.loading = "lazy"; im.alt = "文書内の図";
+      im.title = f.caption + "(クリックで原寸表示)";
       im.onclick = (e) => { e.stopPropagation(); window.open(f.url, "_blank"); };
       box.appendChild(im);
     });
-    details.appendChild(box);
-    summary.textContent = `📎 参照ファイル (${sources.length}) ・ 🖼 図 ${figures.length}`;
+    container.appendChild(box);
   }
+  // 思考(.thinking)と同じく折りたたみ表示。既定は閉じておき、クリックで展開する。
+  const details = el("details", "src-details");
+  const label = `📎 参照ファイル (${sources.length})` + (figures.length ? ` ・ 🖼 図 ${figures.length}` : "");
+  details.appendChild(el("summary", "src-summary", label));
+  const list = el("div", "src-list");
+  sources.forEach((s) => {
+    const itemLabel = `${s.source}${s.loc ? " " + s.loc : ""}${s.attachment ? " (添付)" : ""}`;
+    const item = el("span", "src-item", escapeHtml(itemLabel));
+    if (s.text && s.text.trim()) {           // 原文(該当チャンク)があればクリックで表示
+      item.classList.add("src-clickable");
+      item.title = "クリックで該当箇所(原文)を表示";
+      item.onclick = (e) => { e.stopPropagation(); showSourcePopover(item, s); };
+    }
+    list.appendChild(item);
+  });
+  details.appendChild(list);
   container.appendChild(details);
 }
 

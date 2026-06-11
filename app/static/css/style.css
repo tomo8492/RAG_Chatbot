@@ -600,11 +600,11 @@ summary.step-head:hover { background: rgba(127,127,127,.06); }
 /* 参照資料に該当が無いときの注記(strict-RAG の透明性) */
 .src-empty { opacity: .7; font-style: italic; }
 
-/* 出典に紐づく文書内の図(サムネイル) */
-.sources .src-images { display: flex; flex-wrap: wrap; gap: 6px; padding: 2px 12px 10px; }
+/* 出典に紐づく文書内の図(回答直下に常時表示のサムネイル) */
+.sources .src-images { display: flex; flex-wrap: wrap; gap: 8px; padding: 8px 0 4px; }
 .sources .src-thumb {
-  height: 72px; max-width: 180px; object-fit: cover; background: #fff;
-  border: 1px solid var(--line, rgba(128,128,128,.35)); border-radius: 6px; cursor: zoom-in;
+  height: 88px; max-width: 220px; object-fit: cover; background: #fff;
+  border: 1px solid var(--line, rgba(128,128,128,.35)); border-radius: 7px; cursor: zoom-in;
 }
 .sources .src-thumb:hover { filter: brightness(1.06); border-color: rgba(128,128,128,.65); }
 
