@@ -120,7 +120,10 @@ async function streamAssistant(payload) {
     }
     // 正常終了: サーバ後処理済み本文があればそれで最終描画(無ければ acc)
     // 聞き返しカード表示中は本文で上書きしない(保存はテキスト版が済んでいる)
-    if (!clarified) renderMarkdown(refs.md, finalContent != null ? finalContent : (acc || "*(応答なし)*"), true);
+    if (!clarified) {
+      renderMarkdown(refs.md, finalContent != null ? finalContent : (acc || "*(応答なし)*"), true);
+      applyInlineFigures(refs.md, refs.src);   // 本文の「図N」直下に画像を差し込む
+    }
     if (finalContent != null) acc = finalContent;
   } catch (e) {
     if (e.name === "AbortError") {

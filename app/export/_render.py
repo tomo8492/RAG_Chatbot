@@ -139,7 +139,8 @@ def _to_png(data: bytes) -> bytes:
     """PNG/JPEG 以外の画像バイト列を PNG へ変換する(失敗時は b'')。"""
     try:
         from PIL import Image as PILImage
-        img = PILImage.open(io.BytesIO(data))
+        # 注釈: open() の戻り(ImageFile)に convert() の戻り(Image)を再代入するため広い型で受ける
+        img: PILImage.Image = PILImage.open(io.BytesIO(data))
         if img.mode in ("P", "LA"):
             img = img.convert("RGBA")
         elif img.mode not in ("RGB", "RGBA", "L"):

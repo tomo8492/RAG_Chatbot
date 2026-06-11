@@ -74,6 +74,7 @@ function renderMessage(m, isLastAssistant) {
   renderMarkdown(refs.md, m.content, true);
   refs.row.dataset.raw = m.content;
   if (m.sources && m.sources.length && !clar) renderSources(refs.src, m.sources);
+  applyInlineFigures(refs.md, refs.src);   // 本文の「図N」直下に画像を差し込む
   buildAssistantActions(refs, isLastAssistant, m);
   return row;
 }
@@ -272,24 +273,8 @@ function renderSources(container, sources, note) {
     if (note) container.appendChild(el("span", "src-title src-empty", "🔍 " + note));
     return;
   }
-  // 思考(.thinking)と同じく折りたたみ表示。既定は閉じておき、クリックで展開する。
-  const details = el("details", "src-details");
-  const summary = el("summary", "src-summary", `📎 参照ファイル (${sources.length})`);
-  details.appendChild(summary);
-  const list = el("div", "src-list");
-  sources.forEach((s) => {
-    const label = `${s.source}${s.loc ? " " + s.loc : ""}${s.attachment ? " (添付)" : ""}`;
-    const item = el("span", "src-item", escapeHtml(label));
-    if (s.text && s.text.trim()) {           // 原文(該当チャンク)があればクリックで表示
-      item.classList.add("src-clickable");
-      item.title = "クリックで該当箇所(原文)を表示";
-      item.onclick = (e) => { e.stopPropagation(); showSourcePopover(item, s); };
-    }
-    list.appendChild(item);
-  });
-  details.appendChild(list);
-  // 出典に紐づく文書内の図(サムネイル)。クリックで原寸を別タブ表示。
-  // 収集結果は container._figures に保持し、「⬇ 保存」時の参考図埋め込みにも使う
+  // 出典に紐づく文書内の図は、折りたたみの外=回答のすぐ下に常時表示する
+  // (クリックで原寸)。収集結果は container._figures に保持し「⬇ 保存」の参考図にも使う
   const figures = [];
   sources.forEach((s) => (s.images || []).forEach((u) => {
     if (typeof u === "string" && u.startsWith("/api/doc-images/") && !figures.some((f) => f.url === u))
@@ -300,14 +285,79 @@ function renderSources(container, sources, note) {
     const box = el("div", "src-images");
     figures.slice(0, 8).forEach((f) => {
       const im = el("img", "src-thumb");
-      im.src = f.url; im.loading = "lazy"; im.alt = "文書内の図"; im.title = "クリックで原寸表示";
+      im.src = f.url; im.loading = "lazy"; im.alt = "文書内の図";
+      im.title = f.caption + "(クリックで原寸表示)";
       im.onclick = (e) => { e.stopPropagation(); window.open(f.url, "_blank"); };
       box.appendChild(im);
     });
-    details.appendChild(box);
-    summary.textContent = `📎 参照ファイル (${sources.length}) ・ 🖼 図 ${figures.length}`;
+    container.appendChild(box);
   }
+  // 思考(.thinking)と同じく折りたたみ表示。既定は閉じておき、クリックで展開する。
+  const details = el("details", "src-details");
+  const label = `📎 参照ファイル (${sources.length})` + (figures.length ? ` ・ 🖼 図 ${figures.length}` : "");
+  details.appendChild(el("summary", "src-summary", label));
+  const list = el("div", "src-list");
+  sources.forEach((s) => {
+    const itemLabel = `${s.source}${s.loc ? " " + s.loc : ""}${s.attachment ? " (添付)" : ""}`;
+    const item = el("span", "src-item", escapeHtml(itemLabel));
+    if (s.text && s.text.trim()) {           // 原文(該当チャンク)があればクリックで表示
+      item.classList.add("src-clickable");
+      item.title = "クリックで該当箇所(原文)を表示";
+      item.onclick = (e) => { e.stopPropagation(); showSourcePopover(item, s); };
+    }
+    list.appendChild(item);
+  });
+  details.appendChild(list);
   container.appendChild(details);
+}
+
+/* ---------- 本文中の「図N」参照の直下に該当画像を差し込む ----------
+   番号はギャラリー(container._figures)の並び=サーバが提示した番号表と同一規則。
+   差し込んだ図は下のギャラリーから外して重複表示を避ける。最終描画後に1回呼ぶ。 */
+function applyInlineFigures(mdEl, srcEl) {
+  const figures = (srcEl && srcEl._figures) || [];
+  if (!figures.length || !mdEl) return;
+  const used = new Set();
+  const re = /図\s*\.?\s*([1-8])(?![0-9])/g;     // 図1〜図8(図10等の誤一致は除外)
+  const targets = mdEl.querySelectorAll("p, li, td, h2, h3, h4, blockquote");
+  targets.forEach((blk) => {
+    if (blk.querySelector(".inline-figs")) return;          // 二重適用防止
+    const text = blk.textContent || "";
+    const here = [];
+    let m;
+    re.lastIndex = 0;
+    while ((m = re.exec(text)) !== null) {
+      const n = parseInt(m[1], 10);
+      if (n >= 1 && n <= figures.length && !used.has(n) && !here.includes(n)) here.push(n);
+    }
+    if (!here.length) return;
+    here.forEach((n) => used.add(n));
+    const wrap = el("div", "inline-figs");
+    here.forEach((n) => {
+      const f = figures[n - 1];
+      if (!f || typeof f.url !== "string" || !f.url.startsWith("/api/doc-images/")) return;
+      const fig = el("figure", "inline-fig");
+      const im = el("img");
+      im.src = f.url; im.loading = "lazy"; im.alt = "図" + n; im.title = "クリックで原寸表示";
+      im.onclick = (e) => { e.stopPropagation(); window.open(f.url, "_blank"); };
+      fig.appendChild(im);
+      fig.appendChild(el("figcaption", "inline-fig-cap",
+                         escapeHtml(`図${n}　${f.caption || ""}`)));
+      wrap.appendChild(fig);
+    });
+    if (!wrap.childNodes.length) return;
+    if (blk.tagName === "LI" || blk.tagName === "TD") blk.appendChild(wrap);   // 手順の中に表示
+    else blk.insertAdjacentElement("afterend", wrap);
+  });
+  // 本文へ差し込んだ図はギャラリーから除去(残った図だけ下に出る)
+  if (used.size && srcEl) {
+    const usedUrls = new Set([...used].map((n) => figures[n - 1] && figures[n - 1].url));
+    srcEl.querySelectorAll(".src-images .src-thumb").forEach((img) => {
+      if (usedUrls.has(img.getAttribute("src"))) img.remove();
+    });
+    const box = srcEl.querySelector(".src-images");
+    if (box && !box.childNodes.length) box.remove();
+  }
 }
 
 /* ---------- チャットの選択式聞き返し(曖昧な質問 → 資料を選んでもらう) ---------- */

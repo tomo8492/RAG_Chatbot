@@ -227,7 +227,7 @@ var NODE_INFO = {
   c_vmodel:{t:"Vision モデル切替", f:"app/main.py / app/llm.py(resolve_installed)", d:"画像が添付された質問は、⚙設定の「画像認識モデル」(vision対応)へ自動切替。未導入・非対応の場合は対処方法つきのエラーを返します。"},
   c_gen:   {t:"Ollama 生成", f:"app/llm.py(stream_chat)", d:"<ul><li>SSEでトークンを逐次配信(体感速度)</li><li>&lt;think&gt; や harmony 形式の思考は本文から分離し、💭折りたたみに表示</li><li>温度・top_p・効果(思考の深さ)・回答長は会話のクイック設定を反映</li></ul>"},
   c_post:  {t:"後処理 + 保存", f:"app/postprocess.py / app/db.py", d:"定型句や崩れの軽い清掃をしてから、本文と出典(図のURL含む)をSQLiteに保存。会話を開き直しても同じ表示が再現されます。"},
-  c_ui:    {t:"表示", f:"app/static/js/render.js(renderSources)", d:"<ul><li>本文の下に「📎 参照ファイル (N) ・ 🖼 図 N」の折りたたみ</li><li>展開すると出典一覧(クリックで原文)+図のサムネイル</li><li>サムネイルクリックで原寸を別タブ表示(/api/doc-images/・認証必須)</li></ul>"},
+  c_ui:    {t:"表示", f:"app/static/js/render.js(renderSources)", d:"<ul><li>回答のすぐ下に<b>図のサムネイルを常時表示</b>(クリックで原寸・/api/doc-images/・認証必須)</li><li>その下に「📎 参照ファイル (N) ・ 🖼 図 N」の折りたたみ(展開で出典一覧、クリックで原文)</li></ul>"},
   c_exp:   {t:"ファイル保存(エクスポート)", f:"app/export/_render.py", d:"回答を Word/Excel/PowerPoint/PDF/HTML/テキスト等へ変換。<ul><li><b>出典の図は「参考図」として埋め込み</b>(HTMLはdata URIで自己完結、PPTは1図1スライド、Excelは参考図シート)</li><li>Mermaid図もPNG化して埋め込み</li></ul>"},
   c_err:   {t:"エラー処理", f:"app/main.py", d:"Ollama不通・モデル未導入などは、原因と対処(ollama serve / pull コマンド等)を含むメッセージで表示します。リクエストIDがログと紐づきます。"},
 
