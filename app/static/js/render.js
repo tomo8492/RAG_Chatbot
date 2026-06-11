@@ -62,9 +62,18 @@ function renderMessage(m, isLastAssistant) {
     return row;
   }
   const { row, refs } = createAssistantRow();
+  // 選択式の聞き返し(チャット): 構造が保存されていれば、最後のメッセージに限り
+  // ボタン付きカードを復元する(回答済みの過去分はテキスト表示のまま)
+  const clar = Array.isArray(m.sources) && m.sources[0] && m.sources[0].clarify;
+  if (clar && isLastAssistant) {
+    renderClarifyCard(refs.md, clar);
+    refs.row.dataset.raw = m.content;
+    buildAssistantActions(refs, isLastAssistant, m);
+    return row;
+  }
   renderMarkdown(refs.md, m.content, true);
   refs.row.dataset.raw = m.content;
-  if (m.sources && m.sources.length) renderSources(refs.src, m.sources);
+  if (m.sources && m.sources.length && !clar) renderSources(refs.src, m.sources);
   buildAssistantActions(refs, isLastAssistant, m);
   return row;
 }

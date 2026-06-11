@@ -149,7 +149,8 @@ function handleStreamEvent(ev, refs, cb) {
     case "clarify": if (cb.onClarify) cb.onClarify(ev); break;
     case "done":
       if (cb.onDone) cb.onDone(ev.message);
-      if (ev.message && ev.message.sources && ev.message.sources.length)
+      if (ev.message && ev.message.sources && ev.message.sources.length
+          && !(ev.message.sources[0] && ev.message.sources[0].clarify))   // 聞き返しの構造は出典ではない
         renderSources(refs.src, ev.message.sources);
       break;
     case "title":   // 初回のLLM自動タイトルを即時反映(サイドバーは送信完了時の loadConversations が更新)
