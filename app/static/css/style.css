@@ -627,3 +627,26 @@ summary.step-head:hover { background: rgba(127,127,127,.06); }
 }
 .inline-fig-cap { font-size: 12px; color: var(--ink-soft, #8a93a6); margin-top: 3px; }
 li .inline-figs, td .inline-figs { margin: 6px 0 4px; }
+
+/* ============ 手順ビューア(工程ごとの文章+画像) ============ */
+.proc-modal { width: 880px; max-width: 96vw; max-height: 92vh; display: flex; flex-direction: column; }
+.proc-modal .modal-body { overflow-y: auto; }
+.proc-files { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.proc-file { text-align: left; border: 1px solid var(--line); background: var(--card); color: var(--ink);
+  border-radius: 9px; padding: 9px 12px; font-size: 13.5px; cursor: pointer; }
+.proc-file:hover { border-color: var(--accent); }
+.proc-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 4px; }
+.proc-tab { border: 1px solid var(--line); background: var(--panel); color: var(--ink-soft);
+  border-radius: 999px; padding: 4px 14px; font-size: 12.5px; cursor: pointer; }
+.proc-tab.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+.proc-step { border: 1px solid var(--line); border-radius: 11px; background: var(--card);
+  padding: 12px 14px; margin: 10px 0; }
+.proc-step-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 6px; }
+.proc-step-no { background: var(--accent); color: #fff; border-radius: 7px;
+  padding: 1px 10px; font-size: 12.5px; font-weight: 700; white-space: nowrap; }
+.proc-step-title { font-weight: 600; font-size: 14px; }
+.proc-step-text { white-space: pre-wrap; font-size: 13.5px; color: var(--ink);
+  border-left: 3px solid var(--line); padding-left: 10px; margin: 6px 0; }
+.proc-imgs { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.proc-img { max-height: 260px; max-width: 100%; border: 1px solid var(--line);
+  border-radius: 8px; cursor: zoom-in; background: #fff; }

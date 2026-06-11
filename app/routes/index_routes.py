@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -15,7 +16,10 @@ from pydantic import BaseModel
 
 from .. import auth, db
 from ..config import settings
+from ..logging_setup import get_logger
 from ..services import index_service
+
+log = get_logger("index_routes")
 
 # すべてのインデックス系ルートは認証必須(従来の per-route 依存と等価)
 router = APIRouter(dependencies=[Depends(auth.require_auth)])
@@ -123,3 +127,52 @@ def api_doc_image(iid: str, name: str) -> FileResponse:
     if base not in p.parents or not p.is_file():
         raise HTTPException(404, "画像が見つかりません")
     return FileResponse(str(p), headers={"Cache-Control": "private, max-age=86400"})
+
+
+# ------------------------------------------------------------------
+#  手順ビューア(工程ごとの文章+画像)
+# ------------------------------------------------------------------
+def _resolve_index_file(idx: dict, path_str: str) -> Path:
+    """ビューア対象ファイルが、この資料の登録フォルダ配下にあることを検証する。"""
+    try:
+        p = Path(path_str).resolve()
+    except OSError:
+        raise HTTPException(400, "パスを解決できません")
+    for base in idx.get("paths") or []:
+        try:
+            b = Path(base).resolve()
+        except OSError:
+            continue
+        if p == b or b in p.parents:
+            if not p.is_file():
+                raise HTTPException(404, "ファイルが見つかりません(移動/削除された可能性)")
+            return p
+    raise HTTPException(400, "この資料の登録フォルダ外のファイルは表示できません")
+
+
+@router.get("/api/indexes/{iid}/files")
+def api_index_files(iid: str) -> dict:
+    """資料に含まれる対応ファイルの一覧(手順ビューアのファイル選択用)。"""
+    idx = db.get_index(iid)
+    if not idx:
+        raise HTTPException(404, "インデックスが見つかりません")
+    from .. import rag
+    files = rag.scan_files(idx.get("paths") or [])[:500]
+    return {"files": [{"name": f.name, "path": str(f)} for f in files]}
+
+
+@router.get("/api/indexes/{iid}/procedure")
+def api_index_procedure(iid: str, path: str) -> dict:
+    """1ファイルを「工程ごと(文章+画像)」の構造で返す(手順ビューア本体)。"""
+    idx = db.get_index(iid)
+    if not idx:
+        raise HTTPException(404, "インデックスが見つかりません")
+    p = _resolve_index_file(idx, path)
+    from .. import procedure
+    try:
+        return procedure.build_view(iid, p)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        log.exception("手順ビューの生成に失敗: %s", path)
+        raise HTTPException(500, f"手順ビューの生成に失敗しました: {e}")

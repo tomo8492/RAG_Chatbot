@@ -204,6 +204,12 @@ function renderKbList() {
         }
       }
     }
+    if (idx.status === "ready") {
+      const proc = el("button", "btn", "📖 手順ビューア");
+      proc.title = "手順書を工程ごと(文章+画像)に表示";
+      proc.onclick = () => openProcedurePicker(idx);
+      actions.appendChild(proc);
+    }
     const rebuild = el("button", "btn", "↻ 再構築");
     rebuild.onclick = () => rebuildIndex(idx.id);
     const del = el("button", "btn", "🗑 削除");
@@ -605,3 +611,107 @@ async function setCodeVerifyCmd(cmd) {
   } catch (e) { toast("設定失敗: " + e.message); }
 }
 
+
+/* ============================================================
+   手順ビューア: 手順書を「工程ごと(文章+画像)」で表示
+   ============================================================ */
+function openProcModal(title) {
+  $("proc-title").textContent = title || "📖 手順ビューア";
+  $("proc-body").innerHTML = "";
+  $("proc-modal").classList.remove("hidden");
+  $("proc-close").onclick = () => $("proc-modal").classList.add("hidden");
+}
+
+async function openProcedurePicker(idx) {
+  openProcModal(`📖 手順ビューア — ${idx.name}`);
+  const body = $("proc-body");
+  body.appendChild(el("p", "muted small", "表示する手順書を選んでください(対応: Excel / PowerPoint / PDF / Word)"));
+  try {
+    const { files } = await api(`/api/indexes/${idx.id}/files`);
+    const viewable = (files || []).filter((f) => /\.(xlsx|pptx|pdf|docx)$/i.test(f.name));
+    if (!viewable.length) {
+      body.appendChild(el("p", "muted small", "表示できるファイルがありません"));
+      return;
+    }
+    const list = el("div", "proc-files");
+    viewable.forEach((f) => {
+      const b = el("button", "proc-file", "📄 " + escapeHtml(f.name));
+      b.title = f.path;
+      b.onclick = () => openProcedureView(idx, f);
+      list.appendChild(b);
+    });
+    body.appendChild(list);
+  } catch (e) {
+    body.appendChild(el("p", "error-text", "一覧の取得に失敗: " + escapeHtml(e.message)));
+  }
+}
+
+async function openProcedureView(idx, file) {
+  const body = $("proc-body");
+  body.innerHTML = "";
+  $("proc-title").textContent = `📖 ${file.name}`;
+  const back = el("button", "btn", "← ファイル一覧へ");
+  back.onclick = () => openProcedurePicker(idx);
+  body.appendChild(back);
+  body.appendChild(el("p", "muted small", "読み込み中…(初回は画像の取り出しに少し時間がかかります)"));
+  let data;
+  try {
+    data = await api(`/api/indexes/${idx.id}/procedure?path=${encodeURIComponent(file.path)}`);
+  } catch (e) {
+    body.appendChild(el("p", "error-text", "表示に失敗: " + escapeHtml(e.message)));
+    return;
+  }
+  body.innerHTML = "";
+  body.appendChild(back);
+
+  const sheets = data.sheets || [];
+  const content = el("div", "proc-content");
+  const renderSheet = (sheet) => {
+    content.innerHTML = "";
+    if (sheet.fallback) {
+      content.appendChild(el("p", "muted small",
+        "⚠ 工程番号の列を検出できなかったため、シート全体を表示しています"));
+    }
+    (sheet.steps || []).forEach((s) => {
+      const card = el("div", "proc-step");
+      const head = el("div", "proc-step-head");
+      if (s.no) head.appendChild(el("span", "proc-step-no", "工程 " + escapeHtml(s.no)));
+      head.appendChild(el("span", "proc-step-title", escapeHtml(s.title || "")));
+      card.appendChild(head);
+      if (s.text && s.text.trim()) {
+        const t = el("div", "proc-step-text");
+        t.textContent = s.text;
+        card.appendChild(t);
+      }
+      if (s.images && s.images.length) {
+        const imgs = el("div", "proc-imgs");
+        s.images.forEach((u) => {
+          if (typeof u !== "string" || !u.startsWith("/api/doc-images/")) return;
+          const im = el("img", "proc-img");
+          im.src = u; im.loading = "lazy"; im.alt = "工程の図"; im.title = "クリックで原寸表示";
+          im.onclick = () => window.open(u, "_blank");
+          imgs.appendChild(im);
+        });
+        card.appendChild(imgs);
+      }
+      content.appendChild(card);
+    });
+  };
+
+  if (sheets.length > 1) {
+    const tabs = el("div", "proc-tabs");
+    sheets.forEach((sh, i) => {
+      const t = el("button", "proc-tab" + (i === 0 ? " active" : ""), escapeHtml(sh.name));
+      t.onclick = () => {
+        tabs.querySelectorAll(".proc-tab").forEach((x) => x.classList.remove("active"));
+        t.classList.add("active");
+        renderSheet(sh);
+      };
+      tabs.appendChild(t);
+    });
+    body.appendChild(tabs);
+  }
+  body.appendChild(content);
+  if (sheets.length) renderSheet(sheets[0]);
+  else body.appendChild(el("p", "muted small", "表示できる内容がありません"));
+}
