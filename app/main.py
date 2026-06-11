@@ -123,7 +123,14 @@ async def _lan_guard(request, call_next):
             log.warning("LAN外からのアクセスを拒否: %s (UA=%s)",
                         host, request.headers.get("user-agent", "")[:80])
             return Response(_denied_page(host), status_code=403, media_type="text/html; charset=utf-8")
-    return await call_next(request)
+    response = await call_next(request)
+    # JS/CSS の更新がデプロイ後すぐ全クライアントへ届くよう、毎回サーバへ検証させる
+    # (変更が無ければ 304 で済むのでLAN内では十分軽い。旧JSキャッシュが残って
+    #  「新機能が画面に出ない」問題を防ぐ)
+    p = request.url.path
+    if p == "/" or p.startswith("/static/"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
 
 
 @app.middleware("http")
@@ -444,10 +451,13 @@ def api_generate(cid: str, body: GenerateBody) -> Response:
         if user_msg:
             yield sse({"type": "user_saved", "message": user_msg})
         if clarify:
-            # 曖昧 → 回答せずに選択式で聞き返してターン終了(LLM不要・1往復増えるだけ)
-            asst = db.add_message(cid, "assistant", clarify["text"], sources=[])
-            yield sse({"type": "clarify", "question": clarify["question"],
-                       "options": clarify["options"], "query": query})
+            # 曖昧 → 回答せずに選択式で聞き返してターン終了(LLM不要・1往復増えるだけ)。
+            # カードの構造を sources に保存し、リロード後もボタン付きで復元できるようにする
+            payload = {"question": clarify["question"],
+                       "options": clarify["options"], "query": query}
+            asst = db.add_message(cid, "assistant", clarify["text"],
+                                  sources=[{"clarify": payload}])
+            yield sse({"type": "clarify", **payload})
             yield sse({"type": "done", "message": asst})
             return
         if not model:
