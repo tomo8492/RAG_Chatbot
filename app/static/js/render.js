@@ -301,6 +301,43 @@ function renderSources(container, sources, note) {
   container.appendChild(details);
 }
 
+/* ---------- チャットの選択式聞き返し(曖昧な質問 → 資料を選んでもらう) ---------- */
+function renderClarifyCard(container, ev) {
+  const card = el("div", "confirm-card ask-card chat-clarify");
+  card.appendChild(el("div", "confirm-title",
+    "🔎 " + escapeHtml(ev.question || "どの資料についてのご質問ですか?")));
+  const opts = el("div", "ask-options");
+  const addOpt = (label, desc, source) => {
+    const btn = el("button", "ask-opt");
+    btn.type = "button";
+    const main = el("div", "ask-opt-main");
+    main.appendChild(el("span", "ask-opt-label", escapeHtml(label)));
+    btn.appendChild(main);
+    if (desc) btn.appendChild(el("div", "ask-opt-desc", escapeHtml(desc)));
+    btn.onclick = () => clarifyResend(ev.query || "", source, card);
+    opts.appendChild(btn);
+  };
+  (ev.options || []).slice(0, 4).forEach((o) => addOpt(o.label || "", o.description || "", o.label || ""));
+  addOpt("すべての資料から回答", "絞り込まずにそのまま回答します", null);
+  card.appendChild(opts);
+  container.appendChild(card);
+}
+
+async function clarifyResend(query, source, card) {
+  if (State.streaming || !State.current || !query) return;
+  card.querySelectorAll("button").forEach((b) => (b.disabled = true));
+  card.dataset.resolved = "1";
+  const text = source ? `${query}(対象資料: ${source})` : query;
+  const urow = el("div", "msg-row user");
+  const bub = el("div", "bubble");
+  bub.textContent = text;
+  urow.appendChild(bub);
+  $("messages").appendChild(urow);
+  await streamAssistant({ content: text, attachments: [], images: [], mode: "send",
+                          focus_source: source || null, skip_clarify: true });
+  await loadConversations();
+}
+
 function showSourcePopover(anchor, s) {
   const existing = document.querySelector(".src-popover");
   const sameAnchor = existing && existing._anchor === anchor;

@@ -607,3 +607,7 @@ summary.step-head:hover { background: rgba(127,127,127,.06); }
   border: 1px solid var(--line, rgba(128,128,128,.35)); border-radius: 6px; cursor: zoom-in;
 }
 .sources .src-thumb:hover { filter: brightness(1.06); border-color: rgba(128,128,128,.65); }
+
+/* チャットの選択式聞き返しカード */
+.md .chat-clarify { margin: 6px 0 2px; }
+.chat-clarify .ask-opt-desc { margin-top: 2px; }
