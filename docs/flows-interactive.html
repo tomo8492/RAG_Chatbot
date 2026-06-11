@@ -67,9 +67,12 @@ flowchart TD
   c_rr -->|"ON"| c_llmrr["LLMリランク<br/>(関連度を採点して並べ替え)"]
   c_rr -->|"OFF"| c_zero
   c_llmrr --> c_zero{"ヒット 0件?"}
-  c_zero -->|"はい(書き換え時)"| c_retry["原文クエリで再検索(保険)"] --> c_src
-  c_zero -->|"いいえ"| c_src["出典確定<br/>原文チャンク + 🖼 紐づく図"]
-  c_src --> c_msg["プロンプト構築<br/>strict-RAG / num_ctx 予算管理"]
+  c_zero -->|"はい(書き換え時)"| c_retry["原文クエリで再検索(保険)"] --> c_clar
+  c_zero -->|"いいえ"| c_clar{"曖昧な短い質問?<br/>候補が3資料以上に分散"}
+  c_clar -->|"はい"| c_ask["🔎 選択式の聞き返しカード<br/>(LLM不使用・即時)"]
+  c_ask -.->|"資料を選択 → 自動再送(focus)"| c_in
+  c_clar -->|"いいえ"| c_src["出典確定<br/>原文チャンク + 🖼 紐づく図"]
+  c_src --> c_msg["プロンプト構築<br/>strict-RAG / num_ctx 予算 / 図N番号表"]
   c_msg --> c_vis{"画像添付あり?"}
   c_vis -->|"はい"| c_vmodel["Vision モデルへ切替"] --> c_gen
   c_vis -->|"いいえ"| c_gen["Ollama 生成<br/>(ストリーミング・思考分離)"]
@@ -84,6 +87,8 @@ flowchart TD
   click c_fuse call nodeInfo() "詳細を表示"
   click c_llmrr call nodeInfo() "詳細を表示"
   click c_retry call nodeInfo() "詳細を表示"
+  click c_clar call nodeInfo() "詳細を表示"
+  click c_ask call nodeInfo() "詳細を表示"
   click c_src call nodeInfo() "詳細を表示"
   click c_msg call nodeInfo() "詳細を表示"
   click c_vmodel call nodeInfo() "詳細を表示"
@@ -96,10 +101,12 @@ flowchart TD
   classDef io fill:#eef4ff,stroke:#3b5bdb,color:#1f2328
   classDef opt fill:#f3eefe,stroke:#7048e8,color:#1f2328
   classDef err fill:#fff1f0,stroke:#d4380d,color:#1f2328
+  classDef hil fill:#fff8e1,stroke:#b54708,color:#1f2328
   class c_in,c_ui,c_exp io
   class c_llmrr,c_vmodel opt
+  class c_ask hil
   class c_err err
-  </pre></div>
+</pre></div>
 
   <h2 id="intake">📁 チャット: 資料取り込み(チャンク化)フロー</h2>
   <p class="lead">フォルダ選択(共有サーバ可)→ 抽出 → OCR/図 → 構造分割 → 埋め込み → 保存。再構築は増分(変更ファイルだけ)。</p>
@@ -107,7 +114,7 @@ flowchart TD
 flowchart TD
   i_pick(["フォルダ選択<br/>ローカル / 共有サーバ(UNC)"]) --> i_guard{"全フォルダに到達できる?"}
   i_guard -->|"いいえ(共有切断等)"| i_abort["構築を中断<br/>既存チャンクは保持"]
-  i_guard -->|"はい"| i_scan["対応ファイルを再帰走査"]
+  i_guard -->|"はい"| i_scan["対応ファイルを再帰走査<br/>(~$ ロックファイル等は除外)"]
   i_scan --> i_diff{"変更あり?(増分判定)<br/>更新時刻+サイズ署名"}
   i_diff -->|"変更なし"| i_keep["既存チャンク据え置き"]
   i_diff -->|"新規/変更"| i_load["本文抽出<br/>PDF頁 / Word節 / Excelシート / PPT"]
@@ -115,15 +122,17 @@ flowchart TD
   i_ocr -->|"はい(スキャン頁)"| i_vlm["OCR(VLM/tesseract)<br/>画像非対応モデルは即検知"]
   i_ocr -->|"いいえ"| i_img
   i_vlm --> i_img["図の抽出・保存<br/>data/doc_images/ へ"]
-  i_img --> i_fig["図チャンク生成<br/>VLMが説明文を索引化"]
+  i_img --> i_fig["図チャンク生成<br/>VLM説明(内容ハッシュでキャッシュ)"]
   i_fig --> i_split["構造分割<br/>見出しパス + chunk/overlap"]
   i_split --> i_ctx{"文脈付き埋め込み ON?"}
   i_ctx -->|"ON"| i_doc["文書の主題1〜2文を生成し<br/>埋め込みに前置き"] --> i_embed
   i_ctx -->|"OFF"| i_embed["埋め込み(e5・128件バッチ)"]
   i_embed --> i_store["Chroma 保存<br/>削除ファイルのチャンク除去"]
   i_keep --> i_store
+  i_store -.->|"保存領域の破損を検知"| i_bad["即中断 + 復旧手順を表示<br/>(資料を削除→登録し直し)"]
 
   click i_pick call nodeInfo() "詳細を表示"
+  click i_bad call nodeInfo() "詳細を表示"
   click i_guard call nodeInfo() "詳細を表示"
   click i_abort call nodeInfo() "詳細を表示"
   click i_scan call nodeInfo() "詳細を表示"
@@ -142,7 +151,7 @@ flowchart TD
   classDef err fill:#fff1f0,stroke:#d4380d,color:#1f2328
   class i_pick io
   class i_doc,i_vlm,i_fig opt
-  class i_abort err
+  class i_abort,i_bad err
   </pre></div>
 
   <h2 id="agent">🤖 Code エージェント フロー</h2>
@@ -222,12 +231,14 @@ var NODE_INFO = {
   c_fuse:  {t:"BM25 + RRF 融合", f:"app/retrieval.py(rerank)", d:"密ベクトルの順位と語彙スコア(BM25相当)の順位を <b>RRF(Reciprocal Rank Fusion)</b> で合成。<ul><li>型番・条番号・固有名詞の完全一致を取りこぼさない</li><li>重複チャンク除去・1ファイル独占を防ぐソース多様化・無関係ヒットの足切り</li><li>文脈付き埋め込みON時は文書文脈も語彙照合に含める(Contextual BM25)</li></ul>"},
   c_llmrr: {t:"LLMリランク(任意)", f:"app/retrieval.py(llm_rerank)", d:"融合上位の候補を、回答前にLLMが関連度0〜10で採点して並べ替え。<ul><li>精度↑/クエリごとにLLM呼び出し1回ぶん遅くなる</li><li>⚙設定「回答前にLLMで出典を並べ替え」でON/OFF(既定OFF)</li></ul>"},
   c_retry: {t:"原文で再検索(保険)", f:"app/main.py", d:"書き換え後クエリで0件のときだけ、元の質問文でもう一度検索します。クエリ書き換えの誤りで取りこぼすのを防ぐ保険です。"},
+  c_clar:  {t:"曖昧クエリの判定", f:"app/main.py(_maybe_clarify_sources)", d:"検索結果の分布だけで判定する(<b>LLM不使用=即時</b>)。すべて満たすときだけ聞き返す:<ul><li>参照資料を選択した会話の新規送信</li><li>質問が24字以下(具体的な長文は聞かない)</li><li>上位ヒットが3資料以上に分散し、先頭資料が明確に優勢でない</li><li>質問に資料名を含まない/直前も聞き返しでない(連続防止)</li></ul>⚙設定「曖昧な質問は選択式で聞き返す」でOFF可(既定ON)。"},
+  c_ask:   {t:"選択式の聞き返しカード", f:"app/static/js/render.js(renderClarifyCard)", d:"<ul><li>選択肢=候補資料(出現順・最大4件、該当箇所つき)+「すべての資料から回答」</li><li>クリックで「質問(対象資料: ○○)」を自動再送し、<b>focus_source でその資料にヒットを絞って</b>回答</li><li>構造はメッセージに保存され、リロード後も最後のメッセージならカードを復元</li></ul>"},
   c_src:   {t:"出典確定", f:"app/main.py → SSE(sources)", d:"採用チャンクを (ファイル, 場所) で重複除去して出典リスト化。<ul><li>各出典に原文チャンク(クリックで表示)を添付</li><li>チャンクに紐づく<b>🖼文書内の図</b>のURLもここで付与</li></ul>"},
-  c_msg:   {t:"プロンプト構築", f:"app/llm.py(build_messages)", d:"<ul><li>参照フォルダ選択時は<b>strict-RAG</b>: 資料に無いことは「記載が見つかりませんでした」と答えるよう指示</li><li>num_ctx 予算内に参考資料を自動トリム(静かな切り捨てを防ぐ)</li><li>図解要求時のみ Mermaid 出力ガイドを付与</li></ul>"},
+  c_msg:   {t:"プロンプト構築", f:"app/llm.py(build_messages)", d:"<ul><li>参照フォルダ選択時は<b>strict-RAG</b>: 資料に無いことは「記載が見つかりませんでした」と答えるよう指示</li><li>num_ctx 予算内に参考資料を自動トリム(静かな切り捨てを防ぐ)</li><li>図解要求時のみ Mermaid 出力ガイドを付与</li><li>出典に図があるときは<b>【利用できる図】番号表</b>(図1=出典順)を提示。本文に「図N」と書かれた箇所の直下へ画像を差し込める</li></ul>"},
   c_vmodel:{t:"Vision モデル切替", f:"app/main.py / app/llm.py(resolve_installed)", d:"画像が添付された質問は、⚙設定の「画像認識モデル」(vision対応)へ自動切替。未導入・非対応の場合は対処方法つきのエラーを返します。"},
   c_gen:   {t:"Ollama 生成", f:"app/llm.py(stream_chat)", d:"<ul><li>SSEでトークンを逐次配信(体感速度)</li><li>&lt;think&gt; や harmony 形式の思考は本文から分離し、💭折りたたみに表示</li><li>温度・top_p・効果(思考の深さ)・回答長は会話のクイック設定を反映</li></ul>"},
   c_post:  {t:"後処理 + 保存", f:"app/postprocess.py / app/db.py", d:"定型句や崩れの軽い清掃をしてから、本文と出典(図のURL含む)をSQLiteに保存。会話を開き直しても同じ表示が再現されます。"},
-  c_ui:    {t:"表示", f:"app/static/js/render.js(renderSources)", d:"<ul><li>回答のすぐ下に<b>図のサムネイルを常時表示</b>(クリックで原寸・/api/doc-images/・認証必須)</li><li>その下に「📎 参照ファイル (N) ・ 🖼 図 N」の折りたたみ(展開で出典一覧、クリックで原文)</li></ul>"},
+  c_ui:    {t:"表示", f:"app/static/js/render.js(renderSources / applyInlineFigures)", d:"<ul><li>本文中の「図N」参照の<b>直下に該当画像を差し込み</b>(キャプション=図N+出典。番号表に実在するIDのみ描画)</li><li>参照されなかった図は回答直下のギャラリーに常時表示(クリックで原寸)</li><li>その下に「📎 参照ファイル (N) ・ 🖼 図 N」の折りたたみ(展開で出典一覧、クリックで原文)</li></ul>"},
   c_exp:   {t:"ファイル保存(エクスポート)", f:"app/export/_render.py", d:"回答を Word/Excel/PowerPoint/PDF/HTML/テキスト等へ変換。<ul><li><b>出典の図は「参考図」として埋め込み</b>(HTMLはdata URIで自己完結、PPTは1図1スライド、Excelは参考図シート)</li><li>Mermaid図もPNG化して埋め込み</li></ul>"},
   c_err:   {t:"エラー処理", f:"app/main.py", d:"Ollama不通・モデル未導入などは、原因と対処(ollama serve / pull コマンド等)を含むメッセージで表示します。リクエストIDがログと紐づきます。"},
 
@@ -235,16 +246,17 @@ var NODE_INFO = {
   i_pick:  {t:"フォルダ選択", f:"app/fsbrowse.py / app/routes/fs_routes.py", d:"<ul><li>サーバPCのフォルダ、または<b>共有サーバフォルダ(UNC: \\\\server\\share)</b>を選択</li><li>.env の SHARED_FOLDERS でクイックアクセス登録可</li><li>OS/システム領域・アプリのデータ領域は選択不可(safety)</li></ul>"},
   i_guard: {t:"到達性ガード", f:"app/rag.py(build_index 冒頭)", d:"登録フォルダのどれかに到達できない(共有切断・権限切れ)場合、走査前に中断します。<b>オフライン中の再構築で既存チャンクを「削除された」と誤判定して消す事故を防ぐ</b>仕組みです。"},
   i_abort: {t:"安全な中断", f:"app/rag.py", d:"インデックスはエラー状態になりますが、<b>既存のチャンク・図はすべて保持</b>。共有フォルダ復旧後に「再構築」すれば差分だけ更新されます。"},
-  i_scan:  {t:"ファイル走査", f:"app/rag.py(scan_files)", d:"対応拡張子(.pdf .docx .xlsx .pptx .txt .md .csv 等)を再帰的に収集。重複パスは除去します。"},
+  i_scan:  {t:"ファイル走査", f:"app/rag.py(scan_files)", d:"対応拡張子(.pdf .docx .xlsx .pptx .txt .md .csv 等)を再帰的に収集。重複パスは除去。<b>Officeのロック/一時ファイル(~$… / .~lock.…)は走査・件数見積り・フォルダ一覧すべてから除外</b>します。"},
   i_diff:  {t:"増分判定", f:"app/rag.py(_file_sig)", d:"ファイルごとに「更新時刻+サイズ(+設定版数)」の署名を比較。<ul><li>変更なし→再埋め込みせず据え置き(数百ファイルでも高速)</li><li>削除されたファイルのチャンクは最後に除去</li><li>埋め込みモデル変更時は全体を自動で作り直し</li></ul>"},
   i_load:  {t:"本文抽出", f:"app/loaders.py", d:"<ul><li>PDF=ページ単位 / Word=見出し節+表 / Excel=シート(行を | 連結) / PPT=スライド</li><li>テキスト系は文字コード自動判定(UTF-8/CP932等)</li><li>出典表示用の場所(p.5 / シート:組立 等)を付与</li></ul>"},
   i_vlm:   {t:"OCR(スキャン頁のみ)", f:"app/ocr.py", d:"テキスト層が16字未満の頁だけ画像化してOCR。<ul><li>エンジン: VLM(glm-ocr / qwen2.5vl 等)または tesseract</li><li><b>画像非対応モデルは1頁目で即検知</b>して全頁スキップ(時間を無駄にしない)</li><li>取り込めなかった件数はUIに通知</li></ul>"},
   i_img:   {t:"図の抽出・保存", f:"app/doc_images.py", d:"<ul><li>Excel/Word/PPT/PDF の埋め込み画像を抽出し data/doc_images/ へ内容ハッシュ名で保存</li><li>同じシート/頁/節のチャンクに画像IDを紐付け→出典に🖼表示</li><li>アイコン・罫線・ロゴはサイズ/出現頻度で自動除外。1600px超は縮小</li></ul>"},
-  i_fig:   {t:"図チャンク(検索対象化)", f:"app/rag.py + app/ocr.py(describe_image_png)", d:"OCRモデル(VLM)が各図の説明文を生成し「〔図〕配線図…」というチャンクとして索引化。<b>「〜の図はどれ?」という質問で図がヒット</b>するようになります(OCR無効時はスキップ・リンクは維持)。"},
+  i_fig:   {t:"図チャンク(検索対象化)", f:"app/rag.py + app/ocr.py(describe_image_png)", d:"OCRモデル(VLM)が各図の説明文を生成し「〔図〕配線図…」というチャンクとして索引化。<b>「〜の図はどれ?」という質問で図がヒット</b>するようになります(OCR無効時はスキップ・リンクは維持)。<br>説明は<b>画像の内容ハッシュでキャッシュ</b>(figdesc:…)され、再構築・資料の作り直し・別資料への同一図の登場ではVLMを呼び直しません。"},
   i_split: {t:"構造分割(チャンク化)", f:"app/splitter.py(split_structured)", d:"<ul><li>見出し(第N章/条・2.1・【…】・# 等)で節に区切り、<b>見出しパス</b>を各チャンクに付与</li><li>節内は 段落→行→句点→読点 の順で chunk_size(既定800字)に分割、overlap(既定120字)を引き継ぎ</li></ul>"},
   i_doc:   {t:"文脈付き埋め込み(任意)", f:"app/rag.py(_doc_context)", d:"文書全体の主題をLLMで1〜2文生成し、各チャンクの<b>埋め込み用テキストにだけ</b>前置き(表示はクリーンなまま)。短いチャンクの検索精度が上がります。⚙設定でON(既定OFF・再構築で反映)。"},
   i_embed: {t:"埋め込み", f:"app/embeddings.py", d:"multilingual-e5-base(768次元)で128件ずつバッチ埋め込み。<ul><li>E5系は passage:/query: プレフィックスを自動付与</li><li>CUDA版 torch があればGPU、無ければCPUで動作</li><li>EMBED_BACKEND=ollama(nomic-embed等)へ切替可</li></ul>"},
-  i_store: {t:"Chroma 保存", f:"app/rag.py", d:"チャンク本文+ベクトル+メタデータ(出典・見出し・署名・図ID)を data/chroma に永続化。削除ファイルのチャンク除去もここで実施します。"},
+  i_store: {t:"Chroma 保存", f:"app/rag.py", d:"チャンク本文+ベクトル+メタデータ(出典・見出し・署名・図ID)を data/chroma に永続化。削除ファイルのチャンク除去もここで実施。保存時に破損(hnsw/compaction系エラー)を検知したら即中断します。"},
+  i_bad:   {t:"破損の即時中断", f:"app/rag.py(_is_corruption_error)", d:"ベクトルDBのコレクション破損を1件目で検知してビルドを中断し、<b>復旧手順を画面のエラーにそのまま表示</b>:<ul><li>その資料を「削除」→ フォルダを登録し直す</li><li>直らなければアプリ停止後 data/chroma を削除して再起動(会話履歴は残る)</li><li>data が OneDrive 等の同期配下なら DATA_DIR を同期外へ</li></ul>既存チャンクの件数情報は保持し、全ファイルで失敗を繰り返す無駄を防ぎます。"},
 
   /* Code エージェント */
   a_in:    {t:"依頼入力", f:"app/main.py(api_agent)", d:"<ul><li>作業フォルダ・計画モード・変更許可・自動検証・num_ctx は会話設定から取得</li><li>@相対パス と書くと該当ファイルを文脈に前置き</li><li>num_ctx&lt;16384 は警告ログ(固定費~8千トークンのため)</li></ul>"},
