@@ -611,3 +611,13 @@ summary.step-head:hover { background: rgba(127,127,127,.06); }
 /* チャットの選択式聞き返しカード */
 .md .chat-clarify { margin: 6px 0 2px; }
 .chat-clarify .ask-opt-desc { margin-top: 2px; }
+
+/* 本文中の「図N」直下に差し込むインライン画像 */
+.inline-figs { display: flex; flex-direction: column; gap: 10px; margin: 8px 0 10px; }
+.inline-fig { margin: 0; }
+.inline-fig img {
+  display: block; max-width: min(100%, 520px); max-height: 340px; background: #fff;
+  border: 1px solid var(--line, rgba(128,128,128,.35)); border-radius: 8px; cursor: zoom-in;
+}
+.inline-fig-cap { font-size: 12px; color: var(--ink-soft, #8a93a6); margin-top: 3px; }
+li .inline-figs, td .inline-figs { margin: 6px 0 4px; }

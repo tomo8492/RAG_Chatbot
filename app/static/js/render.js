@@ -74,6 +74,7 @@ function renderMessage(m, isLastAssistant) {
   renderMarkdown(refs.md, m.content, true);
   refs.row.dataset.raw = m.content;
   if (m.sources && m.sources.length && !clar) renderSources(refs.src, m.sources);
+  applyInlineFigures(refs.md, refs.src);   // 本文の「図N」直下に画像を差し込む
   buildAssistantActions(refs, isLastAssistant, m);
   return row;
 }
@@ -308,6 +309,55 @@ function renderSources(container, sources, note) {
   });
   details.appendChild(list);
   container.appendChild(details);
+}
+
+/* ---------- 本文中の「図N」参照の直下に該当画像を差し込む ----------
+   番号はギャラリー(container._figures)の並び=サーバが提示した番号表と同一規則。
+   差し込んだ図は下のギャラリーから外して重複表示を避ける。最終描画後に1回呼ぶ。 */
+function applyInlineFigures(mdEl, srcEl) {
+  const figures = (srcEl && srcEl._figures) || [];
+  if (!figures.length || !mdEl) return;
+  const used = new Set();
+  const re = /図\s*\.?\s*([1-8])(?![0-9])/g;     // 図1〜図8(図10等の誤一致は除外)
+  const targets = mdEl.querySelectorAll("p, li, td, h2, h3, h4, blockquote");
+  targets.forEach((blk) => {
+    if (blk.querySelector(".inline-figs")) return;          // 二重適用防止
+    const text = blk.textContent || "";
+    const here = [];
+    let m;
+    re.lastIndex = 0;
+    while ((m = re.exec(text)) !== null) {
+      const n = parseInt(m[1], 10);
+      if (n >= 1 && n <= figures.length && !used.has(n) && !here.includes(n)) here.push(n);
+    }
+    if (!here.length) return;
+    here.forEach((n) => used.add(n));
+    const wrap = el("div", "inline-figs");
+    here.forEach((n) => {
+      const f = figures[n - 1];
+      if (!f || typeof f.url !== "string" || !f.url.startsWith("/api/doc-images/")) return;
+      const fig = el("figure", "inline-fig");
+      const im = el("img");
+      im.src = f.url; im.loading = "lazy"; im.alt = "図" + n; im.title = "クリックで原寸表示";
+      im.onclick = (e) => { e.stopPropagation(); window.open(f.url, "_blank"); };
+      fig.appendChild(im);
+      fig.appendChild(el("figcaption", "inline-fig-cap",
+                         escapeHtml(`図${n}　${f.caption || ""}`)));
+      wrap.appendChild(fig);
+    });
+    if (!wrap.childNodes.length) return;
+    if (blk.tagName === "LI" || blk.tagName === "TD") blk.appendChild(wrap);   // 手順の中に表示
+    else blk.insertAdjacentElement("afterend", wrap);
+  });
+  // 本文へ差し込んだ図はギャラリーから除去(残った図だけ下に出る)
+  if (used.size && srcEl) {
+    const usedUrls = new Set([...used].map((n) => figures[n - 1] && figures[n - 1].url));
+    srcEl.querySelectorAll(".src-images .src-thumb").forEach((img) => {
+      if (usedUrls.has(img.getAttribute("src"))) img.remove();
+    });
+    const box = srcEl.querySelector(".src-images");
+    if (box && !box.childNodes.length) box.remove();
+  }
 }
 
 /* ---------- チャットの選択式聞き返し(曖昧な質問 → 資料を選んでもらう) ---------- */

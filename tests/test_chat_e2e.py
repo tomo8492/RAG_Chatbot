@@ -90,7 +90,11 @@ def _make_xlsx(path: Path, png: Path, sheet: str, lines: list[str]):
     wb.save(str(path))
 
 
+_LAST_LLM_MESSAGES: dict = {}   # フェイクLLMが受け取った messages を検査用に保持
+
+
 def _fake_chat_stream(messages, model, **kw):
+    _LAST_LLM_MESSAGES["m"] = messages
     yield {"type": "thinking", "text": "確認中…"}
     yield {"type": "content", "text": "日当は出張旅費規程Aに基づき "}
     yield {"type": "content", "text": "5,000円です。"}
@@ -169,6 +173,10 @@ def test_chat_end_to_end():
         body = "".join(e.get("delta", "") for e in evs3 if e["type"] == "content")
         assert "5,000円" in body
         assert evs3[-1]["type"] == "done"
+        # 図の番号表(図N → 出典)がモデルへ提示される(本文「図N」直下への差し込み用)
+        last_user = next(m for m in reversed(_LAST_LLM_MESSAGES["m"]) if m.get("role") == "user")
+        assert "【利用できる図】" in last_user["content"]
+        assert "図1: A規程.xlsx" in last_user["content"]
 
         # ④ 図の配信API
         rimg = client.get(img_urls[0])

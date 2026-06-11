@@ -328,6 +328,25 @@ def _save_b64_image(raw: str) -> Optional[tuple[str, str]]:
     return name, b64
 
 
+def _figure_alias_lines(sources: list) -> list[str]:
+    """回答内で「図N」と参照できる図の一覧を作る。
+
+    番号はフロントのギャラリー・エクスポートの参考図と同じ規則
+    (出典リスト順に最初に現れた画像から 図1, 図2, …)。最大8枚。
+    """
+    seen: list[str] = []
+    lines: list[str] = []
+    for s in sources:
+        for u in (s.get("images") or []):
+            if u in seen:
+                continue
+            seen.append(u)
+            lines.append(f"図{len(seen)}: {s.get('source', '')} {s.get('loc', '')} にある図")
+            if len(seen) >= 8:
+                return lines
+    return lines
+
+
 @app.post("/api/conversations/{cid}/generate", dependencies=[Depends(auth.require_auth)])
 def api_generate(cid: str, body: GenerateBody) -> Response:
     conv = db.get_conversation(cid)
@@ -438,6 +457,15 @@ def api_generate(cid: str, body: GenerateBody) -> Response:
     messages = llm.build_messages(eff["system_prompt"], history, hits,
                                   strict=strict_rag, diagram_hint=llm.wants_diagram(query),
                                   num_ctx=int(eff["num_ctx"]) or 0, num_predict=int(eff["num_predict"]))
+    # 出典に図がある場合は番号表を提示し、本文の「図N」参照の直下に画像を差し込めるようにする
+    # (番号はフロントのギャラリー/エクスポート参考図と同一規則=出典順)
+    fig_lines = _figure_alias_lines(sources)
+    if fig_lines and messages and messages[-1].get("role") == "user":
+        messages[-1]["content"] += (
+            "\n\n【利用できる図】(本文に「図1」「図2」と書くと、画面ではその直下に画像が表示される)\n"
+            + "\n".join(fig_lines)
+            + "\n手順や説明で図を示すべき箇所では、該当する番号で「図N」と本文に書くこと。"
+              "上記に無い番号は書かないこと。")
     use_vision = bool(image_b64s)
     # Vision/OCR モデルは設定(既定値)で選べる。未設定なら .env の VISION_MODEL を使用。
     vision_model = (eff.get("vision_model") or settings.vision_model or "").strip()
