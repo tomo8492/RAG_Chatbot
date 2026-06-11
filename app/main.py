@@ -21,7 +21,7 @@ from pydantic import BaseModel
 
 from . import agent, auth, db, llm, postprocess, rag, safety
 from .config import settings
-from .defaults import effective_for
+from .defaults import effective_for, get_defaults
 from .logging_setup import get_logger, set_request_id, setup_logging
 from .routes import routers as _routers
 from .sse import sse
@@ -230,6 +230,67 @@ class GenerateBody(BaseModel):
     attachments: list[str] = []     # 文書添付のファイル名
     images: list[str] = []          # 画像(base64 / data URL)
     mode: str = "send"              # send | regenerate
+    focus_source: Optional[str] = None   # 選択式聞き返しで選んだ資料(ヒットを絞る)
+    skip_clarify: bool = False           # 聞き返し済みの再送(再度の聞き返しを抑止)
+
+
+# ---- 曖昧クエリの選択式聞き返し(チャット) ----
+_CLARIFY_HEAD = "🔎 確認: "
+_CLARIFY_QUESTION = "候補が複数の資料に分かれています。どの資料についてのご質問ですか?"
+_CLARIFY_MAX_QUERY = 24       # これより長い質問は十分具体的とみなし聞き返さない
+_CLARIFY_MIN_SOURCES = 3      # 上位ヒットがこの数以上の資料に割れていたら曖昧とみなす
+_CLARIFY_DOMINANT_GAP = 0.07  # 先頭の資料が2位の資料よりこれだけ強ければ聞かずに答える
+
+
+def _clarify_enabled() -> bool:
+    try:
+        return bool(get_defaults().get("clarify_enabled", True))
+    except Exception:
+        log.debug("_clarify_enabled: 例外を無視して継続", exc_info=True)
+        return True
+
+
+def _apply_focus_source(hits: list, focus: str) -> list:
+    """聞き返しで選ばれた資料にヒットを絞る(該当なしは空 → 呼び出し側で全件のまま継続)。"""
+    f = (focus or "").strip()
+    return [h for h in hits if h.get("source") == f] if f else []
+
+
+def _maybe_clarify_sources(query: str, hits: list, prev_assistant: str = "") -> Optional[dict]:
+    """短い質問の検索候補が複数資料に割れているときだけ、選択式の聞き返しを作る。
+
+    取り違え(別の規程の数字で答える等)を防ぐのが目的。確信が持てるケース
+    (具体的な質問・先頭資料が明確に優勢・資料名を指定済み)では発動しない。
+    """
+    q = (query or "").strip()
+    if not q or len(q) > _CLARIFY_MAX_QUERY:
+        return None
+    if (prev_assistant or "").lstrip().startswith(_CLARIFY_HEAD):
+        return None                      # 直前も聞き返し → 連続では聞かない
+    top = [h for h in hits[:6] if not h.get("attachment")]
+    order: list[str] = []
+    best: dict[str, float] = {}
+    locs: dict[str, str] = {}
+    for h in top:
+        s = str(h.get("source") or "")
+        if s and s not in order:
+            order.append(s)
+            best[s] = float(h.get("score") or 0.0)
+            locs[s] = str(h.get("loc") or "")
+    if len(order) < _CLARIFY_MIN_SOURCES:
+        return None
+    if best[order[0]] - best[order[1]] > _CLARIFY_DOMINANT_GAP:
+        return None                      # 先頭の資料が明確に優勢 → そのまま答える
+    for s in order:
+        stem = Path(s).stem
+        if stem and stem in q:
+            return None                  # 質問に資料名を含む → 既に特定済み
+    options = [{"label": s, "description": locs[s][:60]} for s in order[:4]]
+    text = (_CLARIFY_HEAD + _CLARIFY_QUESTION + "\n"
+            + "\n".join("- " + o["label"] + (f"({o['description']})" if o["description"] else "")
+                        for o in options)
+            + "\n\n(選択肢をクリックするか、資料名を含めて質問し直してください)")
+    return {"question": _CLARIFY_QUESTION, "options": options, "text": text}
 
 
 _IMG_EXT = {"image/png": "png", "image/jpeg": "jpg", "image/jpg": "jpg",
@@ -320,6 +381,7 @@ def api_generate(cid: str, body: GenerateBody) -> Response:
     sources: list[dict] = []
     hits: list[dict] = []
     search_query = query
+    prior: list = []
     try:
         prior = [m for m in db.list_messages(cid) if m["role"] in ("user", "assistant")]
         if prior and prior[-1]["role"] == "user":
@@ -338,6 +400,19 @@ def api_generate(cid: str, body: GenerateBody) -> Response:
                 log.info("書き換えで0件 → 原文で再検索しヒット [conv=%s]", cid)
     except Exception:
         log.exception("検索失敗(無視して続行)")
+    # 聞き返しで資料が選ばれた再送は、その資料のヒットに絞る(該当なしなら全件のまま)
+    if body.focus_source:
+        focused = _apply_focus_source(hits, body.focus_source)
+        if focused:
+            hits = focused
+    # 参照フォルダ(インデックス)を選択している会話は、その資料だけで回答する厳格モード。
+    strict_rag = bool(conv.get("active_indexes"))
+    # 曖昧な短い質問で候補が複数資料に割れているときだけ、選択式で聞き返す(設定でOFF可)
+    clarify = None
+    if (mode == "send" and strict_rag and hits and not body.skip_clarify
+            and not body.focus_source and _clarify_enabled()):
+        prev = prior[-1]["content"] if (prior and prior[-1]["role"] == "assistant") else ""
+        clarify = _maybe_clarify_sources(query, hits, prev)
     if hits:
         seen = set()
         for h in hits:
@@ -352,8 +427,6 @@ def api_generate(cid: str, body: GenerateBody) -> Response:
                                            for i in (h.get("images") or [])[:4]]})
 
     history = db.list_messages(cid)
-    # 参照フォルダ(インデックス)を選択している会話は、その資料だけで回答する厳格モード。
-    strict_rag = bool(conv.get("active_indexes"))
     # 図を求めていない通常QAでは簡潔な整形ガイドにして根拠提示に集中させる。
     messages = llm.build_messages(eff["system_prompt"], history, hits,
                                   strict=strict_rag, diagram_hint=llm.wants_diagram(query),
@@ -370,6 +443,13 @@ def api_generate(cid: str, body: GenerateBody) -> Response:
     def gen():
         if user_msg:
             yield sse({"type": "user_saved", "message": user_msg})
+        if clarify:
+            # 曖昧 → 回答せずに選択式で聞き返してターン終了(LLM不要・1往復増えるだけ)
+            asst = db.add_message(cid, "assistant", clarify["text"], sources=[])
+            yield sse({"type": "clarify", "question": clarify["question"],
+                       "options": clarify["options"], "query": query})
+            yield sse({"type": "done", "message": asst})
+            return
         if not model:
             yield sse({"type": "error", "error": "モデルが選択されていません。設定でモデルを指定してください。"})
             return

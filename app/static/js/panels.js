@@ -102,6 +102,7 @@ function openSettings() {
   bindRange("set-overlap", "set-overlap-val", d.chunk_overlap);
   if ($("set-contextual")) $("set-contextual").checked = !!d.contextual_embeddings;
   if ($("set-rerank")) $("set-rerank").checked = !!d.rerank_enabled;
+  if ($("set-clarify")) $("set-clarify").checked = d.clarify_enabled !== false;
   if ($("set-ocr")) $("set-ocr").checked = !!d.ocr_enabled;
   if ($("set-ocr-model")) setSelect($("set-ocr-model"), d.ocr_vlm_model || "");
   $("set-embed-info").textContent =
@@ -129,6 +130,7 @@ async function saveSettings() {
     chunk_overlap: parseInt($("set-overlap").value),
     contextual_embeddings: !!($("set-contextual") && $("set-contextual").checked),
     rerank_enabled: !!($("set-rerank") && $("set-rerank").checked),
+    clarify_enabled: !!($("set-clarify") && $("set-clarify").checked),
     ocr_enabled: !!($("set-ocr") && $("set-ocr").checked),
     ocr_vlm_model: ($("set-ocr-model") ? $("set-ocr-model").value : ""),
   };

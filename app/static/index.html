@@ -271,6 +271,10 @@
             <p class="muted small">検索の上位候補を、回答生成の前にLLMが関連度で採点して並べ替えます(リランク)。即時反映。</p>
           </div>
           <div class="field">
+            <label><input type="checkbox" id="set-clarify" /> 曖昧な質問は選択式で聞き返す(チャット・既定ON)</label>
+            <p class="muted small">短い質問で検索候補が複数の資料に分かれ確信が持てないときだけ、「どの資料についてですか?」を選択式で確認します。1往復増える代わりに、別の規程の数字で答えるような取り違えを防ぎます。即時反映。</p>
+          </div>
+          <div class="field">
             <label><input type="checkbox" id="set-ocr" /> スキャンPDFをOCRで取り込む(画像PDF対応・既定ON)</label>
             <p class="muted small">テキスト層の無いページ(スキャン文書)を画像化してOCRし、検索対象にします(その分作成は遅め)。オフにするとスキャンPDFは取り込まれません。変更後はインデックス再構築で反映。</p>
           </div>

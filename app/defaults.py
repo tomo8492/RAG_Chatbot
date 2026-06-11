@@ -36,6 +36,8 @@ def base_defaults() -> dict:
         # 回答前リランク(LLMで出典を並べ替え。精度↑/やや遅い)。
         "rerank_enabled": settings.rerank_enabled,
         "rerank_model": settings.rerank_model,
+        # 曖昧な短い質問で候補が複数資料に割れたとき、選択式で聞き返す(チャット)。
+        "clarify_enabled": True,
         # OCR(スキャンPDFの取り込み)。設定画面からON/OFFと使用モデルを切替可能。
         "ocr_enabled": settings.ocr_enabled,
         "ocr_vlm_model": settings.ocr_vlm_model,

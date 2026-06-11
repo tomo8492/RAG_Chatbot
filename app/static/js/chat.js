@@ -56,6 +56,7 @@ async function streamAssistant(payload) {
 
   let acc = "", think = "", renderScheduled = false, gotContent = false, finished = false;
   let finalContent = null;   // done で届くサーバ後処理済み(スペル補正・フェンス補完済み)本文
+  let clarified = false;     // 選択式の聞き返しカードを表示したか(本文描画と差し替える)
   const scheduleRender = () => {
     if (renderScheduled) return;
     renderScheduled = true;
@@ -107,12 +108,19 @@ async function streamAssistant(payload) {
             acc += d; scheduleRender();
           },
           onDone: (msg) => { if (msg && typeof msg.content === "string") finalContent = msg.content; },
+          onClarify: (e) => {
+            clarified = true; gotContent = true;
+            refs.avatar.classList.remove("thinking");
+            renderClarifyCard(refs.md, e);
+            scrollToBottom();
+          },
           getAcc: () => acc,
         });
       }
     }
     // 正常終了: サーバ後処理済み本文があればそれで最終描画(無ければ acc)
-    renderMarkdown(refs.md, finalContent != null ? finalContent : (acc || "*(応答なし)*"), true);
+    // 聞き返しカード表示中は本文で上書きしない(保存はテキスト版が済んでいる)
+    if (!clarified) renderMarkdown(refs.md, finalContent != null ? finalContent : (acc || "*(応答なし)*"), true);
     if (finalContent != null) acc = finalContent;
   } catch (e) {
     if (e.name === "AbortError") {
@@ -138,6 +146,7 @@ function handleStreamEvent(ev, refs, cb) {
     case "thinking": cb.onThink(ev.delta); break;
     case "content": cb.onContent(ev.delta); break;
     case "sources": renderSources(refs.src, ev.sources, ev.note); break;
+    case "clarify": if (cb.onClarify) cb.onClarify(ev); break;
     case "done":
       if (cb.onDone) cb.onDone(ev.message);
       if (ev.message && ev.message.sources && ev.message.sources.length)
