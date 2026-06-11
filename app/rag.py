@@ -17,7 +17,7 @@ from typing import Callable, Optional
 from . import db, retrieval
 from .config import settings
 from .embeddings import get_embedder
-from .loaders import SUPPORTED_EXTS, load_file
+from .loaders import SUPPORTED_EXTS, is_temp_artifact, load_file
 from .logging_setup import get_logger
 from .splitter import split_structured
 
@@ -87,12 +87,22 @@ def scan_files(paths: list[str]) -> list[Path]:
         else:
             candidates = [f for f in base.rglob("*") if f.is_file()]
         for f in candidates:
-            if f.suffix.lower() in SUPPORTED_EXTS:
+            if f.suffix.lower() in SUPPORTED_EXTS and not is_temp_artifact(f.name):
                 key = str(f.resolve())
                 if key not in seen:
                     seen.add(key)
                     found.append(f)
     return found
+
+
+# ChromaDB のコレクション破損(hnswセグメント等)を示すエラーメッセージの特徴語。
+# 検索時の警告と、ビルド時の即時中断の両方で使う。
+_CORRUPTION_KEYS = ("hnsw", "compaction", "compactor", "backfill", "segment")
+
+
+def _is_corruption_error(msg: str) -> bool:
+    low = (msg or "").lower()
+    return any(k in low for k in _CORRUPTION_KEYS)
 
 
 def _file_sig(f: Path) -> str:
@@ -291,14 +301,26 @@ def build_index(iid: str, paths: list[str],
                 # OCR無効・画像非対応モデル時は説明が空になり、図チャンクは作らない
                 # (画像のリンク・出典表示は上の img_locs だけで機能する)。
                 fig_count = 0
+                fig_cached = 0
                 for img_id, img_data, img_loc in file_images[:20]:
-                    try:
-                        from . import ocr as _ocr_mod
-                        desc = _ocr_mod.describe_image_png(img_data)
-                    except Exception:
-                        log.debug("build_index: 図の説明生成に失敗(無視)", exc_info=True)
-                        desc = ""
-                    desc = " ".join((desc or "").split())[:800]
+                    # 説明は画像の内容ハッシュでキャッシュする。再構築・資料の作り直し・
+                    # 別資料に同じ図が登場するときに VLM を呼び直さない(時間を大幅短縮)。
+                    # 説明が空(OCR無効・非対応モデル)のときは保存しない=後で有効化すれば生成される。
+                    fig_hash = img_id.rsplit("/", 1)[-1].split(".", 1)[0]
+                    cached = db.get_kv(f"figdesc:{fig_hash}")
+                    if cached:
+                        desc = " ".join(str(cached).split())[:800]
+                        fig_cached += 1
+                    else:
+                        try:
+                            from . import ocr as _ocr_mod
+                            desc = _ocr_mod.describe_image_png(img_data)
+                        except Exception:
+                            log.debug("build_index: 図の説明生成に失敗(無視)", exc_info=True)
+                            desc = ""
+                        desc = " ".join((desc or "").split())[:800]
+                        if desc:
+                            db.set_kv(f"figdesc:{fig_hash}", desc)
                     if not desc:
                         continue
                     fig_text = "〔図〕 " + desc
@@ -307,7 +329,8 @@ def build_index(iid: str, paths: list[str],
                                     json.dumps([img_id], ensure_ascii=False)))
                     fig_count += 1
                 if fig_count:
-                    emit(f"  図の説明を索引化: {f.name}({fig_count}枚)")
+                    note = f"、うちキャッシュ {fig_cached}枚" if fig_cached else ""
+                    emit(f"  図の説明を索引化: {f.name}({fig_count}枚{note})")
                 if not pending:
                     continue
                 for s in range(0, len(pending), _BATCH):
@@ -331,8 +354,23 @@ def build_index(iid: str, paths: list[str],
                 changed += 1
                 emit(f"  更新 {fi}/{len(files)}: {f.name}({len(pending)}チャンク)")
             except Exception as e:
+                emsg = str(e)
+                if _is_corruption_error(emsg):
+                    # ベクトルDB(このコレクション)の破損。続けても全ファイルで同じ失敗を
+                    # 繰り返すだけなので即中断し、復旧手順を画面に表示する。
+                    hint = ("ベクトルDB(この資料の保存領域)が破損しています。"
+                            "この資料を『削除』してから、フォルダを登録し直してください。"
+                            "それでも直らない場合は、アプリ停止後に data/chroma フォルダを削除して"
+                            "再起動し、各資料を再登録(会話履歴は残ります)。"
+                            "data が OneDrive 等の同期フォルダ配下にある場合は、.env の DATA_DIR を"
+                            "同期外(例 C:\\rag_data)へ移すと再発を防げます。"
+                            f"(詳細: {emsg[:120]})")
+                    log.error("ベクトルDB破損を検知したためビルドを中断: %s", emsg[:200])
+                    emit("エラー: " + hint)
+                    db.update_index(iid, status="error", error=hint)
+                    return _index_row(iid)
                 log.exception("ファイル読込失敗: %s", f)
-                emit(f"  [skip] {f.name}(エラー: {e})")
+                emit(f"  [skip] {f.name}(エラー: {emsg})")
 
         # 削除されたファイルのチャンクを除去
         removed = [p for p in path_ids if p not in current_paths]
@@ -504,8 +542,7 @@ def retrieve(query: str, index_ids: list[str], conversation_id: Optional[str] = 
                     "distance": float(dist),
                 })
         except Exception as e:
-            es = str(e).lower()
-            if any(k in es for k in ("hnsw", "compactor", "backfill", "segment")):
+            if _is_corruption_error(str(e)):
                 log.warning("インデックスが壊れている可能性があります。参照資料を削除→再作成してください "
                             "(同期フォルダOneDrive配下だと破損しやすい): %s / %s", name, str(e)[:160])
             else:

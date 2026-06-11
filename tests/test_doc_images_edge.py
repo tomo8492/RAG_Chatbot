@@ -241,6 +241,48 @@ def test_rebuild_unchanged_keeps_links_and_no_duplicate_files():
         assert any(d.startswith("〔図〕") for d in got["documents"])
 
 
+# ---------------- 図説明のハッシュキャッシュ(VLM呼び直し防止) ----------------
+def test_figure_description_cached_across_index_recreate():
+    with temp_env() as docs:
+        png = docs / "fig.png"
+        png.write_bytes(_png_bytes(seed=21))
+        _xlsx_with_images(docs / "手順.xlsx", [("S1", png)])
+        calls = {"n": 0}
+
+        def fake_desc(b):
+            calls["n"] += 1
+            return "操作画面の図。ラベル: 検収"
+
+        with patched(rag, "get_embedder", lambda: FakeEmb()), \
+             patched(ocr, "describe_image_png", fake_desc):
+            i1 = db.create_index("資料A", [str(docs)])
+            assert rag.build_index(i1["id"], [str(docs)])["status"] == "ready"
+            assert calls["n"] == 1
+            # 資料の削除→作り直し相当(新しいインデックスID)でもVLMは呼ばれない
+            i2 = db.create_index("資料B", [str(docs)])
+            assert rag.build_index(i2["id"], [str(docs)])["status"] == "ready"
+            assert calls["n"] == 1, "内容ハッシュのキャッシュが効くはず"
+            got = rag._collection(f"idx_{i2['id']}").get(include=["documents"])
+            assert any(d.startswith("〔図〕 操作画面の図") for d in got["documents"])
+
+
+def test_empty_description_not_cached():
+    """OCR無効などで説明が空のときはキャッシュせず、後で有効化すれば生成される。"""
+    with temp_env() as docs:
+        png = docs / "fig.png"
+        png.write_bytes(_png_bytes(seed=22))
+        _xlsx_with_images(docs / "手順.xlsx", [("S1", png)])
+        with patched(rag, "get_embedder", lambda: FakeEmb()):
+            with patched(ocr, "describe_image_png", lambda b: ""):      # OCR無効相当
+                i1 = db.create_index("A", [str(docs)])
+                rag.build_index(i1["id"], [str(docs)])
+            with patched(ocr, "describe_image_png", lambda b: "後から生成した説明"):
+                i2 = db.create_index("B", [str(docs)])
+                rag.build_index(i2["id"], [str(docs)])
+                got = rag._collection(f"idx_{i2['id']}").get(include=["documents"])
+                assert any("後から生成した説明" in d for d in got["documents"])
+
+
 # ---------------- エクスポート: WebP参考図のPNG変換 ----------------
 def test_export_webp_figure_converted_and_embedded():
     import base64

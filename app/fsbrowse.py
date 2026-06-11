@@ -12,7 +12,7 @@ from pathlib import Path
 
 from . import safety
 from .config import settings
-from .loaders import SUPPORTED_EXTS
+from .loaders import SUPPORTED_EXTS, is_temp_artifact
 from .logging_setup import get_logger
 
 log = get_logger("fsbrowse")
@@ -61,7 +61,8 @@ def _count_supported(dir_path: Path) -> int:
         with os.scandir(dir_path) as it:
             for e in it:
                 try:
-                    if e.is_file() and Path(e.name).suffix.lower() in SUPPORTED_EXTS:
+                    if e.is_file() and Path(e.name).suffix.lower() in SUPPORTED_EXTS \
+                            and not is_temp_artifact(e.name):
                         n += 1
                 except OSError:
                     log.debug("_count_supported: 例外を無視して継続", exc_info=True)
@@ -100,7 +101,8 @@ def list_dir(path: str | None) -> dict:
                 try:
                     if e.is_dir():
                         dirs.append({"name": e.name, "path": str(Path(e.path))})
-                    elif e.is_file() and Path(e.name).suffix.lower() in SUPPORTED_EXTS:
+                    elif e.is_file() and Path(e.name).suffix.lower() in SUPPORTED_EXTS \
+                            and not is_temp_artifact(e.name):
                         files.append({"name": e.name, "path": str(Path(e.path))})
                 except OSError:
                     log.debug("list_dir: 例外を無視して継続", exc_info=True)
@@ -139,13 +141,13 @@ def count_supported_recursive(paths: list[str], max_files: int = 5000,
         if not base.exists():
             continue
         if base.is_file():
-            if base.suffix.lower() in SUPPORTED_EXTS:
+            if base.suffix.lower() in SUPPORTED_EXTS and not is_temp_artifact(base.name):
                 total += 1
             continue
         # os.walk は onerror で権限エラーを握りつぶせる(rglob と違い途中で例外を投げない)
         for _root, _dirs, filenames in os.walk(base, onerror=lambda e: None):
             for fn in filenames:
-                if os.path.splitext(fn)[1].lower() in SUPPORTED_EXTS:
+                if os.path.splitext(fn)[1].lower() in SUPPORTED_EXTS and not is_temp_artifact(fn):
                     total += 1
                     if total >= max_files:
                         return total, True
