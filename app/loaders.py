@@ -146,8 +146,18 @@ LOADERS = {
 SUPPORTED_EXTS = set(LOADERS.keys())
 
 
+def is_temp_artifact(name: str) -> bool:
+    """Officeのロック/一時ファイルか(取り込み・件数・一覧から除外する)。
+
+    ~$xxx.xlsx は Excel/Word が開いている間だけ存在する所有者情報ファイルで、
+    実体はzipではないため読み込むと必ず失敗する。.~lock.* は LibreOffice の同等品。
+    """
+    n = (name or "")
+    return n.startswith("~$") or n.startswith(".~lock.")
+
+
 def is_supported(path: Path) -> bool:
-    return path.suffix.lower() in SUPPORTED_EXTS
+    return path.suffix.lower() in SUPPORTED_EXTS and not is_temp_artifact(path.name)
 
 
 def load_file(path: Path) -> list[dict]:

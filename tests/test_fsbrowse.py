@@ -108,6 +108,76 @@ def test_list_dir_missing_local_keeps_plain_message():
         assert "共有フォルダ" not in str(e)
 
 
+# ---------------- Officeロックファイル(~$ / .~lock.)の除外 ----------------
+def test_scan_files_skips_office_lock_files():
+    d = Path(tempfile.mkdtemp(prefix="lock_test_"))
+    try:
+        (d / "~$手順書.xlsx").write_bytes(b"\x00" * 32)        # Excelのロックファイル(zipではない)
+        (d / ".~lock.メモ.txt").write_text("x", encoding="utf-8")   # LibreOffice
+        (d / "本物.txt").write_text("本文", encoding="utf-8")
+        out = rag.scan_files([str(d)])
+        assert [p.name for p in out] == ["本物.txt"]
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_count_supported_excludes_lock_files():
+    d = Path(tempfile.mkdtemp(prefix="lock_cnt_"))
+    try:
+        (d / "~$a.xlsx").write_bytes(b"\x00" * 32)
+        (d / "b.txt").write_text("x", encoding="utf-8")
+        assert fsbrowse.count_supported_recursive([str(d)]) == (1, False)
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+# ---------------- ベクトルDB破損の即時中断 ----------------
+def test_build_index_aborts_fast_on_chroma_corruption():
+    from types import SimpleNamespace
+
+    class FakeCol:
+        def get(self, **kw):
+            return {"ids": [], "metadatas": [], "embeddings": None}
+
+        def add(self, **kw):
+            raise Exception("Error in compaction: Error constructing hnsw segment reader: "
+                            "Error loading hnsw index")
+
+        def delete(self, **kw):
+            pass
+
+    class FakeEmb:
+        def embed_query(self, t):
+            return [0.1] * 8
+
+        def embed_documents(self, ts):
+            return [[0.1] * 8 for _ in ts]
+
+    d = Path(tempfile.mkdtemp(prefix="corrupt_test_"))
+    try:
+        (d / "a.txt").write_text("これは本文です", encoding="utf-8")
+        with temp_db():
+            idx = db.create_index("壊れ資料", [str(d)])
+            db.update_index(idx["id"], file_count=7, chunk_count=99)
+            with patched(rag, "get_embedder", lambda: FakeEmb()), \
+                 patched(rag, "_collection", lambda name: FakeCol()), \
+                 patched(rag, "_get_client",
+                         lambda: SimpleNamespace(delete_collection=lambda n: None)):
+                row = rag.build_index(idx["id"], [str(d)])
+        assert row["status"] == "error"
+        err = row["error"] or ""
+        assert "削除" in err and "DATA_DIR" in err          # 復旧手順を案内
+        assert row["file_count"] == 7 and row["chunk_count"] == 99   # 既存値は保持
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_is_corruption_error_detector():
+    assert rag._is_corruption_error("Error loading hnsw index")
+    assert rag._is_corruption_error("Error in compaction: x")
+    assert not rag._is_corruption_error("connection refused")
+
+
 # ---------------- build_index(切断中の共有を誤って「削除」しない)----------------
 def test_build_index_aborts_when_path_unavailable_and_keeps_data():
     with temp_db():
