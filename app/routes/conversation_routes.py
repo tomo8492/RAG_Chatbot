@@ -32,6 +32,7 @@ class ConvUpdate(BaseModel):
     system_prompt: Optional[str] = None
     active_indexes: Optional[list] = None
     settings: Optional[dict] = None
+    pinned: Optional[bool] = None   # お気に入り(サイドバー上部に固定)
 
 
 class MsgEditBody(BaseModel):

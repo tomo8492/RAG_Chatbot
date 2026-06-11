@@ -94,6 +94,9 @@ def init_db() -> None:
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(conversations)").fetchall()}
         if "kind" not in cols:
             conn.execute("ALTER TABLE conversations ADD COLUMN kind TEXT NOT NULL DEFAULT 'chat'")
+        if "pinned" not in cols:
+            # お気に入り(サイドバー上部に固定)。0=通常 / 1=固定
+            conn.execute("ALTER TABLE conversations ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0")
         conn.commit()
     log.info("DB 初期化完了: %s", settings.db_path)
 
@@ -131,14 +134,16 @@ def get_conversation(cid: str) -> Optional[dict]:
 
 
 def list_conversations(kind: Optional[str] = None) -> list[dict]:
+    """会話一覧。固定(pinned)を上に、その中は更新が新しい順。"""
     with _connect() as conn:
         if kind:
             rows = conn.execute(
-                "SELECT * FROM conversations WHERE kind=? ORDER BY updated_at DESC", (kind,)
+                "SELECT * FROM conversations WHERE kind=? ORDER BY pinned DESC, updated_at DESC",
+                (kind,)
             ).fetchall()
         else:
             rows = conn.execute(
-                "SELECT * FROM conversations ORDER BY updated_at DESC"
+                "SELECT * FROM conversations ORDER BY pinned DESC, updated_at DESC"
             ).fetchall()
     return [_conv_to_dict(r) for r in rows]
 
@@ -154,19 +159,21 @@ def search_conversations(query: str, kind: Optional[str] = None) -> list[dict]:
         if kind:
             sql += " AND c.kind = ?"
             params.append(kind)
-        sql += " ORDER BY c.updated_at DESC"
+        sql += " ORDER BY c.pinned DESC, c.updated_at DESC"
         rows = conn.execute(sql, params).fetchall()
     return [_conv_to_dict(r) for r in rows]
 
 
 def update_conversation(cid: str, **fields: Any) -> Optional[dict]:
-    allowed = {"title", "model", "system_prompt", "active_indexes", "settings"}
+    allowed = {"title", "model", "system_prompt", "active_indexes", "settings", "pinned"}
     sets, vals = [], []
     for k, v in fields.items():
         if k not in allowed:
             continue
         if k in ("active_indexes", "settings"):
             v = json.dumps(v, ensure_ascii=False)
+        elif k == "pinned":
+            v = 1 if v else 0
         sets.append(f"{k}=?")
         vals.append(v)
     if not sets:
@@ -197,6 +204,7 @@ def _conv_to_dict(row: sqlite3.Row) -> dict:
     d["active_indexes"] = json.loads(d.get("active_indexes") or "[]")
     d["settings"] = json.loads(d.get("settings") or "{}")
     d.setdefault("kind", "chat")
+    d["pinned"] = bool(d.get("pinned") or 0)
     return d
 
 

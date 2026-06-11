@@ -29,9 +29,26 @@ function renderConversationList() {
     list.appendChild(el("div", "conv-empty", "一致する会話がありません"));
     return;
   }
-  items.forEach((c) => {
-    const item = el("div", "conv-item" + (State.current && c.id === State.current.id ? " active" : ""));
+  // 固定(お気に入り)を常に上へ。サーバ順は維持しつつ、新規作成直後の
+  // 楽観的 unshift でも固定が押し下げられないよう安定ソートで補正する
+  const ordered = items.slice().sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0));
+  ordered.forEach((c) => {
+    const item = el("div", "conv-item"
+      + (State.current && c.id === State.current.id ? " active" : "")
+      + (c.pinned ? " pinned" : ""));
     item.appendChild(el("span", "title", escapeHtml(c.title || "新しい会話")));
+    const pin = el("span", "pin", "📌");
+    pin.title = c.pinned ? "固定を解除" : "お気に入り(上部に固定)";
+    pin.onclick = async (ev) => {
+      ev.stopPropagation();
+      try {
+        await api(`/api/conversations/${c.id}`, {
+          method: "PATCH", body: JSON.stringify({ pinned: !c.pinned }),
+        });
+        await loadConversations();
+      } catch (e) { toast("固定の切替に失敗: " + e.message); }
+    };
+    item.appendChild(pin);
     const del = el("span", "del", "🗑");
     del.title = "削除";
     del.onclick = (ev) => { ev.stopPropagation(); deleteConversation(c.id); };

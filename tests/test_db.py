@@ -136,6 +136,43 @@ def test_search_no_match_returns_empty():
         assert db.search_conversations("該当なし") == []
 
 
+# ---------------- お気に入り(pinned: サイドバー上部に固定) ----------------
+def test_pinned_defaults_false_and_toggles():
+    with temp_db():
+        c = db.create_conversation(title="A")
+        assert c["pinned"] is False
+        got = db.update_conversation(c["id"], pinned=True)
+        assert got is not None and got["pinned"] is True
+        got = db.update_conversation(c["id"], pinned=False)
+        assert got is not None and got["pinned"] is False
+
+
+def test_list_conversations_pinned_first():
+    with temp_db():
+        old = db.create_conversation(title="古い(固定)")
+        db.create_conversation(title="中間")
+        db.create_conversation(title="最新")
+        db.update_conversation(old["id"], pinned=True)
+        titles = [c["title"] for c in db.list_conversations()]
+        assert titles[0] == "古い(固定)"            # 固定が最上部
+        assert titles.index("最新") < titles.index("中間")   # 残りは更新順
+        assert db.list_conversations()[0]["pinned"] is True
+        # kind 絞り込みでも固定が先頭
+        code = db.create_conversation(title="コード会話", kind="code")
+        db.update_conversation(code["id"], pinned=True)
+        db.create_conversation(title="コード新規", kind="code")
+        assert db.list_conversations(kind="code")[0]["title"] == "コード会話"
+
+
+def test_search_conversations_pinned_first():
+    with temp_db():
+        a = db.create_conversation(title="日当の規程メモ")
+        db.create_conversation(title="日当の質問ログ")
+        db.update_conversation(a["id"], pinned=True)
+        got = db.search_conversations("日当")
+        assert got and got[0]["id"] == a["id"]
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     passed = 0

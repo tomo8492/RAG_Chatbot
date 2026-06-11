@@ -131,6 +131,12 @@ body {
 .conv-item .title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .conv-item .del { opacity: 0; font-size: 13px; }
 .conv-item:hover .del { opacity: .7; }
+/* お気に入り(📌)。固定中は常時表示、未固定はホバー時のみ */
+.conv-item .pin { opacity: 0; font-size: 13px; }
+.conv-item:hover .pin { opacity: .55; }
+.conv-item.pinned .pin { opacity: 1; }
+.conv-item .pin:hover { opacity: 1; transform: scale(1.15); }
+.conv-item.pinned .title { font-weight: 600; }
 .sidebar-foot { padding: 10px 12px; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 2px; }
 .foot-btn { background: transparent; border: none; color: var(--ink-soft); text-align: left;
   padding: 8px 10px; border-radius: 8px; cursor: pointer; font-size: 13.5px; }
