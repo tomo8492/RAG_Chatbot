@@ -24,10 +24,12 @@ def base_defaults() -> dict:
         "vision_model": settings.vision_model,
         "temperature": 0.3,
         "top_p": 0.9,
-        "num_predict": 2048,      # 回答の最大トークン(長さ)。思考モデルでも途中で切れにくいよう大きめ
+        "num_predict": -1,        # 回答の最大トークン。既定は上限なし(-1)=長い回答が途中で切れない
         "num_ctx": settings.num_ctx,   # コンテキスト長(0=モデル既定)。溢れによる先頭切り捨てを防ぐ既定
         "effort": "medium",       # 工数(思考の深さ)
-        "top_k": settings.rag_top_k,
+        # 参照件数の既定は ∞(=9999。検索ヒットを件数で打ち切らない)。実際に文脈へ入る量は
+        # num_ctx 予算で自動トリムされるため溢れない。会話ごとにクイック設定で変更可。
+        "top_k": 9999,
         "system_prompt": DEFAULT_SYSTEM_PROMPT,
         "chunk_size": settings.chunk_size,
         "chunk_overlap": settings.chunk_overlap,
