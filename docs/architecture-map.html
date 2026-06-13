@@ -99,6 +99,10 @@
   #panel .body li{margin:3px 0}
   #panel .tag{display:inline-block;font-size:11px;color:var(--muted);border:1px solid var(--line);
     border-radius:999px;padding:1px 9px;margin:2px 4px 2px 0}
+  #panel .taglead{font-size:11px;color:var(--muted);font-weight:700;margin:14px 0 4px;
+    letter-spacing:.03em;text-transform:none}
+  #panel .body p{margin:2px 0 10px}
+  #panel .body li{margin:5px 0}
   .hint{position:fixed;left:18px;bottom:14px;font-size:11.5px;color:var(--muted);
     background:var(--paper);border:1px solid var(--line);border-radius:8px;padding:6px 11px;z-index:5}
   @media (max-width:760px){ #panel{width:100%;right:-100%} .hint{display:none} }
@@ -211,47 +215,335 @@ const FLOWS = {
 // ノード詳細
 const INFO = {
   spa:{f:"app/static/index.html, js/{startup,core,events,chat,code_agent,conversations,panels,render}.js",
-    d:"単一ページのフロント。チャット/Codeのタブ、会話一覧(📌固定)、参照資料・設定・手順ビューアのモーダル、SSE受信と描画(本文中の「図N」直下への画像差し込み、出典・図ギャラリー)を担当。"},
-  lan:{f:"app/main.py(_lan_guard)",d:"接続元IPを判定し、社内LAN/ループバック/許可CIDR以外を403で遮断(X-Forwarded-Forは信用しない)。/と/static/* に no-cache を付与。"},
-  obs:{f:"app/main.py(_observability)",d:"リクエストID採番・アクセスログ・未処理例外の集中ログ(500化)。すべてのAPIの最外層。"},
-  main:{f:"app/main.py",d:"チャット生成とCodeエージェントのSSEエンドポイント。検索→出典確定→曖昧クエリの聞き返し→プロンプト構築(strict-RAG/図N番号表)→llm/agentへ。",
-    t:["/api/.../generate","/api/.../agent","/api/export(委譲)"]},
-  conv:{f:"app/routes/conversation_routes.py",d:"会話のCRUD・メッセージ編集/削除・お気に入り(pinned)。ロジックは conversation_service へ委譲。"},
-  idx:{f:"app/routes/index_routes.py",d:"参照資料(索引)のCRUD・再構築・一括要約・図配信(/api/doc-images)・手順ビューア(/files, /procedure)。",
-    t:["/api/indexes","/api/doc-images","/api/indexes/{id}/procedure"]},
-  fs:{f:"app/routes/fs_routes.py → fsbrowse.py",d:"サーバ/共有フォルダ(UNC)の閲覧・対応ファイル件数見積り。ロックファイル(~$)は除外。"},
-  exp:{f:"app/routes/export_routes.py",d:"回答を Word/Excel/PowerPoint/PDF/HTML/MD へ変換。出典の図は『参考図』として埋め込み。"},
-  ocrr:{f:"app/routes/ocr_routes.py",d:"VBA/外部から呼べる /api/ocr。X-API-Key 認証に対応。"},
-  meta:{f:"app/routes/meta_routes.py",d:"/api/config・ログイン/ログアウト・設定(既定値)取得更新・モデル一覧。"},
-  csvc:{f:"app/services/conversation_service.py",d:"会話の業務ロジック。作業フォルダの安全検証、実効パラメータの付与。"},
-  isvc:{f:"app/services/index_service.py",d:"索引の作成/再構築の起動(並行ガード)・一括要約(前景SSE/裏実行)。図フォルダの削除も担当。"},
-  rag:{f:"app/rag.py",d:"RAGの中核。走査→抽出→(図抽出/OCR)→分割→埋め込み→Chroma保存(増分)。検索は密+語彙融合。破損(hnsw)を即検知して中断。",
-    t:["build_index","retrieve","scan_files"]},
-  retr:{f:"app/retrieval.py",d:"密検索順位とBM25順位を RRF 融合。重複除去・ソース多様化・足切り・(任意)LLMリランク。"},
-  embed:{f:"app/embeddings.py",d:"埋め込みベクトル化。sentence-transformers(multilingual-e5)または Ollama。CUDA があればGPU。"},
-  split:{f:"app/splitter.py",d:"見出し階層(第N条/2.1/【】/# 等)を解釈し、見出しパス付きで chunk_size/overlap に分割。"},
-  load:{f:"app/loaders.py",d:"拡張子別ローダ。PDFは頁単位、Wordは見出し節+表、Excelはシート、PPTはスライド。文字コード自動判定。"},
-  docimg:{f:"app/doc_images.py",d:"Excel/Word/PPT/PDF の埋め込み画像を抽出・正規化・内容ハッシュ保存。ロゴ/アイコンは除外。出典の図表示・手順ビューアで共用。"},
-  ocrm:{f:"app/ocr.py",d:"テキスト層の無い頁だけOCR(VLM/tesseract)。図の説明文生成も担当(内容ハッシュでキャッシュ)。画像非対応モデルは即検知。"},
-  proc:{f:"app/procedure.py",d:"作業手順書を『工程ごと(文章+画像)』に分解(手順ビューア)。Excelは工程番号列を自動検出し画像をアンカー行で割当。"},
-  summ:{f:"app/summarize.py",d:"フォルダ全ファイルの map-reduce 要約。二段モデル(下書き/最終)・観点プリセット。"},
-  post:{f:"app/postprocess.py",d:"回答の軽い清掃(定型句除去・フェンス補完など)。保存前に通す。"},
-  llm:{f:"app/llm.py",d:"Ollamaクライアント。チャット生成(ストリーミング/思考分離)・クエリ書き換え・モデル能力照会。"},
-  agent:{f:"app/agent/_impl.py(run_stream)",d:"Codeエージェントの本体ループ。調査→計画承認→実行(編集は承認/自動適用)→自律検証。文脈超過の自己回復。",
-    t:["計画モード","read-firstゲート","図/JSON復元"]},
-  tools:{f:"app/agent/tools.py",d:"作業フォルダ内のファイル操作・検索・コマンド実行・バックグラウンドjob。パスは安全解決。"},
-  appr:{f:"app/agent/approvals.py",d:"承認/拒否/質問(ask_user)のステートマシン。取り残しエントリの掃除つき。"},
-  actx:{f:"app/agent/context.py",d:"文脈の文字数計算と圧縮。要約失敗時の機械的切り詰め(必ず縮む)で会話の詰みを防止。"},
-  vrf:{f:"app/agent/verify.py",d:"検証コマンドの検出/実行。変更→テスト→失敗なら差し戻して修正、を最大3回。"},
-  render:{f:"app/export/_render.py, blocks.py",d:"Markdownを各形式へレンダリング。表・コード・Mermaid図・参考図の埋め込み。"},
-  db:{f:"app/db.py",d:"SQLite。会話・メッセージ・索引メタ・KV(要約状態/図説明キャッシュ)。単一プロセス前提・書込ロック。"},
-  cfg:{f:"app/config.py, defaults.py",d:".env読込と全体設定。会話ごとの実効パラメータ(base←既定←会話)をマージ。"},
-  safe:{f:"app/safety.py",d:"作業フォルダの安全管理。OS/システム/アプリのデータ領域・自アプリの.envを操作不可に。"},
-  auth:{f:"app/auth.py",d:"簡易パスワード認証(署名Cookie)。OCR APIキーにも対応。"},
-  sse:{f:"app/sse.py, logging_setup.py",d:"SSEイベント整形と、リクエストID付きの集中ログ。"},
-  ollama:{f:"外部: Ollama (localhost:11434)",d:"ローカルLLM/VLM/埋め込みの実行基盤。チャット・Code・OCR・図説明・要約・リランクすべての推論を担う。"},
-  chroma:{f:"外部: ChromaDB (data/chroma)",d:"ベクトルの永続ストア。索引=コレクション、会話添付=会話別コレクション。OneDrive同期配下だと破損しやすい。"},
-  files:{f:"外部: ファイルシステム / 共有フォルダ",d:"参照資料(サーバ上/UNC共有)と、Codeの作業フォルダ。抽出した図は data/doc_images に保存。"},
+    d:"単一ページのフロントエンド。サーバとは REST + SSE で通信し、ビルド不要の素のスクリプトで動く。",
+    pts:[
+      "8つのJSを役割分担: startup(初期化) / core(API・状態) / events(入力) / chat(チャットSSE) / code_agent(CodeのSSE・承認カード) / conversations(会話一覧・📌固定) / panels(設定・参照資料・手順ビューア) / render(本文・出典・図の描画)",
+      "チャットは /generate、Code は /agent の SSE を1行ずつ受信し、本文・思考(💭)・ツール手順・確認カードを逐次描画",
+      "本文中の「図N」をその段落の直下に画像差し込み、参照されなかった図は回答下のギャラリーに表示(クリックで原寸)",
+      "曖昧な質問では選択式の聞き返しカードを表示し、選んだ資料で自動再送(focus_source)",
+      "marked + DOMPurify + highlight.js + mermaid をローカル同梱=オフラインでも整形・図描画が可能",
+      "状態は最小限(現在の会話・添付・ストリーム制御)。再表示はサーバのDB履歴から行う"],
+    t:["render.js","SSE受信","no-cache"]},
+
+  lan:{f:"app/main.py(_lan_guard ミドルウェア)",
+    d:"接続元IPを見て、社内ネットワーク外からのアクセスを最外周で遮断する。",
+    pts:[
+      "許可: ループバック / RFC1918プライベート / リンクローカル / .env の ALLOWED_CIDRS。それ以外は 403 ページ",
+      "判定は実際の接続元IPのみ。X-Forwarded-For 等のヘッダは信用しない(なりすまし対策)",
+      "LAN_ONLY=false で無効化(社外に公開しない前提のときだけ)",
+      "応答に / と /static/* の Cache-Control: no-cache を付与し、UI更新が全クライアントへ即時反映されるようにする"],
+    t:["_ip_allowed","LAN_ONLY","ALLOWED_CIDRS"]},
+
+  obs:{f:"app/main.py(_observability ミドルウェア)",
+    d:"全APIの最外層で、リクエストID採番・アクセスログ・未処理例外の集中処理を行う。",
+    pts:[
+      "8桁のリクエストID(req)を採番し、応答ヘッダ X-Request-ID とログに付与=同時アクセスでも1操作を追跡可能",
+      "未処理例外は必ずログに残し、500 JSON(req付き)へ変換=サイレントな握りつぶしを防ぐ",
+      "メソッド・パス・ステータス・所要msを1行で記録",
+      "_lan_guard の外側で動くため、拒否されたアクセスも記録される"],
+    t:["request_id","set_request_id","集中ログ"]},
+
+  main:{f:"app/main.py",
+    d:"チャット生成と Code エージェントの SSE エンドポイント本体。検索〜生成の指揮を執る。",
+    pts:[
+      "チャット: クエリ書き換え → rag.retrieve → 出典確定(図URL付与) → 曖昧クエリの聞き返し判定 → プロンプト構築 → llm.chat_stream を SSE 配信",
+      "strict-RAG: 参照資料を選んだ会話では「資料に無いことは答えない」指示を付与",
+      "出典に図があるとき【利用できる図】の番号表を提示し、本文の図N参照→画像差し込みを可能にする",
+      "画像添付時は Vision モデルへ自動切替(未導入なら対処つきエラー)",
+      "Code: 会話ごとの文脈をメモリ保持し agent.run_stream を実行。承認/回答/undo のエンドポイントも提供",
+      "回答長・参照件数の既定は「上限なし/∞」、文脈は num_ctx 予算で自動トリム"],
+    t:["/generate","/agent","/api/export","_maybe_clarify_sources"]},
+
+  conv:{f:"app/routes/conversation_routes.py → services/conversation_service.py",
+    d:"会話とメッセージの CRUD・お気に入り固定。ロジックはサービス層へ委譲する。",
+    pts:[
+      "会話の作成/取得/更新/削除、メッセージの編集・以降削除(編集して再送)",
+      "pinned(お気に入り)の切替。一覧はサーバ側で「固定→更新順」に整列",
+      "作業フォルダ(Code)は safety で安全検証してから保存(危険なフォルダは400)",
+      "実効パラメータ(base←既定←会話)をマージして返す"],
+    t:["ConvUpdate","pinned","with_effective"]},
+
+  idx:{f:"app/routes/index_routes.py → services/index_service.py",
+    d:"参照資料(索引)の管理と、図配信・手順ビューアのエンドポイント群。",
+    pts:[
+      "索引の作成/再構築/削除、一括要約の起動(前景SSE / 100件以上は裏実行)",
+      "GET /api/doc-images/{iid}/{name}: 抽出した図を配信(認証必須・ハッシュ名のみ・パストラバーサル防止)",
+      "GET /api/indexes/{iid}/files・/procedure: 手順ビューア用のファイル一覧と工程ビュー",
+      "ビューア対象は資料の登録フォルダ配下のみ許可(外部パスは400)"],
+    t:["/api/indexes","/api/doc-images","/procedure"]},
+
+  fs:{f:"app/routes/fs_routes.py → fsbrowse.py",
+    d:"サーバ上および共有サーバ(UNC)のフォルダを閲覧し、参照資料に選ぶための機能。",
+    pts:[
+      "ルート列挙(ホーム・ドライブ・.env の SHARED_FOLDERS の共有フォルダ)とディレクトリ閲覧",
+      "対応ファイル件数の再帰見積り(件数・時間で打ち切り、巨大ツリーでも固まらない)",
+      "Office のロック/一時ファイル(~$ / .~lock.)は一覧・件数から除外",
+      "UNC 切断時は原因の分かるエラー、Code 作業フォルダに選べるかの安全判定も返す"],
+    t:["get_roots","list_dir","SHARED_FOLDERS"]},
+
+  exp:{f:"app/routes/export_routes.py → export/_render.py",
+    d:"回答を各種オフィス形式へ変換してダウンロードさせる。",
+    pts:[
+      "対応: Word / Excel / PowerPoint / PDF / HTML / Markdown / テキスト / コード",
+      "出典に紐づく文書内の図を『参考図』として埋め込み(HTMLはdataURIで自己完結)",
+      "Mermaid図はフロントでPNG化して受け取り埋め込む。WebP等はPNGへ自動変換",
+      "ファイル名は安全化、Content-Disposition で日本語名にも対応"],
+    t:["export_content","figures","ExportBody"]},
+
+  ocrr:{f:"app/routes/ocr_routes.py",
+    d:"VBA や外部ツールから呼べる単体OCRのAPI。",
+    pts:[
+      "POST /api/ocr に画像/PDFを送るとOCRテキストを返す",
+      "CHAT_PASSWORD 有効時も X-API-Key ヘッダ(OCR_API_KEY)で認証可=ログイン不要で呼べる",
+      "エンジン・モデルは設定(VLM/tesseract)を共有"],
+    t:["/api/ocr","X-API-Key","OCR_API_KEY"]},
+
+  meta:{f:"app/routes/meta_routes.py",
+    d:"アプリ設定・認証・モデル一覧などの横断的なエンドポイント。",
+    pts:[
+      "GET /api/config(認証状態・Ollama可否・埋め込み情報)、/api/models(導入済みモデル)",
+      "ログイン/ログアウト(署名Cookie)",
+      "GET/PATCH /api/settings: 既定値(モデル・温度・チャンク・OCR・聞き返し等)の取得・更新"],
+    t:["/api/config","/api/settings","/api/models"]},
+
+  csvc:{f:"app/services/conversation_service.py",
+    d:"会話の業務ロジック層。ルートとDBの間で検証・整形を担う。",
+    pts:[
+      "settings は部分マージ。Code 作業フォルダは safety.check_workspace で許可フォルダのみ",
+      "実効パラメータ(モデル・生成設定)を会話に付与して返す",
+      "メッセージ編集時の以降削除(再送で続けられる)"],
+    t:["update_conversation","with_effective"]},
+
+  isvc:{f:"app/services/index_service.py",
+    d:"索引の構築起動と一括要約のオーケストレーション。",
+    pts:[
+      "作成・再構築をバックグラウンドスレッドで起動。同一索引の二重ビルドをロックで防止",
+      "一括要約: 前景はSSE、100件以上は裏(バックグラウンド)実行+完了トースト。中止対応",
+      "削除時はベクトルコレクションと doc_images の画像フォルダも掃除",
+      "保護領域(OS/システム/アプリのデータ)を含むパスは作成を拒否"],
+    t:["build_async","start_summary_bg","_acquire_build"]},
+
+  rag:{f:"app/rag.py",
+    d:"RAGの中核。文書の取り込み(索引化)と、質問に対する検索の両方を担う。",
+    pts:[
+      "索引化: 走査 → 本文抽出(loaders) → 図抽出(doc_images)/OCR → 見出し分割(splitter) → 埋め込み(embeddings) → Chroma保存",
+      "増分: ファイルの更新時刻+サイズの署名で変更分だけ再埋め込み、削除分のチャンクは除去",
+      "図チャンク: VLMの図説明を「〔図〕…」として索引化(内容ハッシュでキャッシュ)。チャンクに画像IDを付与",
+      "検索: 質問を埋め込み→Chromaを横断(候補は top_k×4)→ retrieval で融合・整列",
+      "到達不能な共有フォルダや hnsw 破損を検知したら即中断し、既存チャンクは保持"],
+    t:["build_index","retrieve","scan_files","_is_corruption_error"]},
+
+  retr:{f:"app/retrieval.py",
+    d:"密ベクトル検索の結果を語彙検索と融合して並べ替える、依存追加なしの再ランカ。",
+    pts:[
+      "密検索の順位とBM25(語彙一致)の順位を RRF(Reciprocal Rank Fusion)で合成",
+      "型番・条番号・固有名詞などの完全一致語を取りこぼさない",
+      "近重複チャンクの除去、1ファイル独占を防ぐソース多様化、無関係ヒットの足切り",
+      "任意でLLMリランク(関連度採点)を後段に挟める(精度↑/やや遅い)"],
+    t:["rerank","bm25_scores","RRF_K","llm_rerank"]},
+
+  embed:{f:"app/embeddings.py",
+    d:"テキストをベクトル化する埋め込みバックエンド(遅延ロード)。",
+    pts:[
+      "既定は sentence-transformers の multilingual-e5(768次元)。query:/passage: プレフィックスを自動付与",
+      "EMBED_BACKEND=ollama で nomic-embed 等にも切替可(社内プロキシのSSL回避策)",
+      "CUDA対応の torch があればGPU、無ければCPUで動作(値は同じなので再索引不要)",
+      "索引化は128件バッチでまとめて計算"],
+    t:["get_embedder","embed_documents","multilingual-e5"]},
+
+  split:{f:"app/splitter.py",
+    d:"文書を見出し階層を踏まえて検索しやすいチャンクに分割する。",
+    pts:[
+      "見出し検出: Markdown# / 第N編章節条 / 2.1番号 / 【…】 / ■ など日本語文書構造に対応",
+      "各チャンクに「見出しパス」(例 第3章 給与 > 第12条 基本給)を付与=ヒット率と出典の正確さが向上",
+      "節内は 段落→行→句点→読点 の順で chunk_size(既定800字)に分割、overlap(既定120字)を引き継ぐ"],
+    t:["split_structured","split_text","見出しパス"]},
+
+  load:{f:"app/loaders.py",
+    d:"拡張子ごとの本文抽出ローダ。重い依存は関数内で遅延インポート。",
+    pts:[
+      "PDF=ページ単位 / Word=見出し節+表 / Excel=シート(行をセル|セルで連結) / PowerPoint=スライド",
+      "テキスト系(.txt/.md/.csv/.json 等)は文字コードを自動判定(UTF-8/CP932…)",
+      "PDFのテキスト層が無いページは ocr へルーティング(OCR有効時のみ)",
+      "出典表示用の位置(p.5 / シート:組立 等)を付ける。~$ 一時ファイルは除外"],
+    t:["load_file","load_pdf","SUPPORTED_EXTS"]},
+
+  docimg:{f:"app/doc_images.py",
+    d:"文書内の埋め込み画像を抽出・正規化・保存する(チャットの図表示と手順ビューアで共用)。",
+    pts:[
+      "Excel(アンカー位置)/Word(見出し・表中)/PowerPoint/PDF から画像を抽出",
+      "ノイズ除去: 64px未満・4KB未満(アイコン・罫線)、多ページ繰り返し(ロゴ)を除外",
+      "正規化: 1600px超は縮小、BMP/TIFF等はPNG変換、同一内容はSHA-1ハッシュで1ファイルに集約",
+      "data/doc_images/<索引ID>/ に保存し、チャンクに画像IDを紐付け"],
+    t:["extract_for_file","_normalize","_save"]},
+
+  ocrm:{f:"app/ocr.py",
+    d:"スキャン頁のOCRと、文書内の図の説明文生成を担うビジョン処理。",
+    pts:[
+      "テキスト層が閾値未満の頁だけ画像化してOCR(VLM=Ollama / tesseract を選択)",
+      "図の説明生成(describe_image_png): 検索用の1〜2文+図中文字。内容ハッシュでキャッシュし再生成を回避",
+      "画像非対応モデルは1頁目で即検知して以降スキップ(時間を無駄にしない)",
+      "未導入・失敗時は空文字に縮退=本文取り込みは止めない"],
+    t:["needs_ocr","ocr_image_png","describe_image_png"]},
+
+  proc:{f:"app/procedure.py",
+    d:"作業手順書を「工程ごと(文章+画像)」の構造に分解する手順ビューアのエンジン。",
+    pts:[
+      "Excel: 工程番号の列(1,2,3 / ①② / 手順N / (1))を自動検出し、行範囲で工程を区切る",
+      "画像はアンカー行で該当工程に割り当て。番号がバラバラな数値列は工程と誤検出しない",
+      "検出できないシートは『シート全体』表示にフォールバック",
+      "PowerPoint=1スライド / PDF=1ページ / Word=見出し節 を1工程として分解(表中の図も対応)",
+      "画像は doc_images の保存・配信を再利用(チャットの図と同じURL)"],
+    t:["build_view","_detect_marker_col","_xlsx_view"]},
+
+  summ:{f:"app/summarize.py",
+    d:"フォルダ内の全ファイルを map-reduce でまとめる一括要約エンジン。",
+    pts:[
+      "各ファイルを要約(map)→全体を統合(reduce)。進捗をSSEで配信",
+      "二段モデル: 下書き=高速な小型モデル、最終まとめ=メインモデルで高速化",
+      "観点プリセット(規程・契約書・議事録 等)で構造化要約",
+      "Code からは summarize_path ツールとしても利用される"],
+    t:["stream_summarize","model_summarize_fn"]},
+
+  post:{f:"app/postprocess.py",
+    d:"生成された回答の軽い後処理(保存・表示前のクリーニング)。",
+    pts:[
+      "定型句・前置きの除去、未閉じコードフェンスの補完など",
+      "崩れた整形を最小限ならし、出典・図の情報は保持",
+      "チャット・Code 双方の保存前に通す"],
+    t:["clean"]},
+
+  llm:{f:"app/llm.py",
+    d:"Ollama とのやり取りを集約するクライアント層。",
+    pts:[
+      "チャット生成(ストリーミング)。<think> や harmony 形式の思考を本文から分離",
+      "rewrite_query: 追問を履歴から独立した検索文へ書き換え",
+      "build_messages: システム指示+履歴+参考資料を num_ctx 予算で組み立て(strict-RAG指示・図解ヒント)",
+      "モデル能力照会(vision有無)・導入確認・タイトル自動生成"],
+    t:["chat_stream","rewrite_query","build_messages","model_capabilities"]},
+
+  agent:{f:"app/agent/_impl.py(run_stream)",
+    d:"Code エージェントの本体ループ。調査→計画→実行→検証を作業フォルダ内で回す。",
+    pts:[
+      "計画モード(既定): 調査 → present_plan で計画提示 → 承認 → 実行(編集は自動適用、コマンドは都度確認)",
+      "ツール非対応モデルでも本文中のJSONツール呼び出しを復元して前進(復元分は保存本文から除去)",
+      "read-first ゲート: 未読ファイルの盲目編集を差し戻し、まず read_file を要求",
+      "コンテキスト超過(400)を検知→文脈を強制切り詰め→再試行、で会話の詰みを防ぐ",
+      "変更は undo 控え+構文チェック、依頼完了時に自律検証ループへ"],
+    t:["run_stream","_change_action","_require_read_first","_is_ctx_overflow"]},
+
+  tools:{f:"app/agent/tools.py",
+    d:"エージェントが作業フォルダ内で使うファイル操作・検索・コマンド実行ツール群。",
+    pts:[
+      "読み取り: list_files / read_file(PDF・Officeも本文抽出) / glob / grep",
+      "変更: write_file / edit_file(部分置換) / run_command",
+      "長時間処理: run_background / command_output / stop_command(devサーバ等)",
+      "全パスは _safe_path で作業フォルダ内に限定し、保護領域・自アプリ.envを拒否"],
+    t:["dispatch","_safe_path","t_edit_file"]},
+
+  appr:{f:"app/agent/approvals.py",
+    d:"変更・コマンド・質問に対するUIからの承認/拒否/回答を待ち受けるステートマシン。",
+    pts:[
+      "プロセス内の共有辞書を Lock で保護(単一プロセス前提)",
+      "承認(scope=alwaysで以後自動適用)/拒否(理由つき=モデルに修正指示)/タイムアウト",
+      "ask_user の選択式回答も同じ仕組みで待機",
+      "確認カード表示中の切断で残るエントリを掃除(リーク防止)"],
+    t:["new_pending","wait_decision","resolve"]},
+
+  actx:{f:"app/agent/context.py",
+    d:"エージェントの会話文脈の肥大化を抑える圧縮ヘルパ。",
+    pts:[
+      "文字数を概算(write_fileの全文などツール引数も算入)し、num_ctx連動のしきい値で圧縮",
+      "設定部を保ったまま履歴を要約1件へ畳み込む(要約関数は注入)",
+      "要約LLMが失敗しても force_truncate_ctx で機械的に必ず縮める=詰みを回避"],
+    t:["compact_ctx","force_truncate_ctx","_ctx_chars"]},
+
+  vrf:{f:"app/agent/verify.py",
+    d:"変更後に自動でテスト/ビルドを走らせる自律検証の実行部品。",
+    pts:[
+      "検証コマンドは会話設定(複数行可)優先、空なら自動検出(pytest / npm test / go build / make test)",
+      "失敗したら出力をモデルへ差し戻して修正させ、最大3回まで再検証",
+      "実行は作業フォルダ内で完結"],
+    t:["detect_verify_cmd","run_checks","resolve_verify_cmds"]},
+
+  render:{f:"app/export/_render.py, blocks.py",
+    d:"Markdownを各オフィス形式へレンダリングする変換エンジン。",
+    pts:[
+      "共有の Markdown 解析(parse_blocks)で見出し・表・コード・引用・リストを構造化",
+      "Word/PDF/PPTX/XLSX/HTML へ整形。表のゼブラ、コードのハイライト、図の埋め込み",
+      "参考図(出典の画像)を末尾に掲載。HTMLは data URI で自己完結",
+      "PDFは日本語CIDフォント、目次・しおりに対応"],
+    t:["to_docx","to_pdf","to_html","_decode_figures"]},
+
+  db:{f:"app/db.py",
+    d:"SQLite による永続化層(会話・メッセージ・索引メタ・KV)。",
+    pts:[
+      "会話/メッセージ/索引のCRUDと全文検索。pinned で固定を上に整列",
+      "KVストア: 要約状態・図説明キャッシュ(figdesc:ハッシュ)・OCRスキップ数など",
+      "起動時に後方互換マイグレーション(kind / pinned 列を自動追加)",
+      "単一プロセス前提・書込ロックで保護"],
+    t:["list_conversations","set_kv","update_conversation"]},
+
+  cfg:{f:"app/config.py, defaults.py",
+    d:".env からの全体設定と、会話ごとの実効パラメータのマージ。",
+    pts:[
+      "サーバ・認証・Ollama・埋め込み・RAG・OCR・共有フォルダ・num_ctx 等を一元管理",
+      "実効値の優先順位: base(config) ← グローバル既定(KV) ← 会話固有",
+      "num_ctx=0(自動)は溢れにくい安全既定へ解決。Code は16384以上を推奨",
+      "SHARED_FOLDERS のパース、SECRET_KEY の自動生成・保存"],
+    t:["Settings","get_defaults","effective_for"]},
+
+  safe:{f:"app/safety.py",
+    d:"Code エージェントの作業フォルダに関する安全管理。",
+    pts:[
+      "OS/システム重要フォルダ・ドライブ直下・ユーザー共有ルート・アプリのデータ領域を作業フォルダにできない",
+      "自アプリの .env(CHAT_PASSWORD 等)をファイル単位で読み書き・一覧から遮断",
+      "選択UI・設定時・実行時・ファイル単位の4段で検証",
+      "他プロジェクトの .env は通常どおり扱える(開発作業を妨げない)"],
+    t:["check_workspace","is_within_protected","is_protected_file"]},
+
+  auth:{f:"app/auth.py",
+    d:"簡易パスワード認証(署名付きCookie)。",
+    pts:[
+      "CHAT_PASSWORD を設定するとログイン画面が出る。空なら認証なし",
+      "itsdangerous でセッションCookieを署名(SECRET_KEY)",
+      "OCR API は X-API-Key でも通せる(VBA等の外部利用向け)"],
+    t:["require_auth","is_authenticated"]},
+
+  sse:{f:"app/sse.py, logging_setup.py",
+    d:"SSEイベントの整形と、リクエストID付きの集中ログ基盤。",
+    pts:[
+      "dict を data: 行の SSE 文字列へ整形",
+      "ログはリクエストID(req)を相関キーに、同時アクセスでも操作を追跡可能",
+      "起動時に全モジュール共通のロガーを設定"],
+    t:["sse","get_logger","setup_logging"]},
+
+  ollama:{f:"外部プロセス: Ollama (既定 localhost:11434)",
+    d:"ローカルLLM/VLM/埋め込みの実行基盤。すべての推論をここで行う。",
+    pts:[
+      "チャット生成・Codeエージェント・OCR・図の説明・一括要約・LLMリランク・クエリ書き換えの推論を担う",
+      "用途別にモデルを設定可: CHAT_MODEL / CODE_MODEL / VISION_MODEL(OCR) / EMBED(ollama時) / RERANK_MODEL",
+      "RTX5090等のローカルGPUで動作。社外にデータが出ない完全ローカル構成",
+      "未起動・モデル未導入時は対処方法つきのエラーを画面に表示"],
+    t:["chat","embeddings","localhost:11434"]},
+
+  chroma:{f:"外部ストア: ChromaDB (data/chroma)",
+    d:"埋め込みベクトルの永続ストア。検索の土台。",
+    pts:[
+      "索引=1コレクション、会話の添付=会話別コレクション。横断検索して統合",
+      "cosine距離・HNSWインデックス。チャンク本文+ベクトル+メタデータ(出典・見出し・図ID・署名)を保持",
+      "OneDrive等の同期フォルダ配下だと破損しやすい→ DATA_DIR を同期外へ",
+      "破損(hnsw)は rag が即検知して復旧手順を表示"],
+    t:["PersistentClient","コレクション","data/chroma"]},
+
+  files:{f:"外部: ファイルシステム / 共有サーバ(UNC)",
+    d:"参照資料の置き場と、Code エージェントの作業フォルダ。",
+    pts:[
+      "参照資料: サーバ上のフォルダ、または共有サーバ(\\\\server\\share)。SHARED_FOLDERS で登録可",
+      "Code: 選択した作業フォルダ内のみ読み書き(safety で範囲外を拒否)",
+      "抽出した図は data/doc_images に複製保存(原本は読み取りのみ・無変更)",
+      "切断・権限エラーは原因の分かるエラーにして、索引の誤削除を防ぐ"],
+    t:["共有フォルダ","作業フォルダ","data/doc_images"]},
 };
 
 // ============================================================
@@ -381,7 +673,12 @@ function openPanel(n) {
   document.getElementById("p-title").textContent = n.label;
   document.getElementById("p-file").innerHTML = info.f ? "📄 <code>" + esc(info.f) + "</code>" : "";
   let html = "<p>" + esc(info.d || "") + "</p>";
-  if (info.t && info.t.length) html += info.t.map(x => `<span class="tag">${esc(x)}</span>`).join("");
+  if (info.pts && info.pts.length)
+    html += "<ul>" + info.pts.map(p => "<li>" + esc(p) + "</li>").join("") + "</ul>";
+  if (info.t && info.t.length) {
+    html += '<div class="taglead">主なシンボル / 関連</div>';
+    html += info.t.map(x => `<span class="tag">${esc(x)}</span>`).join("");
+  }
   document.getElementById("p-body").innerHTML = html;
   document.getElementById("panel").classList.add("open");
 }
