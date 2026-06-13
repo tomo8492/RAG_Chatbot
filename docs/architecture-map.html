@@ -1,0 +1,424 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>アーキテクチャ全体図 | 社内文書アシスタント (RAG_Chatbot)</title>
+<!-- テーマをペイント前に適用(チラつき防止) -->
+<script>
+  (function () {
+    try {
+      var t = localStorage.getItem("arch-theme");
+      if (!t) t = matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+      if (t === "dark") document.documentElement.classList.add("dark");
+    } catch (e) {}
+  })();
+</script>
+<style>
+  :root{
+    --bg:#f4f6fb; --paper:#ffffff; --ink:#1f2430; --muted:#5b6573; --line:#d8deea;
+    --accent:#3b5bdb; --accent2:#7048e8; --green:#0a7d44; --warn:#b54708; --stop:#d4380d;
+    --client:#e7efff; --client-s:#3b5bdb;
+    --mw:#fff4e6; --mw-s:#b54708;
+    --route:#e6f7ee; --route-s:#0a7d44;
+    --svc:#f3eefe; --svc-s:#7048e8;
+    --eng:#eef2f7; --eng-s:#41506b;
+    --infra:#f0f3f8; --infra-s:#5b6573;
+    --ext:#fdeef0; --ext-s:#d4380d;
+    --band:rgba(20,30,60,.035); --edge:#9aa6bd; --shadow:0 1px 2px rgba(15,23,42,.08);
+  }
+  html.dark{
+    --bg:#15171c; --paper:#1e2128; --ink:#e7e9ef; --muted:#9aa3b2; --line:#333947;
+    --accent:#6f8bff; --accent2:#9b78ff; --green:#5cc189; --warn:#e0913f; --stop:#ef6a4a;
+    --client:#1b2740; --client-s:#6f8bff;
+    --mw:#2e2415; --mw-s:#e0913f;
+    --route:#16291f; --route-s:#5cc189;
+    --svc:#241b39; --svc-s:#9b78ff;
+    --eng:#222732; --eng-s:#aab6cc;
+    --infra:#1f242e; --infra-s:#9aa3b2;
+    --ext:#311c1f; --ext-s:#ef6a4a;
+    --band:rgba(255,255,255,.03); --edge:#5a6478; --shadow:0 1px 2px rgba(0,0,0,.4);
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:"Yu Gothic UI","Hiragino Kaku Gothic ProN",Meiryo,system-ui,-apple-system,"Segoe UI",sans-serif}
+  header{display:flex;align-items:center;gap:14px;padding:12px 20px;border-bottom:1px solid var(--line);
+    background:var(--paper);position:sticky;top:0;z-index:10;flex-wrap:wrap}
+  header h1{font-size:16px;margin:0;font-weight:700;white-space:nowrap}
+  header .sub{font-size:12px;color:var(--muted);white-space:nowrap}
+  .spacer{flex:1}
+  .chips{display:flex;gap:7px;flex-wrap:wrap}
+  .chip{border:1px solid var(--line);background:var(--paper);color:var(--ink);border-radius:999px;
+    padding:5px 13px;font-size:12.5px;cursor:pointer;font-weight:600;transition:all .15s}
+  .chip:hover{border-color:var(--accent)}
+  .chip.on{background:var(--accent);border-color:var(--accent);color:#fff}
+  .chip.clear{font-weight:500;color:var(--muted)}
+  .tgl{border:1px solid var(--line);background:var(--paper);color:var(--ink);border-radius:8px;
+    width:34px;height:30px;cursor:pointer;font-size:15px}
+  .legend{display:flex;gap:12px;flex-wrap:wrap;padding:7px 20px;font-size:11.5px;color:var(--muted);
+    border-bottom:1px solid var(--line);background:var(--paper)}
+  .legend span{display:inline-flex;align-items:center;gap:5px}
+  .legend i{width:11px;height:11px;border-radius:3px;display:inline-block;border:1px solid}
+  .stage{width:100%;height:calc(100vh - 96px);overflow:auto}
+  svg{display:block;width:100%;height:100%;min-width:1180px}
+  /* バンド帯・ラベル */
+  .band{fill:var(--band)}
+  .band-label{fill:var(--muted);font-size:12px;font-weight:700;letter-spacing:.04em}
+  /* エッジ */
+  .edge{fill:none;stroke:var(--edge);stroke-width:1.4;opacity:.4}
+  .flow-line{fill:none;stroke:var(--accent);stroke-width:3.4;opacity:.95;
+    stroke-linecap:round;stroke-dasharray:9 11;animation:dash 1s linear infinite}
+  @keyframes dash{to{stroke-dashoffset:-40}}
+  .dim .edge{opacity:.12}
+  /* ノード */
+  .node{cursor:pointer}
+  .node rect{fill:var(--paper);stroke:var(--n-s,var(--eng-s));stroke-width:1.5;rx:9;
+    filter:drop-shadow(var(--shadow))}
+  .node .bgfill{fill:var(--n-bg,var(--eng))}
+  .node .lbl{fill:var(--ink);font-size:12.5px;font-weight:700;pointer-events:none}
+  .node .sub{fill:var(--muted);font-size:10px;pointer-events:none}
+  .node:hover rect{stroke-width:2.4}
+  .dim .node{opacity:.28}
+  .node.hot{opacity:1}
+  .node.hot rect{stroke-width:2.6;filter:drop-shadow(0 0 7px var(--accent))}
+  /* 詳細パネル */
+  #panel{position:fixed;top:0;right:-440px;width:420px;max-width:94vw;height:100vh;z-index:30;
+    background:var(--paper);border-left:1px solid var(--line);box-shadow:-8px 0 28px rgba(15,23,42,.16);
+    transition:right .2s ease;display:flex;flex-direction:column}
+  #panel.open{right:0}
+  #panel .ph{display:flex;align-items:center;gap:10px;padding:16px 18px;border-bottom:1px solid var(--line)}
+  #panel .ph .ico{width:30px;height:30px;border-radius:8px;display:flex;align-items:center;justify-content:center;
+    font-size:15px;background:var(--n-bg,var(--eng));border:1px solid var(--n-s,var(--eng-s));flex-shrink:0}
+  #panel .ph .t{font-weight:700;font-size:15px;flex:1}
+  #panel .ph button{border:1px solid var(--line);background:var(--bg);border-radius:7px;padding:3px 10px;cursor:pointer;color:var(--ink)}
+  #panel .file{padding:9px 18px 0;font-size:11.5px;color:var(--muted)}
+  #panel .file code{background:var(--bg);border:1px solid var(--line);border-radius:5px;padding:1px 6px}
+  #panel .body{padding:10px 18px 24px;font-size:13.5px;line-height:1.75;overflow:auto}
+  #panel .body ul{margin:6px 0;padding-left:18px}
+  #panel .body li{margin:3px 0}
+  #panel .tag{display:inline-block;font-size:11px;color:var(--muted);border:1px solid var(--line);
+    border-radius:999px;padding:1px 9px;margin:2px 4px 2px 0}
+  .hint{position:fixed;left:18px;bottom:14px;font-size:11.5px;color:var(--muted);
+    background:var(--paper);border:1px solid var(--line);border-radius:8px;padding:6px 11px;z-index:5}
+  @media (max-width:760px){ #panel{width:100%;right:-100%} .hint{display:none} }
+</style>
+</head>
+<body>
+<header>
+  <h1>🏛 アーキテクチャ全体図</h1>
+  <span class="sub">社内文書アシスタント (RAG_Chatbot) — FastAPI / Ollama / ChromaDB・完全ローカル</span>
+  <div class="spacer"></div>
+  <div class="chips" id="flow-chips"></div>
+  <button class="tgl" id="theme" title="ライト/ダーク切替">◑</button>
+</header>
+<div class="legend" id="legend"></div>
+<div class="stage"><svg id="svg" preserveAspectRatio="xMidYMin meet" role="img" aria-label="システム構成図"></svg></div>
+
+<aside id="panel" aria-hidden="true">
+  <div class="ph"><span class="ico" id="p-ico">■</span><span class="t" id="p-title">ノード詳細</span>
+    <button id="p-close">✕</button></div>
+  <div class="file" id="p-file"></div>
+  <div class="body" id="p-body">ノードをクリックすると、役割・該当ファイル・依存を表示します。<br>
+    上部のフローを選ぶと、処理の流れが光って流れます。</div>
+</aside>
+<div class="hint">🖱 ノード=クリックで詳細 / 上部チップ=処理フローをアニメーション表示</div>
+
+<script>
+// ============================================================
+//  データ(レイヤ / ノード / 依存エッジ / 処理フロー)
+// ============================================================
+const W = 1480, PAD = 40, NODE_H = 50;
+const LAYERS = [
+  { key:"client", y:70,  label:"クライアント — ブラウザ SPA",        bg:"--client", s:"--client-s" },
+  { key:"mw",     y:166, label:"ミドルウェア(全API共通)",          bg:"--mw",     s:"--mw-s" },
+  { key:"routes", y:256, label:"API ルート(FastAPI)",              bg:"--route",  s:"--route-s" },
+  { key:"svc",    y:360, label:"サービス層",                        bg:"--svc",    s:"--svc-s" },
+  { key:"rag",    y:456, label:"エンジン — RAG / 取り込み・検索",    bg:"--eng",    s:"--eng-s" },
+  { key:"agent",  y:572, label:"エンジン — Code エージェント / 文書出力", bg:"--eng", s:"--eng-s" },
+  { key:"infra",  y:668, label:"基盤 / 横断的関心事",                bg:"--infra",  s:"--infra-s" },
+  { key:"ext",    y:766, label:"外部プロセス / ストレージ",          bg:"--ext",    s:"--ext-s" },
+];
+// ノード: id, layer, label, sub(ファイル名), ico
+const NODES = [
+  { id:"spa", layer:"client", label:"ブラウザ SPA", sub:"index.html + js/*", ico:"🖥" },
+
+  { id:"lan", layer:"mw", label:"LAN制限", sub:"_lan_guard", ico:"🛡" },
+  { id:"obs", layer:"mw", label:"観測性・ReqID", sub:"_observability", ico:"🔎" },
+
+  { id:"main",  layer:"routes", label:"main (SSE)", sub:"Chat/Agent 生成", ico:"⚡" },
+  { id:"conv",  layer:"routes", label:"会話", sub:"conversation_routes", ico:"💬" },
+  { id:"idx",   layer:"routes", label:"資料", sub:"index_routes", ico:"📁" },
+  { id:"fs",    layer:"routes", label:"フォルダ", sub:"fs_routes", ico:"🗂" },
+  { id:"exp",   layer:"routes", label:"出力", sub:"export_routes", ico:"⬇" },
+  { id:"ocrr",  layer:"routes", label:"OCR API", sub:"ocr_routes", ico:"🔠" },
+  { id:"meta",  layer:"routes", label:"設定/認証", sub:"meta_routes", ico:"⚙" },
+
+  { id:"csvc", layer:"svc", label:"会話サービス", sub:"conversation_service", ico:"💬" },
+  { id:"isvc", layer:"svc", label:"索引サービス", sub:"index_service", ico:"📚" },
+
+  { id:"rag",    layer:"rag", label:"rag", sub:"索引/検索の中核", ico:"🧠" },
+  { id:"retr",   layer:"rag", label:"retrieval", sub:"BM25+RRF融合", ico:"🎯" },
+  { id:"embed",  layer:"rag", label:"embeddings", sub:"e5/Ollama", ico:"📐" },
+  { id:"split",  layer:"rag", label:"splitter", sub:"見出し分割", ico:"✂" },
+  { id:"load",   layer:"rag", label:"loaders", sub:"PDF/Office抽出", ico:"📄" },
+  { id:"docimg", layer:"rag", label:"doc_images", sub:"図の抽出", ico:"🖼" },
+  { id:"ocrm",   layer:"rag", label:"ocr", sub:"VLM/tesseract", ico:"🔠" },
+  { id:"proc",   layer:"rag", label:"procedure", sub:"手順ビューア", ico:"📖" },
+  { id:"summ",   layer:"rag", label:"summarize", sub:"map-reduce要約", ico:"📝" },
+  { id:"post",   layer:"rag", label:"postprocess", sub:"回答整形", ico:"🧹" },
+  { id:"llm",    layer:"rag", label:"llm", sub:"Ollamaクライアント", ico:"🤖" },
+
+  { id:"agent",  layer:"agent", label:"agent ループ", sub:"_impl.run_stream", ico:"🤝" },
+  { id:"tools",  layer:"agent", label:"tools", sub:"ファイル/コマンド", ico:"🔧" },
+  { id:"appr",   layer:"agent", label:"approvals", sub:"承認/質問", ico:"✅" },
+  { id:"actx",   layer:"agent", label:"context", sub:"文脈圧縮", ico:"📦" },
+  { id:"vrf",    layer:"agent", label:"verify", sub:"自律検証", ico:"🧪" },
+  { id:"render", layer:"agent", label:"export", sub:"docx/pdf/xlsx…", ico:"📤" },
+
+  { id:"db",   layer:"infra", label:"db", sub:"SQLite", ico:"🗄" },
+  { id:"cfg",  layer:"infra", label:"config/defaults", sub:".env/既定値", ico:"⚙" },
+  { id:"safe", layer:"infra", label:"safety", sub:"作業フォルダ保護", ico:"🔒" },
+  { id:"auth", layer:"infra", label:"auth", sub:"パスワード", ico:"🔑" },
+  { id:"sse",  layer:"infra", label:"sse / logging", sub:"配信/ログ", ico:"📡" },
+
+  { id:"ollama", layer:"ext", label:"Ollama", sub:"LLM / VLM / 埋め込み", ico:"🦙" },
+  { id:"chroma", layer:"ext", label:"ChromaDB", sub:"ベクトル永続(data/chroma)", ico:"🧊" },
+  { id:"files",  layer:"ext", label:"ファイル/共有フォルダ", sub:"参照資料・作業フォルダ", ico:"📂" },
+];
+// 依存エッジ(代表的なもの)
+const EDGES = [
+  ["spa","lan"],["lan","obs"],
+  ["obs","main"],["obs","conv"],["obs","idx"],["obs","fs"],["obs","exp"],["obs","ocrr"],["obs","meta"],
+  ["conv","csvc"],["idx","isvc"],["idx","proc"],["exp","render"],["ocrr","ocrm"],["fs","files"],
+  ["csvc","db"],["isvc","rag"],["isvc","summ"],["isvc","safe"],
+  ["main","rag"],["main","llm"],["main","agent"],["main","post"],["main","db"],
+  ["rag","retr"],["rag","embed"],["rag","split"],["rag","load"],["rag","docimg"],["rag","chroma"],
+  ["load","ocrm"],["proc","docimg"],["summ","llm"],
+  ["agent","tools"],["agent","appr"],["agent","actx"],["agent","vrf"],["agent","llm"],
+  ["tools","files"],["tools","safe"],
+  ["embed","ollama"],["llm","ollama"],["ocrm","ollama"],
+  ["docimg","files"],["load","files"],
+  ["meta","auth"],
+];
+// 処理フロー(line=アニメーション経路 / extra=同時に光らせるノード)
+const FLOWS = {
+  chat:  { label:"💬 質問応答(RAG)", line:["spa","main","rag","embed","chroma","retr","llm","ollama"], extra:["post","db"] },
+  index: { label:"📁 索引構築",       line:["spa","idx","isvc","rag","load","docimg","split","embed","chroma"], extra:["ocrm","files"] },
+  agent: { label:"🤖 Code エージェント", line:["spa","main","agent","tools","files"], extra:["llm","ollama","appr","actx","vrf","safe"] },
+  proc:  { label:"📖 手順ビューア",   line:["spa","idx","proc","docimg","files"], extra:[] },
+};
+// ノード詳細
+const INFO = {
+  spa:{f:"app/static/index.html, js/{startup,core,events,chat,code_agent,conversations,panels,render}.js",
+    d:"単一ページのフロント。チャット/Codeのタブ、会話一覧(📌固定)、参照資料・設定・手順ビューアのモーダル、SSE受信と描画(本文中の「図N」直下への画像差し込み、出典・図ギャラリー)を担当。"},
+  lan:{f:"app/main.py(_lan_guard)",d:"接続元IPを判定し、社内LAN/ループバック/許可CIDR以外を403で遮断(X-Forwarded-Forは信用しない)。/と/static/* に no-cache を付与。"},
+  obs:{f:"app/main.py(_observability)",d:"リクエストID採番・アクセスログ・未処理例外の集中ログ(500化)。すべてのAPIの最外層。"},
+  main:{f:"app/main.py",d:"チャット生成とCodeエージェントのSSEエンドポイント。検索→出典確定→曖昧クエリの聞き返し→プロンプト構築(strict-RAG/図N番号表)→llm/agentへ。",
+    t:["/api/.../generate","/api/.../agent","/api/export(委譲)"]},
+  conv:{f:"app/routes/conversation_routes.py",d:"会話のCRUD・メッセージ編集/削除・お気に入り(pinned)。ロジックは conversation_service へ委譲。"},
+  idx:{f:"app/routes/index_routes.py",d:"参照資料(索引)のCRUD・再構築・一括要約・図配信(/api/doc-images)・手順ビューア(/files, /procedure)。",
+    t:["/api/indexes","/api/doc-images","/api/indexes/{id}/procedure"]},
+  fs:{f:"app/routes/fs_routes.py → fsbrowse.py",d:"サーバ/共有フォルダ(UNC)の閲覧・対応ファイル件数見積り。ロックファイル(~$)は除外。"},
+  exp:{f:"app/routes/export_routes.py",d:"回答を Word/Excel/PowerPoint/PDF/HTML/MD へ変換。出典の図は『参考図』として埋め込み。"},
+  ocrr:{f:"app/routes/ocr_routes.py",d:"VBA/外部から呼べる /api/ocr。X-API-Key 認証に対応。"},
+  meta:{f:"app/routes/meta_routes.py",d:"/api/config・ログイン/ログアウト・設定(既定値)取得更新・モデル一覧。"},
+  csvc:{f:"app/services/conversation_service.py",d:"会話の業務ロジック。作業フォルダの安全検証、実効パラメータの付与。"},
+  isvc:{f:"app/services/index_service.py",d:"索引の作成/再構築の起動(並行ガード)・一括要約(前景SSE/裏実行)。図フォルダの削除も担当。"},
+  rag:{f:"app/rag.py",d:"RAGの中核。走査→抽出→(図抽出/OCR)→分割→埋め込み→Chroma保存(増分)。検索は密+語彙融合。破損(hnsw)を即検知して中断。",
+    t:["build_index","retrieve","scan_files"]},
+  retr:{f:"app/retrieval.py",d:"密検索順位とBM25順位を RRF 融合。重複除去・ソース多様化・足切り・(任意)LLMリランク。"},
+  embed:{f:"app/embeddings.py",d:"埋め込みベクトル化。sentence-transformers(multilingual-e5)または Ollama。CUDA があればGPU。"},
+  split:{f:"app/splitter.py",d:"見出し階層(第N条/2.1/【】/# 等)を解釈し、見出しパス付きで chunk_size/overlap に分割。"},
+  load:{f:"app/loaders.py",d:"拡張子別ローダ。PDFは頁単位、Wordは見出し節+表、Excelはシート、PPTはスライド。文字コード自動判定。"},
+  docimg:{f:"app/doc_images.py",d:"Excel/Word/PPT/PDF の埋め込み画像を抽出・正規化・内容ハッシュ保存。ロゴ/アイコンは除外。出典の図表示・手順ビューアで共用。"},
+  ocrm:{f:"app/ocr.py",d:"テキスト層の無い頁だけOCR(VLM/tesseract)。図の説明文生成も担当(内容ハッシュでキャッシュ)。画像非対応モデルは即検知。"},
+  proc:{f:"app/procedure.py",d:"作業手順書を『工程ごと(文章+画像)』に分解(手順ビューア)。Excelは工程番号列を自動検出し画像をアンカー行で割当。"},
+  summ:{f:"app/summarize.py",d:"フォルダ全ファイルの map-reduce 要約。二段モデル(下書き/最終)・観点プリセット。"},
+  post:{f:"app/postprocess.py",d:"回答の軽い清掃(定型句除去・フェンス補完など)。保存前に通す。"},
+  llm:{f:"app/llm.py",d:"Ollamaクライアント。チャット生成(ストリーミング/思考分離)・クエリ書き換え・モデル能力照会。"},
+  agent:{f:"app/agent/_impl.py(run_stream)",d:"Codeエージェントの本体ループ。調査→計画承認→実行(編集は承認/自動適用)→自律検証。文脈超過の自己回復。",
+    t:["計画モード","read-firstゲート","図/JSON復元"]},
+  tools:{f:"app/agent/tools.py",d:"作業フォルダ内のファイル操作・検索・コマンド実行・バックグラウンドjob。パスは安全解決。"},
+  appr:{f:"app/agent/approvals.py",d:"承認/拒否/質問(ask_user)のステートマシン。取り残しエントリの掃除つき。"},
+  actx:{f:"app/agent/context.py",d:"文脈の文字数計算と圧縮。要約失敗時の機械的切り詰め(必ず縮む)で会話の詰みを防止。"},
+  vrf:{f:"app/agent/verify.py",d:"検証コマンドの検出/実行。変更→テスト→失敗なら差し戻して修正、を最大3回。"},
+  render:{f:"app/export/_render.py, blocks.py",d:"Markdownを各形式へレンダリング。表・コード・Mermaid図・参考図の埋め込み。"},
+  db:{f:"app/db.py",d:"SQLite。会話・メッセージ・索引メタ・KV(要約状態/図説明キャッシュ)。単一プロセス前提・書込ロック。"},
+  cfg:{f:"app/config.py, defaults.py",d:".env読込と全体設定。会話ごとの実効パラメータ(base←既定←会話)をマージ。"},
+  safe:{f:"app/safety.py",d:"作業フォルダの安全管理。OS/システム/アプリのデータ領域・自アプリの.envを操作不可に。"},
+  auth:{f:"app/auth.py",d:"簡易パスワード認証(署名Cookie)。OCR APIキーにも対応。"},
+  sse:{f:"app/sse.py, logging_setup.py",d:"SSEイベント整形と、リクエストID付きの集中ログ。"},
+  ollama:{f:"外部: Ollama (localhost:11434)",d:"ローカルLLM/VLM/埋め込みの実行基盤。チャット・Code・OCR・図説明・要約・リランクすべての推論を担う。"},
+  chroma:{f:"外部: ChromaDB (data/chroma)",d:"ベクトルの永続ストア。索引=コレクション、会話添付=会話別コレクション。OneDrive同期配下だと破損しやすい。"},
+  files:{f:"外部: ファイルシステム / 共有フォルダ",d:"参照資料(サーバ上/UNC共有)と、Codeの作業フォルダ。抽出した図は data/doc_images に保存。"},
+};
+
+// ============================================================
+//  レイアウト計算 & SVG生成
+// ============================================================
+const NS = "http://www.w3.org/2000/svg";
+const svg = document.getElementById("svg");
+const byLayer = {};
+LAYERS.forEach(l => byLayer[l.key] = []);
+NODES.forEach(n => byLayer[n.layer].push(n));
+const pos = {};   // id -> {x,y,w,h,cx,cy}
+const H = LAYERS[LAYERS.length - 1].y + 120;
+svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+
+function layoutNodes() {
+  LAYERS.forEach(l => {
+    const arr = byLayer[l.key];
+    const n = arr.length;
+    const usable = W - PAD * 2;
+    const slot = usable / n;
+    const w = Math.min(slot - 14, 150);
+    arr.forEach((node, i) => {
+      const cx = PAD + slot * (i + 0.5);
+      const x = cx - w / 2;
+      pos[node.id] = { x, y: l.y, w, h: NODE_H, cx, cy: l.y + NODE_H / 2 };
+    });
+  });
+}
+layoutNodes();
+
+function mk(tag, attrs) {
+  const e = document.createElementNS(NS, tag);
+  for (const k in attrs) e.setAttribute(k, attrs[k]);
+  return e;
+}
+function cssv(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+
+// バンド帯
+LAYERS.forEach(l => {
+  svg.appendChild(mk("rect", { class:"band", x:14, y:l.y - 26, width:W - 28, height:NODE_H + 38, rx:12 }));
+  const t = mk("text", { class:"band-label", x:24, y:l.y - 11 });
+  t.textContent = l.label;
+  svg.appendChild(t);
+});
+
+// エッジ(下層→上層は曲線で)
+const edgeLayer = mk("g", {});
+svg.appendChild(edgeLayer);
+function edgePath(a, b) {
+  const p = pos[a], q = pos[b];
+  const x1 = p.cx, y1 = p.y + (q.cy > p.cy ? p.h : 0);
+  const x2 = q.cx, y2 = q.y + (q.cy > p.cy ? 0 : q.h);
+  const my = (y1 + y2) / 2;
+  return `M${x1} ${y1} C ${x1} ${my}, ${x2} ${my}, ${x2} ${y2}`;
+}
+const edgeEls = {};
+EDGES.forEach(([a, b]) => {
+  if (!pos[a] || !pos[b]) return;
+  const pa = mk("path", { class:"edge", d: edgePath(a, b) });
+  edgeLayer.appendChild(pa);
+  edgeEls[a + ">" + b] = pa;
+});
+
+// フローのアニメーション経路(最前面オーバーレイ)
+const flowLayer = mk("g", {});
+svg.appendChild(flowLayer);
+
+// ノード
+const nodeEls = {};
+NODES.forEach(n => {
+  const p = pos[n.id];
+  const lay = LAYERS.find(l => l.key === n.layer);
+  const g = mk("g", { class:"node", tabindex:"0", role:"button" });
+  g.style.setProperty("--n-bg", `var(${lay.bg})`);
+  g.style.setProperty("--n-s", `var(${lay.s})`);
+  const r = mk("rect", { x:p.x, y:p.y, width:p.w, height:p.h, rx:9 });
+  const bg = mk("rect", { class:"bgfill", x:p.x, y:p.y, width:p.w, height:p.h, rx:9, opacity:".5" });
+  g.appendChild(bg); g.appendChild(r);
+  const lbl = mk("text", { class:"lbl", x:p.cx, y:p.y + 21, "text-anchor":"middle" });
+  lbl.textContent = (n.ico ? n.ico + " " : "") + n.label;
+  const sub = mk("text", { class:"sub", x:p.cx, y:p.y + 37, "text-anchor":"middle" });
+  sub.textContent = n.sub;
+  g.appendChild(lbl); g.appendChild(sub);
+  const open = () => openPanel(n);
+  g.addEventListener("click", open);
+  g.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); } });
+  svg.appendChild(g);
+  nodeEls[n.id] = g;
+});
+
+// ============================================================
+//  フロー & 詳細パネル & テーマ
+// ============================================================
+let activeFlow = null;
+function clearFlow() {
+  activeFlow = null;
+  svg.classList.remove("dim");
+  flowLayer.innerHTML = "";
+  Object.values(nodeEls).forEach(g => g.classList.remove("hot"));
+  document.querySelectorAll("#flow-chips .chip").forEach(c => c.classList.remove("on"));
+}
+function showFlow(key) {
+  if (activeFlow === key) { clearFlow(); return; }
+  clearFlow();
+  activeFlow = key;
+  const f = FLOWS[key];
+  svg.classList.add("dim");
+  const hot = new Set([...f.line, ...(f.extra || [])]);
+  hot.forEach(id => nodeEls[id] && nodeEls[id].classList.add("hot"));
+  // line を順に結ぶアニメーション折れ線
+  let d = "";
+  f.line.forEach((id, i) => {
+    const p = pos[id]; if (!p) return;
+    d += (i === 0 ? "M" : "L") + p.cx + " " + p.cy + " ";
+  });
+  flowLayer.appendChild(mk("path", { class:"flow-line", d }));
+  document.querySelector(`#flow-chips .chip[data-k="${key}"]`).classList.add("on");
+}
+
+function openPanel(n) {
+  const info = INFO[n.id] || {};
+  const lay = LAYERS.find(l => l.key === n.layer);
+  const ico = document.getElementById("p-ico");
+  ico.textContent = n.ico || "■";
+  ico.style.setProperty("--n-bg", `var(${lay.bg})`);
+  ico.style.setProperty("--n-s", `var(${lay.s})`);
+  document.getElementById("p-title").textContent = n.label;
+  document.getElementById("p-file").innerHTML = info.f ? "📄 <code>" + esc(info.f) + "</code>" : "";
+  let html = "<p>" + esc(info.d || "") + "</p>";
+  if (info.t && info.t.length) html += info.t.map(x => `<span class="tag">${esc(x)}</span>`).join("");
+  document.getElementById("p-body").innerHTML = html;
+  document.getElementById("panel").classList.add("open");
+}
+function esc(s) { return String(s == null ? "" : s).replace(/[&<>"]/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;" }[c])); }
+document.getElementById("p-close").onclick = () => document.getElementById("panel").classList.remove("open");
+document.addEventListener("keydown", e => { if (e.key === "Escape") { document.getElementById("panel").classList.remove("open"); clearFlow(); } });
+
+// フローチップ
+const chipBox = document.getElementById("flow-chips");
+Object.entries(FLOWS).forEach(([k, f]) => {
+  const c = document.createElement("button");
+  c.className = "chip"; c.dataset.k = k; c.textContent = f.label;
+  c.onclick = () => showFlow(k);
+  chipBox.appendChild(c);
+});
+const clr = document.createElement("button");
+clr.className = "chip clear"; clr.textContent = "× フロー解除";
+clr.onclick = clearFlow;
+chipBox.appendChild(clr);
+
+// 凡例
+const legend = document.getElementById("legend");
+LAYERS.forEach(l => {
+  const s = document.createElement("span");
+  s.innerHTML = `<i style="background:var(${l.bg});border-color:var(${l.s})"></i>${esc(l.label.split(" — ")[0].split("(")[0])}`;
+  legend.appendChild(s);
+});
+
+// テーマ切替
+const themeBtn = document.getElementById("theme");
+function setTheme(dark) {
+  document.documentElement.classList.toggle("dark", dark);
+  try { localStorage.setItem("arch-theme", dark ? "dark" : "light"); } catch (e) {}
+  themeBtn.textContent = dark ? "☀" : "◑";
+}
+themeBtn.textContent = document.documentElement.classList.contains("dark") ? "☀" : "◑";
+themeBtn.onclick = () => setTheme(!document.documentElement.classList.contains("dark"));
+</script>
+</body>
+</html>
