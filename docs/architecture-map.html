@@ -431,8 +431,10 @@ const INFO = {
       "コンテキスト超過(400)を検知→文脈を強制切り詰め→再試行、で会話の詰みを防ぐ",
       "変更は undo 控え+構文チェック、依頼完了時に自律検証ループへ",
       "画像(スクショ)添付時は Vision 対応モデルへ自動切替(エラー画面の読取→修正)",
-      "会話文脈(ツール往復含む)を KV に永続化=サーバ再起動後も継続可能"],
-    t:["run_stream","_change_action","_require_read_first","_is_ctx_overflow"]},
+      "会話文脈(ツール往復含む)を KV に永続化=サーバ再起動後も継続可能",
+      "生成パラメータ(temperature/top_p/num_predict)は会話設定で上書き可能(モデル別の追い込み)",
+      "プロンプトで import先/呼び出し元/同種実装の先読みを促し、既存スタイルに沿った生成へ"],
+    t:["run_stream","_gen_options","_require_read_first","_is_ctx_overflow"]},
 
   tools:{f:"app/agent/tools.py",
     d:"エージェントが作業フォルダ内で使うファイル操作・検索・コマンド実行ツール群。",
@@ -463,12 +465,14 @@ const INFO = {
     t:["compact_ctx","force_truncate_ctx","_ctx_chars"]},
 
   vrf:{f:"app/agent/verify.py",
-    d:"変更後に自動でテスト/ビルドを走らせる自律検証の実行部品。",
+    d:"変更後に自動でテスト/ビルド/lint/型を走らせる自律検証の実行部品。",
     pts:[
-      "検証コマンドは会話設定(複数行可)優先、空なら自動検出(pytest / npm test / go build / make test)",
-      "失敗したら出力をモデルへ差し戻して修正させ、最大3回まで再検証",
-      "実行は作業フォルダ内で完結"],
-    t:["detect_verify_cmd","run_checks","resolve_verify_cmds"]},
+      "検証コマンドは会話設定(複数行可)優先、空なら自動検出",
+      "自動検出は『動くか』(pytest / npm test / go build)に加え『綺麗か』(ruff・mypy・"
+        + "eslint・tsc・go vet)も設定の実在を確認して追加=生成コードの品質を底上げ",
+      "検証ツール未導入(command not found 等)は失敗ではなく『スキップ』扱いにし、幻のエラーを追わない",
+      "失敗したら出力をモデルへ差し戻して修正させ、最大3回まで再検証(作業フォルダ内で完結)"],
+    t:["detect_verify_cmds","run_checks","_looks_missing_tool"]},
 
   render:{f:"app/export/_render.py, blocks.py",
     d:"Markdownを各オフィス形式へレンダリングする変換エンジン。",

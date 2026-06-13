@@ -19,30 +19,84 @@ from ..logging_setup import get_logger
 log = get_logger("agent.verify")
 
 
-def detect_verify_cmd(ws: Path) -> str:
-    """作業フォルダから検証コマンドを推定する。見つからなければ ''(空)。
+def _has(ws: Path, *names: str) -> bool:
+    return any((ws / n).exists() for n in names)
 
-    優先: Python(pytest) → Node(npm test/build) → Go(build) → Makefile(test)。
-    あくまで推定なので、明示指定(verify_cmd)があればそちらを優先する。
+
+def detect_verify_cmds(ws: Path) -> list[str]:
+    """作業フォルダから検証コマンド群を推定する(テスト/ビルドに加え lint・型チェックも)。
+
+    「動くか(テスト/ビルド)」だけでなく「綺麗か(lint/型)」も自動で回し、生成コードの
+    品質を底上げする。検出できたものだけを返す(空なら [])。明示指定があればそちらを優先。
     """
+    cmds: list[str] = []
     try:
-        if (any((ws / n).is_file() for n in ("pytest.ini", "pyproject.toml", "tox.ini", "setup.cfg"))
-                or (ws / "tests").is_dir() or (ws / "test").is_dir()):
-            return "pytest -q"
+        py_proj = _has(ws, "pyproject.toml", "setup.cfg", "tox.ini", "pytest.ini") \
+            or (ws / "tests").is_dir() or (ws / "test").is_dir()
+        if py_proj:
+            cmds.append("pytest -q")
+            # lint/型は「そのプロジェクトが使っている証拠」があるときだけ追加
+            # (無関係な環境で誤って失敗→自律ループが幻のエラーを追うのを防ぐ)
+            if _has(ws, "ruff.toml", ".ruff.toml") or _mentions(ws, "pyproject.toml", "ruff") \
+                    or _mentions(ws, "setup.cfg", "ruff") or _mentions(ws, "tox.ini", "ruff"):
+                cmds.append("ruff check .")
+            if _has(ws, "mypy.ini", ".mypy.ini") or _mentions(ws, "pyproject.toml", "mypy") \
+                    or _mentions(ws, "setup.cfg", "mypy"):
+                cmds.append("mypy .")
         pj = ws / "package.json"
         if pj.is_file():
-            scripts = (json.loads(pj.read_text(encoding="utf-8")) or {}).get("scripts") or {}
+            scripts: dict = {}
+            try:
+                scripts = (json.loads(pj.read_text(encoding="utf-8")) or {}).get("scripts") or {}
+            except Exception:
+                log.debug("detect_verify_cmds: package.json 解析失敗", exc_info=True)
             if "test" in scripts:
-                return "npm test --silent"
-            if "build" in scripts:
-                return "npm run build"
+                cmds.append("npm test --silent")
+            elif "build" in scripts:
+                cmds.append("npm run build")
+            if "lint" in scripts:
+                cmds.append("npm run lint --silent")
+            if "typecheck" in scripts:
+                cmds.append("npm run typecheck --silent")
+            elif _has(ws, "tsconfig.json"):
+                cmds.append("npx --no-install tsc --noEmit")
         if (ws / "go.mod").is_file():
-            return "go build ./..."
-        if (ws / "Makefile").is_file() or (ws / "makefile").is_file():
-            return "make test"
+            cmds.append("go build ./...")
+            cmds.append("go vet ./...")
+        if not cmds and (_has(ws, "Makefile", "makefile")):
+            cmds.append("make test")
     except Exception:
-        log.debug("detect_verify_cmd: 例外を無視して継続", exc_info=True)
-    return ""
+        log.debug("detect_verify_cmds: 例外を無視して継続", exc_info=True)
+    # 重複除去(順序維持)
+    out: list[str] = []
+    for c in cmds:
+        if c not in out:
+            out.append(c)
+    return out
+
+
+def _mentions(ws: Path, fname: str, token: str) -> bool:
+    """設定ファイルに特定トークン(例: mypy)が含まれるか。読めなければ False。"""
+    try:
+        p = ws / fname
+        return p.is_file() and token in p.read_text(encoding="utf-8", errors="ignore")
+    except Exception:
+        log.debug("_mentions: 例外を無視して継続", exc_info=True)
+        return False
+
+
+def detect_verify_cmd(ws: Path) -> str:
+    """後方互換: 推定した検証コマンドの先頭1件(無ければ '')。"""
+    cmds = detect_verify_cmds(ws)
+    return cmds[0] if cmds else ""
+
+
+def _looks_missing_tool(returncode: int, out: str) -> bool:
+    """実行ファイルが見つからない系の失敗か(検証ツール未導入の判定)。"""
+    low = (out or "").lower()
+    markers = ("command not found", "not found", "is not recognized",
+               "no such file or directory", "could not find", "ためのファイルが見つかりません")
+    return (returncode == 127) or any(m in low for m in markers)
 
 
 def run_verify(ws: Path, cmd: str, timeout: int = CMD_TIMEOUT) -> tuple[bool, str]:
@@ -57,6 +111,10 @@ def run_verify(ws: Path, cmd: str, timeout: int = CMD_TIMEOUT) -> tuple[bool, st
         r = subprocess.run(cmd, shell=True, cwd=str(ws),
                            capture_output=True, text=True, timeout=timeout)
         out = ((r.stdout or "") + (r.stderr or "")).strip()
+        # ツール未導入(command not found 等)は失敗ではなく「スキップ」扱いにし、
+        # 自律検証ループが存在しないエラーを追いかけないようにする。
+        if _looks_missing_tool(r.returncode, out):
+            return True, f"[スキップ] 検証ツールが未導入のため省略: {cmd}"
         out = out[:6000] + ("\n...(出力省略)" if len(out) > 6000 else "")
         head = "[検証OK]" if r.returncode == 0 else f"[検証失敗 終了コード {r.returncode}]"
         return r.returncode == 0, f"{head}\n{out or '(出力なし)'}"
@@ -74,8 +132,7 @@ def resolve_verify_cmds(ws: Path, verify_cmd: str) -> list[str]:
     cmds = [c.strip() for c in (verify_cmd or "").splitlines() if c.strip()]
     if cmds:
         return cmds
-    auto = detect_verify_cmd(ws)
-    return [auto] if auto else []
+    return detect_verify_cmds(ws)
 
 
 def run_checks(ws: Path, cmds: list[str]) -> tuple[bool, str]:

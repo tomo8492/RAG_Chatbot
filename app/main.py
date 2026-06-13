@@ -687,6 +687,8 @@ def api_agent(cid: str, body: AgentBody) -> Response:
     except (TypeError, ValueError):
         cmd_timeout = 120
     cmd_out_cap = 8000
+    # 生成パラメータの上書き(会話設定にあれば。モデル別の追い込み用)
+    gen_opts = {k: s[k] for k in ("temperature", "top_p", "num_predict") if s.get(k) is not None}
     if not workspace:
         raise HTTPException(400, "作業フォルダが設定されていません。先にフォルダを選択してください。")
     ws = Path(workspace).expanduser()
@@ -783,7 +785,8 @@ def api_agent(cid: str, body: AgentBody) -> Response:
             for ev in agent.run_stream(model, ctx, str(ws.resolve()), allow_changes, plan_mode,
                                        num_ctx, auto_accept_edits=auto_accept_edits,
                                        auto_verify=auto_verify, verify_cmd=verify_cmd,
-                                       cmd_timeout=cmd_timeout, cmd_out_cap=cmd_out_cap):
+                                       cmd_timeout=cmd_timeout, cmd_out_cap=cmd_out_cap,
+                                       gen_opts=gen_opts):
                 t = ev.get("type")
                 if t in ("assistant_delta", "assistant"):
                     if ev.get("text"):

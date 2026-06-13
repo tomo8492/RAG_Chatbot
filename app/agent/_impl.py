@@ -145,13 +145,26 @@ AGENT_TOP_P = 0.9
 AGENT_NUM_PREDICT = 8192   # 1ステップの最大出力。長い編集/差分が途中で切れないよう大きめ
 
 
-def _gen_options(num_ctx: Optional[int] = None) -> dict:
-    """エージェントの生成オプション。サンプリングはコーディング向けに固定し、
-    num_ctx(コンテキスト長)だけは会話設定の値を反映する(0/None はモデル既定)。"""
+def _gen_options(num_ctx: Optional[int] = None,
+                 gen: Optional[dict] = None) -> dict:
+    """エージェントの生成オプション。コーディング向け既定をベースに、会話設定(gen)で上書き可能。
+
+    gen に temperature / top_p / num_predict が入っていれば反映する(モデル別の追い込み用)。
+    num_ctx(コンテキスト長)は会話設定の値(0/None はモデル既定)。
+    """
+    g = gen or {}
+
+    def _num(key, default, lo, hi):
+        try:
+            v = g.get(key)
+            return min(max(float(v), lo), hi) if v is not None else default
+        except (TypeError, ValueError):
+            return default
+
     opt = {
-        "temperature": AGENT_TEMPERATURE,
-        "top_p": AGENT_TOP_P,
-        "num_predict": AGENT_NUM_PREDICT,
+        "temperature": _num("temperature", AGENT_TEMPERATURE, 0.0, 2.0),
+        "top_p": _num("top_p", AGENT_TOP_P, 0.1, 1.0),
+        "num_predict": int(_num("num_predict", AGENT_NUM_PREDICT, 256, 32768)),
     }
     if num_ctx:
         opt["num_ctx"] = int(num_ctx)
@@ -560,17 +573,19 @@ def run_stream(model: str, messages: list, workspace: str,
                num_ctx: Optional[int] = None,
                auto_accept_edits: bool = False,
                auto_verify: bool = False, verify_cmd: str = "",
-               cmd_timeout: int = CMD_TIMEOUT, cmd_out_cap: int = 8000) -> Iterator[dict]:
+               cmd_timeout: int = CMD_TIMEOUT, cmd_out_cap: int = 8000,
+               gen_opts: Optional[dict] = None) -> Iterator[dict]:
     """
     エージェントを1依頼ぶん実行し、イベントを順次 yield する。
     イベント type:
       thinking / assistant_delta / tool_call / tool_result / confirm / plan / todos / done / max_steps / error
     plan_mode=True のときは「調査→present_plan→承認→実行」。
     各ステップの本文は逐次ストリーミング(assistant_delta)で流す。
+    gen_opts(temperature/top_p/num_predict)で生成パラメータを上書きできる。
     """
     ws = Path(workspace).resolve()
     client = _client()
-    options = _gen_options(num_ctx)   # コーディング向け生成設定(num_ctx は会話設定を反映)
+    options = _gen_options(num_ctx, gen_opts)   # コーディング向け既定+会話設定で上書き
     phase = "plan" if plan_mode else "execute"
     investigated = False     # 調査(読み取り)系ツールを使ったか
     ask_redirected = False   # 「調査前の聞き返し」を一度リダイレクトしたか
