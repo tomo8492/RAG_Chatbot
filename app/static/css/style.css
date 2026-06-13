@@ -496,6 +496,9 @@ summary.step-head:hover { background: rgba(127,127,127,.06); }
 
 /* 承認カード(変更・コマンドの確認) */
 .confirm-card { border: 1px solid var(--accent); border-radius: 10px; padding: 12px 14px; background: var(--panel); }
+.confirm-card.danger { border-color: var(--stop); border-width: 2px; }
+.danger-warn { background: rgba(181,72,58,.10); border: 1px solid var(--stop); color: var(--stop);
+  border-radius: 8px; padding: 8px 11px; font-size: 12.5px; margin-bottom: 8px; line-height: 1.6; }
 .confirm-title { font-weight: 700; margin-bottom: 8px; }
 .confirm-meta { font-size: 12.5px; color: var(--ink-soft); margin-bottom: 8px;
   font-family: ui-monospace, "SFMono-Regular", Consolas, monospace; word-break: break-all; }

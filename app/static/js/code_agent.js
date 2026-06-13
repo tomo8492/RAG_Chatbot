@@ -507,7 +507,7 @@ function askStaticEl(ev) {
 
 function agentArgsSummary(name, args) {
   if (name === "write_file") return `${args.path || ""} (${args.length || 0}字)`;
-  if (name === "edit_file") return args.path || "";
+  if (name === "edit_file") return (args.path || "") + (args.edits ? ` (${args.edits}編集)` : "");
   if (name === "run_command" || name === "run_background") return args.command || "";
   if (name === "command_output" || name === "stop_command") return "job " + (args.job_id || "");
   if (name === "read_file" || name === "summarize_path") return args.path || "";
@@ -547,11 +547,19 @@ function buildConfirmCard(ev) {
     : "⚠ このファイル変更を適用しますか?";
   card.appendChild(el("div", "confirm-title", title));
   if (isCmd) {
+    if (ev.danger) {
+      // 破壊的コマンドの強調警告(実行は承認次第。誤承認の事故を減らす)
+      const warn = el("div", "danger-warn");
+      warn.innerHTML = "🛑 <b>危険なコマンドの可能性</b>: " + escapeHtml(ev.danger)
+        + "<br>内容をよく確認してください。取り消せない操作かもしれません。";
+      card.appendChild(warn);
+      card.classList.add("danger");
+    }
     card.appendChild(el("div", "confirm-cmd", "$ " + escapeHtml(ev.command || "")));
   } else {
     card.appendChild(el("div", "confirm-meta",
       `${escapeHtml(ev.path || "")} ・ ${ev.exists ? "上書き" : "新規作成"}`));
-    card.appendChild(renderDiff(ev.diff || ""));
+    card.appendChild(renderDiff(ev.diff || "", ev.path || ""));
   }
   const actions = el("div", "confirm-actions");
   const ok = el("button", "btn primary", isCmd ? "実行する" : "適用する");
@@ -576,10 +584,28 @@ function buildConfirmCard(ev) {
   return card;
 }
 
-// Claude Code 風の差分表示。unified diff を行番号つき・行ごと色分けで描画する。
-function renderDiff(diffText) {
+// 拡張子 → highlight.js の言語名(主要なもの)
+const DIFF_HL_LANG = {
+  py: "python", js: "javascript", mjs: "javascript", cjs: "javascript", ts: "typescript",
+  jsx: "javascript", tsx: "typescript", json: "json", html: "xml", xml: "xml", css: "css",
+  sh: "bash", bash: "bash", sql: "sql", java: "java", c: "c", h: "c", cpp: "cpp", cs: "csharp",
+  go: "go", rs: "rust", php: "php", rb: "ruby", yaml: "yaml", yml: "yaml", md: "markdown",
+  bas: "vbnet", vb: "vbnet", vba: "vbnet",
+};
+// Claude Code 風の差分表示。unified diff を行番号つき・行ごと色分け+構文ハイライトで描画する。
+function renderDiff(diffText, path) {
   const wrap = el("div", "cc-diff");
   const body = el("div", "cc-diff-body");
+  const ext = (String(path || "").split(".").pop() || "").toLowerCase();
+  const lang = DIFF_HL_LANG[ext];
+  const hl = (code, text) => {
+    // 構文ハイライト(hljs があり言語が分かるときのみ)。失敗時はプレーン表示
+    if (lang && typeof hljs !== "undefined") {
+      try { code.innerHTML = hljs.highlight(text, { language: lang }).value; return; }
+      catch (_) { /* fall through */ }
+    }
+    code.textContent = text;
+  };
   let oldLn = 0, newLn = 0, adds = 0, dels = 0, firstHunk = true, rows = 0;
   (diffText || "").split("\n").forEach((ln) => {
     if (ln.startsWith("+++") || ln.startsWith("---")) return;     // ファイルヘッダ行は隠す
@@ -598,8 +624,8 @@ function renderDiff(diffText) {
     const row = el("div", "cc-diff-row " + cls);
     row.appendChild(el("span", "cc-ln", String(gutter)));
     row.appendChild(el("span", "cc-mark", mark === " " ? "&nbsp;" : mark));
-    const code = el("span", "cc-code");
-    code.textContent = text;                                       // textContent で自動エスケープ
+    const code = el("span", "cc-code hljs");
+    hl(code, text);                                                // 構文ハイライト or プレーン
     row.appendChild(code);
     body.appendChild(row);
     rows++;

@@ -184,6 +184,7 @@ def api_delete_conversation(cid: str) -> dict:
         raise HTTPException(404, "会話が見つかりません")
     rag.delete_conv_collection(cid)
     db.delete_conversation(cid)
+    db.set_kv(f"code_ctx:{cid}", None)   # 永続化したエージェント文脈も破棄
     with _code_ctx_lock:
         _code_ctx.pop(cid, None)
         _code_running.discard(cid)
@@ -637,6 +638,34 @@ def _init_code_ctx(cid: str, ws: Path) -> list:
     return msgs
 
 
+def _load_or_init_ctx(cid: str, ws: Path) -> list:
+    """エージェント文脈を取得。メモリ→DB(KV)→履歴から再構築 の順で復元する。
+
+    KV にはツール往復を含む文脈を保存しているため、サーバ再起動後も作業の途中文脈が残る
+    (画像のbase64は保存時に落としてあるので軽い)。"""
+    ctx = _code_ctx.get(cid)
+    if ctx is not None:
+        return ctx
+    saved = db.get_kv(f"code_ctx:{cid}")
+    if isinstance(saved, list) and saved:
+        log.info("Code文脈をDBから復元 [conv=%s] %d件", cid, len(saved))
+        return saved
+    return _init_code_ctx(cid, ws)
+
+
+def _save_code_ctx(cid: str, ctx: list) -> None:
+    """エージェント文脈を DB(KV)に保存。画像のbase64は除いて軽量化する。"""
+    try:
+        slim = []
+        for m in ctx:
+            if isinstance(m, dict) and "images" in m:
+                m = {k: v for k, v in m.items() if k != "images"}
+            slim.append(m)
+        db.set_kv(f"code_ctx:{cid}", slim)
+    except Exception:
+        log.debug("_save_code_ctx: 例外を無視して継続", exc_info=True)
+
+
 @app.post("/api/conversations/{cid}/agent", dependencies=[Depends(auth.require_auth)])
 def api_agent(cid: str, body: AgentBody) -> Response:
     conv = db.get_conversation(cid)
@@ -652,6 +681,12 @@ def api_agent(cid: str, body: AgentBody) -> Response:
     auto_accept_edits = bool(s.get("auto_accept_edits"))
     auto_verify = bool(s.get("auto_verify", True))      # 変更後にテスト等を自動実行して直す(既定ON)
     verify_cmd = (s.get("verify_cmd") or "").strip()    # 空=作業フォルダから自動検出
+    # run_command のタイムアウト/出力上限(会話設定 > 既定120秒)。長いビルドに対応
+    try:
+        cmd_timeout = max(5, int(s.get("cmd_timeout") or 120))
+    except (TypeError, ValueError):
+        cmd_timeout = 120
+    cmd_out_cap = 8000
     if not workspace:
         raise HTTPException(400, "作業フォルダが設定されていません。先にフォルダを選択してください。")
     ws = Path(workspace).expanduser()
@@ -668,6 +703,12 @@ def api_agent(cid: str, body: AgentBody) -> Response:
 
     eff = effective_for(conv)
     model = eff["model"]
+    # 画像添付があり、現モデルが画像非対応なら Vision モデルへ切替(エラー画面の読取→修正のため)
+    if body.images:
+        vmodel = (eff.get("vision_model") or settings.vision_model or "").strip()
+        if vmodel and not llm.model_has_vision(model) and llm.is_model_installed(vmodel):
+            log.info("Code: 画像添付のため Vision モデルへ切替 %s → %s", model, vmodel)
+            model = vmodel
     num_ctx = int(eff["num_ctx"]) or None   # 0 はモデル既定。Chat と同じく設定値を反映
     if num_ctx and num_ctx < 16384:
         # Code は system+ツール定義だけで約8千トークンの固定費がある。小さい窓だと
@@ -680,7 +721,7 @@ def api_agent(cid: str, body: AgentBody) -> Response:
             raise HTTPException(409, "この会話は別の処理を実行中です")
         ctx = _code_ctx.get(cid)
         if ctx is None:
-            ctx = _init_code_ctx(cid, ws.resolve())
+            ctx = _load_or_init_ctx(cid, ws.resolve())
             _code_ctx[cid] = ctx
         _code_running.add(cid)
 
@@ -741,7 +782,8 @@ def api_agent(cid: str, body: AgentBody) -> Response:
         try:
             for ev in agent.run_stream(model, ctx, str(ws.resolve()), allow_changes, plan_mode,
                                        num_ctx, auto_accept_edits=auto_accept_edits,
-                                       auto_verify=auto_verify, verify_cmd=verify_cmd):
+                                       auto_verify=auto_verify, verify_cmd=verify_cmd,
+                                       cmd_timeout=cmd_timeout, cmd_out_cap=cmd_out_cap):
                 t = ev.get("type")
                 if t in ("assistant_delta", "assistant"):
                     if ev.get("text"):
@@ -785,6 +827,7 @@ def api_agent(cid: str, body: AgentBody) -> Response:
             flush_text()
             text = "\n\n".join(x for x in acc_text if x).strip() or "(操作を実行しました)"
             db.add_message(cid, "assistant", postprocess.clean(text), sources=steps)   # チャットと同じ後処理
+            _save_code_ctx(cid, ctx)   # ツール往復を含む文脈を永続化(再起動後も継続可能)
             _finish()
 
     headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"}

@@ -40,19 +40,53 @@ def _norm_plan(raw) -> str:
     return str(raw or "").strip()
 
 
-def read_project_instructions(ws: Path, limit: int = 8000) -> Optional[str]:
-    """作業フォルダの CLAUDE.md / AGENTS.md を読み、エージェントへの指示として返す。"""
+def read_project_instructions(ws: Path, limit: int = 8000,
+                              sub_limit: int = 8, per_sub: int = 2000) -> Optional[str]:
+    """作業フォルダ直下の CLAUDE.md / AGENTS.md に加え、直下サブフォルダの指示書も読む。
+
+    モノレポやサブプロジェクトごとに指示書を分けているケースに対応する。
+    - 直下: 最初に見つかった PROJECT_FILES を本体指示として全文(limit まで)
+    - 直下サブフォルダ: 各フォルダの CLAUDE.md/AGENTS.md を per_sub 文字まで、最大 sub_limit 個
+    どちらも見つからなければ None。
+    """
+    parts: list[str] = []
+    # 1) 作業フォルダ直下の指示書(本体)
     for name in PROJECT_FILES:
         try:
             p = (ws / name)
             if p.is_file():
                 text = p.read_text(encoding="utf-8", errors="replace").strip()
                 if text:
-                    return text[:limit] + ("\n...(省略)" if len(text) > limit else "")
+                    parts.append(text[:limit] + ("\n...(省略)" if len(text) > limit else ""))
+                    break
         except Exception:
             log.debug("read_project_instructions: 例外を無視して継続", exc_info=True)
             continue
-    return None
+    # 2) 直下サブフォルダの指示書(サブプロジェクト別)
+    subs: list[str] = []
+    try:
+        for d in sorted(p for p in ws.iterdir() if p.is_dir()):
+            if d.name.startswith(".") or d.name in ("node_modules", "__pycache__", "venv", ".venv"):
+                continue
+            for name in ("CLAUDE.md", "AGENTS.md"):
+                sp = d / name
+                if sp.is_file():
+                    try:
+                        txt = sp.read_text(encoding="utf-8", errors="replace").strip()
+                    except Exception:
+                        log.debug("read_project_instructions(sub): 例外を無視", exc_info=True)
+                        txt = ""
+                    if txt:
+                        subs.append(f"### {d.name}/{name}\n"
+                                    + txt[:per_sub] + ("\n...(省略)" if len(txt) > per_sub else ""))
+                    break
+            if len(subs) >= sub_limit:
+                break
+    except Exception:
+        log.debug("read_project_instructions: サブフォルダ走査に失敗(無視)", exc_info=True)
+    if subs:
+        parts.append("【サブフォルダの指示書】\n" + "\n\n".join(subs))
+    return "\n\n".join(parts) if parts else None
 
 
 def _norm_todos(todos) -> list:

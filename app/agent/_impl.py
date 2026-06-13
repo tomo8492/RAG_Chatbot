@@ -30,6 +30,7 @@ import ollama
 from ..config import settings
 from ..logging_setup import get_logger
 from .constants import (
+    CMD_TIMEOUT,
     CTX_CHAR_LIMIT,
     CONFIRM_IN_EXEC,
     EXEC_PHASE_TOOLS,
@@ -55,6 +56,8 @@ from .helpers import _norm_todos, _norm_questions, _norm_plan, _format_ask_resul
 
 log = get_logger("agent")
 
+_DIFF_CAP = 24000   # 確認カードに出す差分の最大文字数(大きな write_file でも判断できるよう拡大)
+
 
 # ============================================================
 #  表示用の整形
@@ -63,7 +66,11 @@ def _preview_args(name: str, args: dict) -> dict:
     if name == "write_file":
         return {"path": args.get("path", ""), "length": len(args.get("content", "") or "")}
     if name == "edit_file":
-        return {"path": args.get("path", "")}
+        d = {"path": args.get("path", "")}
+        edits = args.get("edits")
+        if isinstance(edits, list) and len(edits) > 1:
+            d["edits"] = len(edits)   # 複数編集の件数(表示用)
+        return d
     if name in ("run_command", "run_background"):
         return {"command": args.get("command", "")}
     if name in ("command_output", "stop_command"):
@@ -94,25 +101,35 @@ def _change_preview(ws: Path, name: str, args: dict) -> dict:
         pass
     if name == "write_file":
         new = args.get("content", "") or ""
-    else:  # edit_file
-        old_s = args.get("old_string", "") or ""
-        new_s = args.get("new_string", "") or ""
-        if old_s and old_s in old:
-            new = old.replace(old_s, new_s) if args.get("replace_all") else old.replace(old_s, new_s, 1)
+    else:  # edit_file(単一 old/new、または edits 配列の両対応)
+        edits = args.get("edits")
+        if isinstance(edits, list) and edits:
+            from .tools import _apply_edits
+            new, _cnt, _err = _apply_edits(old, edits)   # 不一致時は old のまま=差分なし
         else:
-            new = old  # 一致なし(実行時にエラーになる)
+            old_s = args.get("old_string", "") or ""
+            new_s = args.get("new_string", "") or ""
+            if old_s and old_s in old:
+                new = old.replace(old_s, new_s) if args.get("replace_all") else old.replace(old_s, new_s, 1)
+            else:
+                new = old  # 一致なし(実行時にエラーになる)
     diff = "\n".join(difflib.unified_diff(
         old.splitlines(), new.splitlines(),
         fromfile=(path + " (現在)") if exists else "(新規)",
         tofile=path + " (変更後)", lineterm="",
     ))
-    diff = diff[:8000] + ("\n...(差分省略)" if len(diff) > 8000 else "")
+    diff = diff[:_DIFF_CAP] + ("\n...(差分省略)" if len(diff) > _DIFF_CAP else "")
     return {"path": path, "exists": exists, "diff": diff}
 
 
 def _action_detail(ws: Path, name: str, args: dict) -> dict:
     if name in ("run_command", "run_background"):
-        return {"command": args.get("command", "")}
+        from .tools import check_dangerous
+        d = {"command": args.get("command", "")}
+        why = check_dangerous(args.get("command", ""))
+        if why:
+            d["danger"] = why   # 確認カードで強調警告(実行は承認次第)
+        return d
     if name in ("write_file", "edit_file"):
         return _change_preview(ws, name, args)
     return {}
@@ -478,7 +495,8 @@ def _syntax_check(ws: Path, rel: str) -> Optional[str]:
     return None
 
 
-def _apply_change(ws: Path, name: str, args: dict, detail: dict):
+def _apply_change(ws: Path, name: str, args: dict, detail: dict,
+                  cmd_timeout: int = CMD_TIMEOUT, cmd_out_cap: int = 8000):
     """ファイル変更を適用し (result, event) を返す。適用前の内容を undo に控え、
     適用後に構文チェック(自己検証)を行い、失敗はツール結果に追記してモデルへ差し戻す。"""
     rel = args.get("path", "")
@@ -491,7 +509,7 @@ def _apply_change(ws: Path, name: str, args: dict, detail: dict):
         except Exception:
             log.debug("_apply_change: 例外を無視して継続", exc_info=True)
             captured = False
-    result = dispatch(ws, name, args)
+    result = dispatch(ws, name, args, cmd_timeout, cmd_out_cap)
     status = _result_status(result)
     # ファイルが実際に書き換わったか(構文チェックで status が error になっても、
     # 書き込み自体は成功している点に注意。呼び出し側の read 済み/検証要否の判定に使う)
@@ -541,7 +559,8 @@ def run_stream(model: str, messages: list, workspace: str,
                allow_changes: bool, plan_mode: bool = True,
                num_ctx: Optional[int] = None,
                auto_accept_edits: bool = False,
-               auto_verify: bool = False, verify_cmd: str = "") -> Iterator[dict]:
+               auto_verify: bool = False, verify_cmd: str = "",
+               cmd_timeout: int = CMD_TIMEOUT, cmd_out_cap: int = 8000) -> Iterator[dict]:
     """
     エージェントを1依頼ぶん実行し、イベントを順次 yield する。
     イベント type:
@@ -761,7 +780,7 @@ def run_stream(model: str, messages: list, workspace: str,
 
             # --- バックグラウンドjobの出力取得・停止(確認不要のメタ操作) ---
             if name in META:
-                result = dispatch(ws, name, args)
+                result = dispatch(ws, name, args, cmd_timeout, cmd_out_cap)
                 yield {"type": "tool_result", "name": name,
                        "status": _result_status(result), "result": result}
                 messages.append({"role": "tool", "content": str(result), "tool_name": name})
@@ -836,7 +855,7 @@ def run_stream(model: str, messages: list, workspace: str,
                     if decision is True and scope == "always":
                         auto_accept_edits = True
                     if decision is True:
-                        result, ev = _apply_change(ws, name, args, detail)   # 適用+undo控え+構文チェック
+                        result, ev = _apply_change(ws, name, args, detail, cmd_timeout, cmd_out_cap)   # 適用+undo控え+構文チェック
                         applied_now = bool(ev.pop("applied", False))
                         yield ev
                     elif decision is None:
@@ -849,11 +868,11 @@ def run_stream(model: str, messages: list, workspace: str,
                 else:
                     # 計画承認済みのファイル編集 → 自動適用(差分を併記して透明性を確保)
                     detail = _action_detail(ws, name, args)
-                    result, ev = _apply_change(ws, name, args, detail)   # 適用+undo控え+構文チェック
+                    result, ev = _apply_change(ws, name, args, detail, cmd_timeout, cmd_out_cap)   # 適用+undo控え+構文チェック
                     applied_now = bool(ev.pop("applied", False))
                     yield ev
             else:
-                result = dispatch(ws, name, args)
+                result = dispatch(ws, name, args, cmd_timeout, cmd_out_cap)
                 if name == "read_file" and _result_status(result) != "error":
                     _mark_read(ws, args.get("path", ""), read_files)   # 読了を記録(編集ゲート用)
                 yield {"type": "tool_result", "name": name,
