@@ -29,7 +29,7 @@ log = get_logger("agent.tools")
 
 
 __all__ = [
-    "dispatch", "_safe_path", "_rel_ok",
+    "dispatch", "_safe_path", "_rel_ok", "check_dangerous",
     "t_list_files", "t_read_file", "t_glob", "t_grep",
     "t_write_file", "t_edit_file", "t_run_command",
     "t_run_background", "t_command_output", "t_stop_command", "t_remember",
@@ -195,7 +195,41 @@ def t_write_file(ws: Path, path: str, content: str) -> str:
         return f"[エラー] 書き込み失敗: {e}"
 
 
-def t_edit_file(ws: Path, path: str, old_string: str, new_string: str, replace_all: bool = False) -> str:
+def _apply_edits(text: str, edits: list) -> tuple[str, int, str]:
+    """複数の置換(edits)を順に適用する。戻り: (新テキスト, 適用箇所数, エラー文 or '')。
+
+    edits = [{old_string, new_string, replace_all?}, ...]。1件でも不一致/曖昧なら全体を中止
+    (部分適用を避け、原子的に成功か失敗かにする)。"""
+    total = 0
+    cur = text
+    for i, e in enumerate(edits, 1):
+        if not isinstance(e, dict):
+            return text, 0, f"[エラー] edits[{i}] が不正です"
+        old = e.get("old_string") or ""
+        new = e.get("new_string") or ""
+        rep = bool(e.get("replace_all"))
+        if not old:
+            return text, 0, f"[エラー] edits[{i}] の old_string が空です"
+        if old == new:
+            return text, 0, f"[エラー] edits[{i}] の old_string と new_string が同一です"
+        c = cur.count(old)
+        if c == 0:
+            return text, 0, (f"[エラー] edits[{i}] の old_string が見つかりません。read_file で"
+                             "現在の内容を確認し、実在する文字列を十分な文脈つきで指定してください")
+        if c > 1 and not rep:
+            return text, 0, (f"[エラー] edits[{i}] の old_string が {c} 箇所に一致します。"
+                             "文脈を増やすか replace_all=true を指定してください")
+        cur = cur.replace(old, new) if rep else cur.replace(old, new, 1)
+        total += c if rep else 1
+    return cur, total, ""
+
+
+def t_edit_file(ws: Path, path: str, old_string: str = "", new_string: str = "",
+                replace_all: bool = False, edits: list | None = None) -> str:
+    """ファイルの部分置換。単一(old_string/new_string)または複数(edits 配列)に対応。
+
+    edits を渡すと同一ファイルの複数箇所を1回の承認・1回の書き込みで原子的に変更できる
+    (1件でも不一致なら全体を中止)。"""
     try:
         p = _safe_path(ws, path)
     except ValueError as e:
@@ -203,41 +237,68 @@ def t_edit_file(ws: Path, path: str, old_string: str, new_string: str, replace_a
         return f"[エラー] {e}"
     if not p.exists() or not p.is_file():
         return f"[エラー] ファイルが存在しません: {path}"
-    if not old_string:
-        return ("[エラー] old_string が空です。既存ファイルの全文書き換えや新規作成は "
-                "edit_file ではなく write_file を使ってください")
-    if old_string == new_string:
-        return "[エラー] old_string と new_string が同一です"
     try:
         text = p.read_text(encoding="utf-8", errors="replace")
     except Exception as e:
         log.debug("t_edit_file: 例外を無視して継続", exc_info=True)
         return f"[エラー] 読み取り失敗: {e}"
-    cnt = text.count(old_string)
-    if cnt == 0:
-        return ("[エラー] old_string が見つかりません。まず read_file で現在の内容を確認し、"
-                "実在する文字列を十分な文脈つきで指定してください")
-    if cnt > 1 and not replace_all:
-        return f"[エラー] old_string が {cnt} 箇所に一致します。文脈を増やすか replace_all=true を指定してください"
-    new_text = text.replace(old_string, new_string) if replace_all else text.replace(old_string, new_string, 1)
+    edit_list = edits if isinstance(edits, list) and edits else \
+        [{"old_string": old_string, "new_string": new_string, "replace_all": replace_all}]
+    new_text, cnt, err = _apply_edits(text, edit_list)
+    if err:
+        if not isinstance(edits, list) and not old_string:   # 単一指定で old が空の旧来エラー文
+            return ("[エラー] old_string が空です。既存ファイルの全文書き換えや新規作成は "
+                    "edit_file ではなく write_file を使ってください")
+        return err
     try:
         p.write_text(new_text, encoding="utf-8")
     except Exception as e:
         log.debug("t_edit_file: 例外を無視して継続", exc_info=True)
         return f"[エラー] 書き込み失敗: {e}"
-    return f"[OK] 編集しました: {path} ({cnt if replace_all else 1}箇所)"
+    n_edits = len(edit_list)
+    suffix = f" / {n_edits}編集" if n_edits > 1 else ""
+    return f"[OK] 編集しました: {path} ({cnt}箇所{suffix})"
 
 
-def t_run_command(ws: Path, command: str) -> str:
+# 破壊的・危険なコマンドのパターン(承認カードで強調警告する。実行はあくまでユーザー承認次第)。
+# 目的は「誤承認による事故」を減らすこと。完全なサンドボックスではない点に注意。
+_DANGER_PATTERNS = [
+    (r"\brm\s+(-[a-z]*\s+)*-[a-z]*[rf]", "ファイルの再帰的/強制削除(rm -rf)"),
+    (r"\brmdir\s+/s", "フォルダの再帰削除(rmdir /s)"),
+    (r"\bdel\s+/[a-z]*[sq]", "ファイルの強制/再帰削除(del /s /q)"),
+    (r"\b(format|mkfs(\.\w+)?)\b", "ディスク/パーティションのフォーマット"),
+    (r"\bdd\b.*\bof=/dev/", "dd によるデバイス直接書き込み"),
+    (r">\s*/dev/(sd|nvme|disk)", "ブロックデバイスへのリダイレクト"),
+    (r"\b(shutdown|reboot|halt|poweroff)\b", "システムの停止/再起動"),
+    (r"\bgit\s+(reset\s+--hard|clean\s+-[a-z]*f|push\s+.*--force|push\s+.*-f)\b", "Gitの破壊的操作(履歴/作業ツリーの巻き戻し)"),
+    (r":\(\)\s*\{.*\};\s*:", "フォークボム"),
+    (r"\bchmod\s+(-[a-z]*\s+)*0*777\b", "全権限付与(chmod 777)"),
+    (r"\b(curl|wget|iwr|invoke-webrequest)\b.*\|\s*(sh|bash|python|powershell|iex)", "ダウンロードしたスクリプトの直接実行"),
+    (r"\b(sudo|su)\b", "権限昇格(sudo/su)"),
+    (r"\bmv\s+.*\s+/dev/null\b", "/dev/null への移動(実質削除)"),
+]
+
+
+def check_dangerous(command: str) -> str:
+    """危険なコマンドなら理由(表示用)を、無害そうなら ''(空)を返す。"""
+    s = " " + (command or "").lower() + " "
+    for pat, why in _DANGER_PATTERNS:
+        if re.search(pat, s):
+            return why
+    return ""
+
+
+def t_run_command(ws: Path, command: str, timeout: int = CMD_TIMEOUT,
+                  out_cap: int = 8000) -> str:
     try:
         r = subprocess.run(command, shell=True, cwd=str(ws),
-                           capture_output=True, text=True, timeout=CMD_TIMEOUT)
+                           capture_output=True, text=True, timeout=timeout)
         out = (r.stdout or "") + (r.stderr or "")
-        out = out[:8000] + ("\n...(出力省略)" if len(out) > 8000 else "")
+        out = out[:out_cap] + ("\n...(出力省略)" if len(out) > out_cap else "")
         return f"[終了コード {r.returncode}]\n{out or '(出力なし)'}"
     except subprocess.TimeoutExpired:
         log.debug("t_run_command: 例外を無視して継続", exc_info=True)
-        return f"[エラー] タイムアウト({CMD_TIMEOUT}秒)しました"
+        return f"[エラー] タイムアウト({timeout}秒)しました"
     except Exception as e:
         log.debug("t_run_command: 例外を無視して継続", exc_info=True)
         return f"[エラー] 実行失敗: {e}"
@@ -342,7 +403,8 @@ def t_stop_command(job_id: str) -> str:
     return f"[OK] job {job_id} を停止しました"
 
 
-def dispatch(ws: Path, name: str, args: dict) -> str:
+def dispatch(ws: Path, name: str, args: dict, cmd_timeout: int = CMD_TIMEOUT,
+             out_cap: int = 8000) -> str:
     if name == "list_files":
         return t_list_files(ws)
     if name == "read_file":
@@ -355,9 +417,10 @@ def dispatch(ws: Path, name: str, args: dict) -> str:
         return t_write_file(ws, args.get("path", ""), args.get("content", ""))
     if name == "edit_file":
         return t_edit_file(ws, args.get("path", ""), args.get("old_string", ""),
-                           args.get("new_string", ""), bool(args.get("replace_all")))
+                           args.get("new_string", ""), bool(args.get("replace_all")),
+                           args.get("edits"))
     if name == "run_command":
-        return t_run_command(ws, args.get("command", ""))
+        return t_run_command(ws, args.get("command", ""), cmd_timeout, out_cap)
     if name == "run_background":
         return t_run_background(ws, args.get("command", ""))
     if name == "command_output":

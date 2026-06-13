@@ -221,6 +221,11 @@ def model_capabilities(name: str) -> list:
     return caps
 
 
+def model_has_vision(name: str) -> bool:
+    """モデルが画像入力(vision)対応か。能力情報が取れないときは False(=Code側の自動切替を抑制)。"""
+    return "vision" in model_capabilities(name)
+
+
 def supports_thinking(name: str):
     """思考(reasoning)対応か。True=対応 / False=非対応 / None=不明(判定材料なし)。"""
     caps = model_capabilities(name)
